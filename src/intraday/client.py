@@ -109,6 +109,8 @@ class BinanceWebSocketClient:
             - asks[0]은 Best Ask (최저 매도 호가) - 시장에서 가장 낮은 가격에 팔려는 주문
             - 시장가 매수 시 asks[0] 가격에 체결, 시장가 매도 시 bids[0] 가격에 체결
         """
+
+        # Binance 는 가격을 문자열로 보냄. 이걸 float 으로 변환함
         bids = [(float(price), float(qty)) for price, qty in data.get("bids", [])]
         asks = [(float(price), float(qty)) for price, qty in data.get("asks", [])]
         
@@ -171,6 +173,7 @@ class BinanceWebSocketClient:
                                 on_error(e)
                                 
             except websockets.ConnectionClosed as e:
+                # 흔한 서버 연결 끊긴 상황 -> 지수 백오프로 최적화된 재연결 시도
                 print(f"[Client] Connection closed: {e}")
                 reconnect_attempts += 1
                 if self._running and reconnect_attempts < max_reconnect_attempts:
@@ -179,6 +182,7 @@ class BinanceWebSocketClient:
                     await asyncio.sleep(wait_time)
                     
             except Exception as e:
+                # something wrong 다른 에러.. 2초만 대기
                 print(f"[Client] Error: {e}")
                 if on_error:
                     on_error(e)

@@ -123,3 +123,6 @@ class TestBinanceWebSocketClientParsing:
         assert snapshot.bids == []
         assert snapshot.asks == []
 
+
+
+
