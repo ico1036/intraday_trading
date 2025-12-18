@@ -8,7 +8,12 @@ from datetime import datetime
 
 import pytest
 
-from intraday.client import BinanceWebSocketClient, OrderbookSnapshot
+from intraday.client import (
+    BinanceWebSocketClient,
+    OrderbookSnapshot,
+    AggTrade,
+    BinanceCombinedClient,
+)
 
 
 class TestOrderbookSnapshot:
@@ -123,6 +128,145 @@ class TestBinanceWebSocketClientParsing:
         assert snapshot.bids == []
         assert snapshot.asks == []
 
+
+class TestAggTrade:
+    """AggTrade 데이터클래스 테스트"""
+    
+    def test_creation(self):
+        """AggTrade 생성 테스트"""
+        now = datetime.now()
+        trade = AggTrade(
+            timestamp=now,
+            symbol="BTCUSDT",
+            price=100000.0,
+            quantity=0.5,
+            is_buyer_maker=True,
+        )
+        
+        assert trade.timestamp == now
+        assert trade.symbol == "BTCUSDT"
+        assert trade.price == 100000.0
+        assert trade.quantity == 0.5
+        assert trade.is_buyer_maker is True
+    
+    def test_buyer_maker_meanings(self):
+        """is_buyer_maker 필드 의미 테스트"""
+        # is_buyer_maker=True: 매수자가 메이커 = 매도 주도 거래
+        seller_driven = AggTrade(
+            timestamp=datetime.now(),
+            symbol="BTCUSDT",
+            price=100000.0,
+            quantity=0.5,
+            is_buyer_maker=True,
+        )
+        assert seller_driven.is_buyer_maker is True  # 매도 주도
+        
+        # is_buyer_maker=False: 매도자가 메이커 = 매수 주도 거래
+        buyer_driven = AggTrade(
+            timestamp=datetime.now(),
+            symbol="BTCUSDT",
+            price=100000.0,
+            quantity=0.5,
+            is_buyer_maker=False,
+        )
+        assert buyer_driven.is_buyer_maker is False  # 매수 주도
+
+
+class TestBinanceCombinedClientInit:
+    """BinanceCombinedClient 초기화 테스트"""
+    
+    def test_default_initialization(self):
+        """기본값으로 초기화"""
+        client = BinanceCombinedClient()
+        
+        assert client.symbol == "btcusdt"
+        assert client.depth_levels == 20
+        assert client.update_speed == "100ms"
+        assert client._running is False
+    
+    def test_custom_initialization(self):
+        """커스텀 값으로 초기화"""
+        client = BinanceCombinedClient(
+            symbol="ETHUSDT",
+            depth_levels=10,
+            update_speed="1000ms",
+        )
+        
+        assert client.symbol == "ethusdt"
+        assert client.depth_levels == 10
+        assert client.update_speed == "1000ms"
+
+
+class TestBinanceCombinedClientProperties:
+    """BinanceCombinedClient 속성 테스트"""
+    
+    def test_combined_stream_url(self):
+        """Combined stream URL 테스트"""
+        client = BinanceCombinedClient("btcusdt", depth_levels=20, update_speed="100ms")
+        
+        # Combined stream URL 형식
+        expected = "wss://stream.binance.com:9443/stream?streams=btcusdt@depth20@100ms/btcusdt@aggTrade"
+        assert client.ws_url == expected
+    
+    def test_stream_names(self):
+        """스트림 이름 테스트"""
+        client = BinanceCombinedClient("ethusdt", depth_levels=5, update_speed="1000ms")
+        
+        assert client.orderbook_stream == "ethusdt@depth5@1000ms"
+        assert client.aggtrade_stream == "ethusdt@aggTrade"
+
+
+class TestBinanceCombinedClientParsing:
+    """BinanceCombinedClient 파싱 테스트"""
+    
+    def test_parse_aggtrade(self):
+        """AggTrade 데이터 파싱 테스트"""
+        client = BinanceCombinedClient("btcusdt")
+        
+        # Binance aggTrade 메시지 형식
+        data = {
+            "e": "aggTrade",        # 이벤트 타입
+            "E": 1672531200000,      # 이벤트 시간
+            "s": "BTCUSDT",          # 심볼
+            "a": 12345,              # Aggregate trade ID
+            "p": "100000.00",        # 가격
+            "q": "0.5",              # 수량
+            "f": 100,                # First trade ID
+            "l": 105,                # Last trade ID
+            "T": 1672531200000,      # 거래 시간
+            "m": True,               # is buyer maker
+            "M": True,               # ignore
+        }
+        
+        trade = client._parse_aggtrade(data)
+        
+        assert trade.symbol == "BTCUSDT"
+        assert trade.price == 100000.0
+        assert trade.quantity == 0.5
+        assert trade.is_buyer_maker is True
+        assert isinstance(trade.timestamp, datetime)
+    
+    def test_parse_aggtrade_buyer_driven(self):
+        """매수 주도 거래 파싱 테스트"""
+        client = BinanceCombinedClient("btcusdt")
+        
+        data = {
+            "e": "aggTrade",
+            "E": 1672531200000,
+            "s": "BTCUSDT",
+            "a": 12346,
+            "p": "100100.00",
+            "q": "1.0",
+            "f": 106,
+            "l": 110,
+            "T": 1672531200000,
+            "m": False,  # 매수 주도
+            "M": True,
+        }
+        
+        trade = client._parse_aggtrade(data)
+        
+        assert trade.is_buyer_maker is False  # 매수 주도
 
 
 

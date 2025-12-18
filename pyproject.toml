@@ -12,6 +12,7 @@ dependencies = [
     "numpy>=1.26.0",
     "jupyter>=1.0.0",
     "nbformat>=5.9.0",
+    "nicegui>=1.4.0",
 ]
 
 [project.optional-dependencies]

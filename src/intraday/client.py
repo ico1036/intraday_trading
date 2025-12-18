@@ -15,6 +15,30 @@ import websockets
 
 
 @dataclass
+class AggTrade:
+    """
+    집계된 거래 데이터 (Aggregated Trade)
+    
+    Attributes:
+        timestamp: 거래 시간
+        symbol: 거래쌍 (예: BTCUSDT)
+        price: 거래 가격
+        quantity: 거래 수량
+        is_buyer_maker: 매수자가 메이커인지 여부
+    
+    교육 포인트:
+        - is_buyer_maker=True: 매수자가 지정가 주문 → 매도자가 시장가로 팔음 → 매도 주도
+        - is_buyer_maker=False: 매도자가 지정가 주문 → 매수자가 시장가로 삼 → 매수 주도
+        - 이 정보로 시장 참여자들의 공격적인 방향을 파악할 수 있음
+    """
+    timestamp: datetime
+    symbol: str
+    price: float
+    quantity: float
+    is_buyer_maker: bool  # True=매도주도, False=매수주도
+
+
+@dataclass
 class OrderbookSnapshot:
     """
     Orderbook 스냅샷 데이터 클래스
@@ -197,7 +221,13 @@ class BinanceWebSocketClient:
         """WebSocket 연결 종료"""
         self._running = False
         if self._ws:
-            await self._ws.close()
+            try:
+                # Graceful close 시도하되 1초 타임아웃
+                await asyncio.wait_for(self._ws.close(), timeout=1.0)
+            except asyncio.TimeoutError:
+                print("[Client] WebSocket close timed out, socket might be left open.")
+            except Exception as e:
+                print(f"[Client] Error closing websocket: {e}")
             self._ws = None
         print("[Client] Disconnected.")
 
@@ -227,6 +257,195 @@ async def _test():  # pragma: no cover
             asyncio.create_task(client.disconnect())
     
     await client.connect(on_data)
+
+
+class BinanceCombinedClient:
+    """
+    Binance Combined WebSocket 클라이언트
+    
+    Orderbook + AggTrade를 하나의 WebSocket으로 수신합니다.
+    
+    사용 예시:
+        async def on_orderbook(snapshot: OrderbookSnapshot):
+            print(f"Orderbook: {snapshot}")
+        
+        async def on_trade(trade: AggTrade):
+            print(f"Trade: {trade}")
+        
+        client = BinanceCombinedClient("btcusdt")
+        await client.connect(on_orderbook, on_trade)
+    
+    교육 포인트:
+        - Combined Stream은 여러 스트림을 하나의 연결로 받음
+        - 네트워크 오버헤드 감소
+        - 각 메시지에 stream 필드가 추가됨
+    """
+    
+    # Binance Combined Stream URL
+    BASE_URL = "wss://stream.binance.com:9443/stream"
+    
+    def __init__(
+        self,
+        symbol: str = "btcusdt",
+        depth_levels: int = 20,
+        update_speed: str = "100ms"
+    ):
+        """
+        Args:
+            symbol: 거래쌍 (소문자, 예: btcusdt, ethusdt)
+            depth_levels: 호가 깊이 (5, 10, 20 중 선택)
+            update_speed: 업데이트 속도 ("100ms" 또는 "1000ms")
+        """
+        self.symbol = symbol.lower()
+        self.depth_levels = depth_levels
+        self.update_speed = update_speed
+        self._ws: Optional[websockets.WebSocketClientProtocol] = None
+        self._running = False
+    
+    @property
+    def orderbook_stream(self) -> str:
+        """Orderbook 스트림 이름"""
+        return f"{self.symbol}@depth{self.depth_levels}@{self.update_speed}"
+    
+    @property
+    def aggtrade_stream(self) -> str:
+        """AggTrade 스트림 이름"""
+        return f"{self.symbol}@aggTrade"
+    
+    @property
+    def ws_url(self) -> str:
+        """Combined WebSocket URL"""
+        streams = f"{self.orderbook_stream}/{self.aggtrade_stream}"
+        return f"{self.BASE_URL}?streams={streams}"
+    
+    def _parse_aggtrade(self, data: dict) -> AggTrade:
+        """
+        Binance aggTrade 메시지를 AggTrade로 파싱
+        
+        Binance 응답 형식:
+        {
+            "e": "aggTrade",     # 이벤트 타입
+            "E": 123456789,      # 이벤트 시간
+            "s": "BTCUSDT",      # 심볼
+            "a": 12345,          # Aggregate trade ID
+            "p": "0.001",        # 가격
+            "q": "100",          # 수량
+            "f": 100,            # First trade ID
+            "l": 105,            # Last trade ID
+            "T": 123456785,      # 거래 시간
+            "m": true,           # Is buyer maker
+            "M": true            # Ignore
+        }
+        """
+        return AggTrade(
+            timestamp=datetime.fromtimestamp(data.get("T", 0) / 1000),
+            symbol=data.get("s", self.symbol.upper()),
+            price=float(data.get("p", 0)),
+            quantity=float(data.get("q", 0)),
+            is_buyer_maker=data.get("m", False),
+        )
+    
+    def _parse_orderbook(self, data: dict) -> OrderbookSnapshot:
+        """Orderbook 메시지 파싱 (BinanceWebSocketClient와 동일)"""
+        bids = [(float(price), float(qty)) for price, qty in data.get("bids", [])]
+        asks = [(float(price), float(qty)) for price, qty in data.get("asks", [])]
+        
+        return OrderbookSnapshot(
+            timestamp=datetime.now(),
+            last_update_id=data.get("lastUpdateId", 0),
+            bids=bids,
+            asks=asks,
+            symbol=self.symbol.upper()
+        )
+    
+    async def connect(
+        self,
+        on_orderbook: Callable[[OrderbookSnapshot], None],
+        on_trade: Callable[[AggTrade], None],
+        on_error: Optional[Callable[[Exception], None]] = None,
+        max_reconnect_attempts: int = 5
+    ):
+        """
+        WebSocket 연결 및 데이터 수신 시작
+        
+        Args:
+            on_orderbook: Orderbook 데이터 수신 시 콜백
+            on_trade: AggTrade 데이터 수신 시 콜백
+            on_error: 에러 발생 시 콜백 (선택)
+            max_reconnect_attempts: 최대 재연결 시도 횟수
+        """
+        self._running = True
+        reconnect_attempts = 0
+        
+        while self._running and reconnect_attempts < max_reconnect_attempts:
+            try:
+                print(f"[CombinedClient] Connecting to {self.ws_url}...")
+                
+                async with websockets.connect(self.ws_url) as ws:
+                    self._ws = ws
+                    reconnect_attempts = 0
+                    print(f"[CombinedClient] Connected! Receiving {self.symbol.upper()} data...")
+                    
+                    async for message in ws:
+                        if not self._running:
+                            break
+                        
+                        try:
+                            raw = json.loads(message)
+                            stream = raw.get("stream", "")
+                            data = raw.get("data", {})
+                            
+                            if "depth" in stream:
+                                snapshot = self._parse_orderbook(data)
+                                if asyncio.iscoroutinefunction(on_orderbook):
+                                    await on_orderbook(snapshot)
+                                else:
+                                    on_orderbook(snapshot)
+                            
+                            elif "aggTrade" in stream:
+                                trade = self._parse_aggtrade(data)
+                                if asyncio.iscoroutinefunction(on_trade):
+                                    await on_trade(trade)
+                                else:
+                                    on_trade(trade)
+                                    
+                        except json.JSONDecodeError as e:
+                            print(f"[CombinedClient] JSON 파싱 에러: {e}")
+                            if on_error:
+                                on_error(e)
+                                
+            except websockets.ConnectionClosed as e:
+                print(f"[CombinedClient] Connection closed: {e}")
+                reconnect_attempts += 1
+                if self._running and reconnect_attempts < max_reconnect_attempts:
+                    wait_time = min(2 ** reconnect_attempts, 30)
+                    print(f"[CombinedClient] Reconnecting in {wait_time}s...")
+                    await asyncio.sleep(wait_time)
+                    
+            except Exception as e:
+                print(f"[CombinedClient] Error: {e}")
+                if on_error:
+                    on_error(e)
+                reconnect_attempts += 1
+                if self._running and reconnect_attempts < max_reconnect_attempts:
+                    await asyncio.sleep(2)
+        
+        if reconnect_attempts >= max_reconnect_attempts:
+            print(f"[CombinedClient] Max reconnect attempts reached. Stopping.")
+    
+    async def disconnect(self):
+        """WebSocket 연결 종료"""
+        self._running = False
+        if self._ws:
+            try:
+                # Graceful close 시도하되 1초 타임아웃
+                await asyncio.wait_for(self._ws.close(), timeout=1.0)
+            except asyncio.TimeoutError:
+                print("[CombinedClient] WebSocket close timed out.")
+            except Exception as e:
+                print(f"[CombinedClient] Error closing websocket: {e}")
+            self._ws = None
+        print("[CombinedClient] Disconnected.")
 
 
 if __name__ == "__main__":  # pragma: no cover
