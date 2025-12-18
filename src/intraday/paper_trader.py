@@ -120,7 +120,7 @@ class PaperTrader:
         self._btc_balance = 0.0
         
         self._position = Position()
-        self._pending_orders: list[PendingOrder] = []  # 주문 큐
+        self._pending_orders: deque[PendingOrder] = deque()  # 주문 큐 (FIFO 최적화)
         self._trades: list[Trade] = []
         self._realized_pnl: float = 0.0
         self._entry_fee: float = 0.0  # 진입 시 수수료 저장
@@ -174,7 +174,7 @@ class PaperTrader:
     @property
     def pending_orders(self) -> list[PendingOrder]:
         """대기 중인 주문 목록"""
-        return self._pending_orders.copy()
+        return list(self._pending_orders)  # deque를 list로 변환하여 반환
     
     def submit_order(self, order: Order, ttl_seconds: Optional[float] = None) -> str:
         """
@@ -219,12 +219,21 @@ class PaperTrader:
         Returns:
             True: 취소 성공
             False: 주문을 찾을 수 없음
+        
+        Note:
+            deque는 중간 삭제를 지원하지 않으므로, 해당 주문을 제외한 새 deque를 생성합니다.
         """
-        for i, pending in enumerate(self._pending_orders):
+        found = False
+        new_orders = deque()
+        for pending in self._pending_orders:
             if pending.order_id == order_id:
-                self._pending_orders.pop(i)
-                return True
-        return False
+                found = True
+            else:
+                new_orders.append(pending)
+        
+        if found:
+            self._pending_orders = new_orders
+        return found
     
     def cancel_all_orders(self) -> int:
         """
@@ -248,9 +257,9 @@ class PaperTrader:
             취소된 주문 수
         """
         before = len(self._pending_orders)
-        self._pending_orders = [
+        self._pending_orders = deque([
             po for po in self._pending_orders if po.order.side != side
-        ]
+        ])
         return before - len(self._pending_orders)
     
     def expire_orders(self, current_time: Optional[datetime] = None) -> int:
@@ -266,10 +275,10 @@ class PaperTrader:
         now = current_time or datetime.now()
         before = len(self._pending_orders)
         
-        self._pending_orders = [
+        self._pending_orders = deque([
             po for po in self._pending_orders
             if po.expires_at is None or po.expires_at > now
-        ]
+        ])
         
         return before - len(self._pending_orders)
     
@@ -336,7 +345,7 @@ class PaperTrader:
             # 조건 미충족: 주문 유지 (should_remove = False)
         
         if should_remove:
-            self._pending_orders.pop(0)
+            self._pending_orders.popleft()  # O(1) - deque 최적화
         
         return trade
     
@@ -366,7 +375,7 @@ class PaperTrader:
         self.expire_orders(timestamp)
         
         trades: list[Trade] = []
-        remaining: list[PendingOrder] = []
+        remaining: deque[PendingOrder] = deque()
         
         for pending in self._pending_orders:
             order = pending.order
