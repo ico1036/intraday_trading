@@ -7,6 +7,7 @@ Binance의 실시간 Orderbook 데이터를 WebSocket으로 수신합니다.
 
 import asyncio
 import json
+import random
 from typing import Callable, Optional
 from dataclasses import dataclass
 from datetime import datetime
@@ -197,22 +198,30 @@ class BinanceWebSocketClient:
                                 on_error(e)
                                 
             except websockets.ConnectionClosed as e:
-                # 흔한 서버 연결 끊긴 상황 -> 지수 백오프로 최적화된 재연결 시도
+                # HFT용 빠른 재연결: Base=0.1s, Cap=5s, Jitter=0~0.1s
+                # 공식: min(Cap, Base * 2^Attempt) + Jitter
                 print(f"[Client] Connection closed: {e}")
                 reconnect_attempts += 1
                 if self._running and reconnect_attempts < max_reconnect_attempts:
-                    wait_time = min(2 ** reconnect_attempts, 30)  # 지수 백오프
-                    print(f"[Client] Reconnecting in {wait_time}s... (attempt {reconnect_attempts})")
+                    base = 0.1  # 초기 재시도 간격 (HFT용)
+                    cap = 5.0   # 최대 대기 시간 (HFT는 5초 이상이면 알파 소멸)
+                    jitter = random.uniform(0, 0.1)  # 동기화 방지
+                    wait_time = min(cap, base * (2 ** reconnect_attempts)) + jitter
+                    print(f"[Client] Reconnecting in {wait_time:.3f}s... (attempt {reconnect_attempts})")
                     await asyncio.sleep(wait_time)
                     
             except Exception as e:
-                # something wrong 다른 에러.. 2초만 대기
+                # HFT용 빠른 재연결: 다른 에러도 빠르게 재시도
                 print(f"[Client] Error: {e}")
                 if on_error:
                     on_error(e)
                 reconnect_attempts += 1
                 if self._running and reconnect_attempts < max_reconnect_attempts:
-                    await asyncio.sleep(2)
+                    base = 0.1
+                    cap = 5.0
+                    jitter = random.uniform(0, 0.1)
+                    wait_time = min(cap, base * (2 ** reconnect_attempts)) + jitter
+                    await asyncio.sleep(wait_time)
         
         if reconnect_attempts >= max_reconnect_attempts:
             print(f"[Client] Max reconnect attempts reached. Stopping.")
@@ -415,20 +424,30 @@ class BinanceCombinedClient:
                                 on_error(e)
                                 
             except websockets.ConnectionClosed as e:
+                # HFT용 빠른 재연결: Base=0.1s, Cap=5s, Jitter=0~0.1s
+                # 공식: min(Cap, Base * 2^Attempt) + Jitter
                 print(f"[CombinedClient] Connection closed: {e}")
                 reconnect_attempts += 1
                 if self._running and reconnect_attempts < max_reconnect_attempts:
-                    wait_time = min(2 ** reconnect_attempts, 30)
-                    print(f"[CombinedClient] Reconnecting in {wait_time}s...")
+                    base = 0.1  # 초기 재시도 간격 (HFT용)
+                    cap = 5.0   # 최대 대기 시간 (HFT는 5초 이상이면 알파 소멸)
+                    jitter = random.uniform(0, 0.1)  # 동기화 방지
+                    wait_time = min(cap, base * (2 ** reconnect_attempts)) + jitter
+                    print(f"[CombinedClient] Reconnecting in {wait_time:.3f}s... (attempt {reconnect_attempts})")
                     await asyncio.sleep(wait_time)
                     
             except Exception as e:
+                # HFT용 빠른 재연결: 다른 에러도 빠르게 재시도
                 print(f"[CombinedClient] Error: {e}")
                 if on_error:
                     on_error(e)
                 reconnect_attempts += 1
                 if self._running and reconnect_attempts < max_reconnect_attempts:
-                    await asyncio.sleep(2)
+                    base = 0.1
+                    cap = 5.0
+                    jitter = random.uniform(0, 0.1)
+                    wait_time = min(cap, base * (2 ** reconnect_attempts)) + jitter
+                    await asyncio.sleep(wait_time)
         
         if reconnect_attempts >= max_reconnect_attempts:
             print(f"[CombinedClient] Max reconnect attempts reached. Stopping.")
