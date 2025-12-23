@@ -76,6 +76,10 @@ class ForwardRunner:
         self._current_market_state: Optional[MarketState] = None
         self._last_trade_price: float = 0.0  # 마지막 체결가
         
+        # OB 기준 스냅샷용 버퍼
+        # Trade 데이터를 모아뒀다가 다음 Orderbook 도착 시 일괄 처리
+        self._trade_buffer: list[AggTrade] = []
+        
         # 성능 측정용
         self._orderbook_count = 0
         self._trade_count = 0
@@ -145,13 +149,19 @@ class ForwardRunner:
     
     def _on_orderbook(self, snapshot: OrderbookSnapshot) -> None:
         """
-        Orderbook 업데이트 처리
+        Orderbook 업데이트 처리 (OB 기준 스냅샷 방식)
         
         교육 포인트:
-            1. Orderbook → OrderbookState로 변환
-            2. OrderbookState → MarketState로 변환
-            3. Strategy에 MarketState 전달하여 주문 생성
-            4. 생성된 주문을 PaperTrader에 제출
+            1. 버퍼에 쌓인 Trade 데이터를 현재 Orderbook 기준으로 일괄 처리
+            2. Orderbook → OrderbookState로 변환
+            3. OrderbookState → MarketState로 변환
+            4. Strategy에 MarketState 전달하여 주문 생성
+            5. 생성된 주문을 PaperTrader에 제출
+        
+        OB 기준 스냅샷 방식:
+            - Trade 데이터가 도착하면 버퍼에 저장만 함
+            - Orderbook 도착 시 버퍼의 Trade를 최신 Orderbook 기준으로 처리
+            - 이렇게 하면 오래된 Orderbook으로 체결 판단하는 문제 해결
         """
         self._orderbook_count += 1
         self._last_orderbook = snapshot
@@ -159,7 +169,27 @@ class ForwardRunner:
         # 1. Orderbook 처리
         ob_state = self._processor.update(snapshot)
         
-        # 2. MarketState 생성 (포지션 정보 포함)
+        # 2. 버퍼에 쌓인 Trade 일괄 처리 (최신 Orderbook 기준)
+        best_bid = ob_state.best_bid[0]
+        best_ask = ob_state.best_ask[0]
+        
+        for trade in self._trade_buffer:
+            executed_trade = self._trader.on_price_update(
+                price=trade.price,
+                best_bid=best_bid,
+                best_ask=best_ask,
+                timestamp=trade.timestamp,
+            )
+            
+            if executed_trade:
+                side_str = executed_trade.side.value
+                pnl_str = f" PnL: ${executed_trade.pnl:+.2f}" if executed_trade.pnl != 0 else ""
+                print(f"[Runner] Trade Executed: {side_str} @ ${executed_trade.price:,.2f}{pnl_str}")
+        
+        # 버퍼 비우기
+        self._trade_buffer.clear()
+        
+        # 3. MarketState 생성 (포지션 정보 포함)
         position = self._trader.position
         self._current_market_state = MarketState(
             timestamp=ob_state.timestamp,
@@ -167,18 +197,18 @@ class ForwardRunner:
             imbalance=ob_state.imbalance,
             spread=ob_state.spread,
             spread_bps=ob_state.spread_bps,
-            best_bid=ob_state.best_bid[0],
-            best_ask=ob_state.best_ask[0],
+            best_bid=best_bid,
+            best_ask=best_ask,
             best_bid_qty=ob_state.best_bid[1],
             best_ask_qty=ob_state.best_ask[1],
             position_side=position.side,
             position_qty=position.quantity,
         )
         
-        # 3. 전략 실행
+        # 4. 전략 실행
         order = self.strategy.generate_order(self._current_market_state)
         
-        # 4. 주문 제출 (중복 방지)
+        # 5. 주문 제출 (중복 방지)
         if order is not None:
             # pending orders에 같은 방향 주문이 있으면 제출 안 함
             pending_sides = [po.order.side for po in self._trader.pending_orders]
@@ -193,31 +223,30 @@ class ForwardRunner:
     
     def _on_trade(self, trade: AggTrade) -> None:
         """
-        체결 데이터 처리
+        체결 데이터 처리 (OB 기준 스냅샷 방식)
         
         교육 포인트:
-            - 체결 데이터로 LIMIT 주문 체결 여부 판단
-            - 시장가로 실제 거래가 일어난 가격
-            - PaperTrader에 가격 업데이트 전달
+            - Trade 데이터는 버퍼에 저장만 함
+            - 실제 체결 판단은 다음 Orderbook 도착 시 수행
+            - 이렇게 하면 최신 Orderbook 기준으로 체결 판단 가능
+        
+        OB 기준 스냅샷 방식:
+            ┌─────────────────────────────────────────┐
+            │  Trade 도착 → 📦 버퍼에 보관             │
+            │  Orderbook 도착 → 📦 버퍼 열어서 처리    │
+            └─────────────────────────────────────────┘
         """
         self._trade_count += 1
         self._last_trade_price = trade.price  # 마지막 체결가 업데이트
         
-        # PaperTrader에 가격 업데이트 (LIMIT 주문 체결 확인)
-        if self._current_market_state:
-            executed_trade = self._trader.on_price_update(
-                price=trade.price,
-                best_bid=self._current_market_state.best_bid,
-                best_ask=self._current_market_state.best_ask,
-                timestamp=trade.timestamp,
-            )
-            
-            if executed_trade:
-                side_str = executed_trade.side.value
-                pnl_str = f" PnL: ${executed_trade.pnl:+.2f}" if executed_trade.pnl != 0 else ""
-                print(f"[Runner] Trade Executed: {side_str} @ ${executed_trade.price:,.2f}{pnl_str}")
+        # 첫 OB 도착 전 Trade는 무시 (기준 호가창이 없으므로)
+        if self._last_orderbook is None:
+            return
         
-        # 미실현 손익 업데이트
+        # 버퍼에 저장만 (처리는 _on_orderbook에서)
+        self._trade_buffer.append(trade)
+        
+        # 미실현 손익 업데이트 (실시간 모니터링용)
         self._trader.update_unrealized_pnl(trade.price)
     
     def _on_error(self, error: Exception) -> None:

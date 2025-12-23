@@ -178,6 +178,17 @@ class TestOBIStrategyFullTradingCycle:
         )
         runner._on_trade(trade1)
         
+        # OB 기준 스냅샷 방식: 다음 Orderbook에서 버퍼 처리
+        # 중립 스냅샷 (새 주문 없음)
+        snapshot_neutral = OrderbookSnapshot(
+            timestamp=datetime.now(),
+            last_update_id=2,
+            bids=[(100000.0, 1.0)],  # imbalance = 0 (중립)
+            asks=[(100010.0, 1.0)],
+            symbol="BTCUSDT",
+        )
+        runner._on_orderbook(snapshot_neutral)
+        
         # 검증: 포지션 생성됨
         assert runner._trader.position.side == Side.BUY
         assert runner._trader.position.quantity == 0.01
@@ -211,6 +222,16 @@ class TestOBIStrategyFullTradingCycle:
             is_buyer_maker=False,
         )
         runner._on_trade(trade2)
+        
+        # OB 기준 스냅샷 방식: 다음 Orderbook에서 버퍼 처리
+        snapshot_final = OrderbookSnapshot(
+            timestamp=datetime.now(),
+            last_update_id=4,
+            bids=[(100990.0, 1.0)],
+            asks=[(101000.0, 1.0)],
+            symbol="BTCUSDT",
+        )
+        runner._on_orderbook(snapshot_final)
         
         # 검증: 포지션 청산됨
         assert runner._trader.position.side is None
@@ -269,6 +290,16 @@ class TestOBIStrategyFullTradingCycle:
         )
         runner._on_trade(trade1)
         
+        # OB 기준 스냅샷 방식: 다음 Orderbook에서 버퍼 처리 (중립 스냅샷)
+        snapshot_neutral = OrderbookSnapshot(
+            timestamp=datetime.now(),
+            last_update_id=2,
+            bids=[(100000.0, 1.0)],
+            asks=[(100010.0, 1.0)],
+            symbol="BTCUSDT",
+        )
+        runner._on_orderbook(snapshot_neutral)
+        
         assert runner._trader.position.side == Side.BUY
         assert runner._trader.position.entry_price == 100010.0  # best_ask
         
@@ -290,6 +321,16 @@ class TestOBIStrategyFullTradingCycle:
             is_buyer_maker=False,
         )
         runner._on_trade(trade2)
+        
+        # OB 기준 스냅샷 방식: 다음 Orderbook에서 버퍼 처리
+        snapshot_final = OrderbookSnapshot(
+            timestamp=datetime.now(),
+            last_update_id=4,
+            bids=[(98990.0, 1.0)],
+            asks=[(99000.0, 1.0)],
+            symbol="BTCUSDT",
+        )
+        runner._on_orderbook(snapshot_final)
         
         # 검증: 손실 (Taker 전략 기준)
         entry_price = 100010.0

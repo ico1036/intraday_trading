@@ -163,19 +163,29 @@ class TestForwardRunnerPerformanceReport:
         )
         runner._on_trade(trade1)
         
+        # OB 기준 스냅샷 방식: 다음 Orderbook에서 버퍼 처리 (중립 스냅샷)
+        snapshot_neutral = OrderbookSnapshot(
+            timestamp=datetime.now(),
+            last_update_id=2,
+            bids=[(100000.0, 1.0)],
+            asks=[(100100.0, 1.0)],
+            symbol="BTCUSDT",
+        )
+        runner._on_orderbook(snapshot_neutral)
+        
         # 포지션 확인
         assert runner._trader.position.side == Side.BUY
         assert runner._trader.position.quantity == 0.01
         
         # 3. 강한 매도 신호 → LIMIT SELL 주문 생성
-        snapshot2 = OrderbookSnapshot(
+        snapshot3 = OrderbookSnapshot(
             timestamp=datetime.now(),
-            last_update_id=2,
+            last_update_id=3,
             bids=[(100000.0, 0.5)],  # imbalance = (0.5 - 2.0) / (0.5 + 2.0) = -0.6 < -0.3
             asks=[(100100.0, 2.0)],
             symbol="BTCUSDT",
         )
-        runner._on_orderbook(snapshot2)
+        runner._on_orderbook(snapshot3)
         
         assert runner._order_count == 2
         
@@ -188,6 +198,16 @@ class TestForwardRunnerPerformanceReport:
             is_buyer_maker=False,
         )
         runner._on_trade(trade2)
+        
+        # OB 기준 스냅샷 방식: 다음 Orderbook에서 버퍼 처리
+        snapshot_final = OrderbookSnapshot(
+            timestamp=datetime.now(),
+            last_update_id=4,
+            bids=[(100000.0, 1.0)],
+            asks=[(100100.0, 1.0)],
+            symbol="BTCUSDT",
+        )
+        runner._on_orderbook(snapshot_final)
         
         # 포지션 청산 확인
         assert runner._trader.position.side is None
