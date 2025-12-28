@@ -33,6 +33,9 @@ from .data import TickDataDownloader, OrderbookRecorder, TickDataLoader, Orderbo
 # Backtest (백테스트 러너)
 from .backtest import OrderbookBacktestRunner, TickBacktestRunner, BarType
 
+# Visualization (백테스트 결과 시각화)
+from .visualization import BacktestVisualizer
+
 __all__ = [
     # Client
     "BinanceWebSocketClient",
@@ -76,4 +79,6 @@ __all__ = [
     "OrderbookBacktestRunner",
     "TickBacktestRunner",
     "BarType",
+    # Visualization
+    "BacktestVisualizer",
 ]

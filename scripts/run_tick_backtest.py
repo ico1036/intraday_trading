@@ -3,18 +3,23 @@
 Tick 기반 백테스트 예제 스크립트
 
 Binance Public Data에서 aggTrades 데이터를 다운로드하고
-볼륨바 기반으로 OBI 전략을 백테스트합니다.
+볼륨바 기반으로 전략을 백테스트합니다.
 
 사용법:
+    # 텍스트 리포트만
     python scripts/run_tick_backtest.py
+    
+    # 시각화 포함
+    python scripts/run_tick_backtest.py --visualize
 
 교육 포인트:
     1. 데이터 다운로드 (처음 한 번만)
     2. 데이터 로드
     3. 백테스트 실행
-    4. 성과 분석
+    4. 성과 분석 및 시각화
 """
 
+import argparse
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -28,11 +33,27 @@ from intraday import (
     TickBacktestRunner,
     BarType,
     VolumeImbalanceStrategy,
+    BacktestVisualizer,
 )
 
 
 def main():
     """Tick 백테스트 메인 함수"""
+    
+    # 인자 파싱
+    parser = argparse.ArgumentParser(description="Tick 기반 백테스트")
+    parser.add_argument(
+        "--visualize",
+        action="store_true",
+        help="시각화 HTML 파일 생성",
+    )
+    parser.add_argument(
+        "--output",
+        type=str,
+        default=None,
+        help="시각화 파일 저장 경로 (기본: ./results/backtest_YYYYMMDD_HHMMSS.html)",
+    )
+    args = parser.parse_args()
     
     # === 설정 ===
     symbol = "BTCUSDT"
@@ -118,6 +139,27 @@ def main():
     print("\n[Step 5] 백테스트 결과")
     print("=" * 60)
     report.print_summary()
+    
+    # === 6. 시각화 (옵션) ===
+    if args.visualize:
+        print("\n[Step 6] 시각화 생성...")
+        
+        # 출력 디렉토리 생성
+        results_dir = Path("./results")
+        results_dir.mkdir(exist_ok=True)
+        
+        # 파일명 생성
+        if args.output:
+            output_file = Path(args.output)
+        else:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            output_file = results_dir / f"backtest_{symbol}_{timestamp}.html"
+        
+        visualizer = BacktestVisualizer(report, runner.trader.trades)
+        visualizer.save_html(str(output_file))
+        
+        print(f"\n시각화 파일 저장됨: {output_file}")
+        print("브라우저에서 열어서 확인하세요!")
 
 
 if __name__ == "__main__":
