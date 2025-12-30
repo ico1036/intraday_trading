@@ -424,17 +424,19 @@ class PaperTrader:
             - 매수: USD 잔고 >= 주문금액 + 수수료
             - 매도: BTC 잔고 >= 주문수량
             - 공매도는 지원하지 않음
+            - 부동소수점 오차를 허용 (epsilon = 1e-9)
         """
+        epsilon = 1e-9  # 부동소수점 오차 허용
         notional = execution_price * order.quantity
         fee = notional * self.fee_rate
         
         if order.side == Side.BUY:
             # 매수: USD 잔고 확인
             required_usd = notional + fee
-            return self._usd_balance >= required_usd
+            return self._usd_balance >= required_usd - epsilon
         else:
             # 매도: BTC 잔고 확인
-            return self._btc_balance >= order.quantity
+            return self._btc_balance >= order.quantity - epsilon
     
     def _execute_trade(self, order: Order, execution_price: float, timestamp: datetime) -> Optional[Trade]:
         """
@@ -509,8 +511,29 @@ class PaperTrader:
                 self._position = Position()
                 self._entry_fee = 0.0
             else:
-                # 부분 청산 (단순화를 위해 전량 청산만 지원)
-                raise NotImplementedError("부분 청산은 아직 지원하지 않습니다.")
+                # 부분 청산
+                close_ratio = order.quantity / self._position.quantity
+                
+                # 부분 청산 PnL 계산
+                if self._position.side == Side.BUY:
+                    gross_pnl = (execution_price - self._position.entry_price) * order.quantity
+                else:
+                    gross_pnl = (self._position.entry_price - execution_price) * order.quantity
+                
+                # 진입 수수료 비례 배분
+                allocated_entry_fee = self._entry_fee * close_ratio
+                pnl = gross_pnl - allocated_entry_fee - fee
+                self._realized_pnl += pnl
+                
+                # 남은 포지션 업데이트
+                remaining_qty = self._position.quantity - order.quantity
+                self._position = Position(
+                    side=self._position.side,
+                    quantity=remaining_qty,
+                    entry_price=self._position.entry_price,  # 평균가 유지
+                    unrealized_pnl=0.0,
+                )
+                self._entry_fee -= allocated_entry_fee  # 남은 진입수수료
         
         # 거래 기록
         trade = Trade(
