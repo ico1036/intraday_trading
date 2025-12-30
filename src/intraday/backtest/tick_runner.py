@@ -61,6 +61,7 @@ class TickBacktestRunner:
         initial_capital: float = 10000.0,
         fee_rate: float = 0.001,
         symbol: str = "BTCUSDT",
+        latency_ms: float = 50.0,
     ):
         """
         Args:
@@ -71,12 +72,16 @@ class TickBacktestRunner:
             initial_capital: 초기 자본금 (USD)
             fee_rate: 수수료율 (기본 0.1%)
             symbol: 거래쌍 (리포트용)
+            latency_ms: 주문 전송 지연 시간 (밀리초, 기본 50ms)
+                        주문 제출 후 이 시간이 지나야 체결 시도.
+                        현실적인 네트워크 지연 시뮬레이션에 사용.
         
         교육 포인트:
             - VOLUME 바: bar_size = 1.0 → 1 BTC 거래마다 바 생성
             - TICK 바: bar_size = 100 → 100틱마다 바 생성
             - TIME 바: bar_size = 60 → 60초마다 바 생성
             - DOLLAR 바: bar_size = 1000000 → 100만 달러마다 바 생성
+            - latency_ms: 50ms = Binance API 평균 RTT 기준
         """
         self.strategy = strategy
         self.data_loader = data_loader
@@ -85,6 +90,7 @@ class TickBacktestRunner:
         self.initial_capital = initial_capital
         self.fee_rate = fee_rate
         self.symbol = symbol
+        self.latency_ms = latency_ms
         
         # CandleBuilder 사용 (중복 제거)
         self._candle_builder = CandleBuilder(bar_type, bar_size)
@@ -123,6 +129,7 @@ class TickBacktestRunner:
         print(f"[Backtest] Strategy: {self.strategy.__class__.__name__}")
         print(f"[Backtest] Bar Type: {self.bar_type.value}, Size: {self.bar_size}")
         print(f"[Backtest] Initial Capital: ${self.initial_capital:,.2f}")
+        print(f"[Backtest] Latency: {self.latency_ms:.1f}ms")
         
         # 상태 초기화
         self._candle_builder._reset()
@@ -157,17 +164,18 @@ class TickBacktestRunner:
         교육 포인트:
             1. 틱으로 CandleBuilder 업데이트
             2. 캔들 완성 시 전략 실행
-            3. 체결 확인
+            3. 체결 확인 (latency 고려)
         """
         self._tick_count += 1
         self._last_trade_price = trade.price
         
-        # 1. 체결 확인 (각 틱마다)
+        # 1. 체결 확인 (각 틱마다, latency 고려)
         executed_trade = self._trader.on_price_update(
             price=trade.price,
             best_bid=trade.price,
             best_ask=trade.price,
             timestamp=trade.timestamp,
+            latency_ms=self.latency_ms,
         )
         
         if executed_trade:
@@ -220,7 +228,8 @@ class TickBacktestRunner:
             pending_sides = [po.order.side for po in self._trader.pending_orders]
             if order.side not in pending_sides:
                 self._order_count += 1
-                self._trader.submit_order(order)
+                # 백테스트 시간 사용 (latency 시뮬레이션을 위해)
+                self._trader.submit_order(order, timestamp=timestamp)
     
     def _print_progress(self) -> None:
         """진행 상황 출력"""

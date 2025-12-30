@@ -50,6 +50,7 @@ class OrderbookBacktestRunner:
         initial_capital: float = 10000.0,
         fee_rate: float = 0.001,
         symbol: str = "BTCUSDT",
+        latency_ms: float = 50.0,
     ):
         """
         Args:
@@ -58,16 +59,20 @@ class OrderbookBacktestRunner:
             initial_capital: 초기 자본금 (USD)
             fee_rate: 수수료율 (기본 0.1%)
             symbol: 거래쌍 (리포트용)
+            latency_ms: 주문 전송 지연 시간 (밀리초, 기본 50ms)
+                        주문 제출 후 이 시간이 지나야 체결 시도.
         
         교육 포인트:
             - 전략은 Protocol로 정의되어 있어 교체가 용이
             - ForwardRunner에서 사용하던 전략을 그대로 사용
+            - latency_ms: 50ms = Binance API 평균 RTT 기준
         """
         self.strategy = strategy
         self.data_loader = data_loader
         self.initial_capital = initial_capital
         self.fee_rate = fee_rate
         self.symbol = symbol
+        self.latency_ms = latency_ms
         
         # 내부 컴포넌트 (ForwardRunner와 동일)
         self._processor = OrderbookProcessor(max_history=1000)
@@ -108,6 +113,7 @@ class OrderbookBacktestRunner:
         print(f"[Backtest] Starting orderbook backtest...")
         print(f"[Backtest] Strategy: {self.strategy.__class__.__name__}")
         print(f"[Backtest] Initial Capital: ${self.initial_capital:,.2f}")
+        print(f"[Backtest] Latency: {self.latency_ms:.1f}ms")
         
         self._snapshot_count = 0
         self._order_count = 0
@@ -154,12 +160,13 @@ class OrderbookBacktestRunner:
         best_ask = ob_state.best_ask[0]
         mid_price = ob_state.mid_price
         
-        # 3. 체결 확인 (mid_price를 시장가로 사용)
+        # 3. 체결 확인 (mid_price를 시장가로 사용, latency 고려)
         executed_trade = self._trader.on_price_update(
             price=mid_price,
             best_bid=best_bid,
             best_ask=best_ask,
             timestamp=snapshot.timestamp,
+            latency_ms=self.latency_ms,
         )
         
         if executed_trade:
@@ -190,7 +197,8 @@ class OrderbookBacktestRunner:
             pending_sides = [po.order.side for po in self._trader.pending_orders]
             if order.side not in pending_sides:
                 self._order_count += 1
-                self._trader.submit_order(order)
+                # 백테스트 시간 사용 (latency 시뮬레이션을 위해)
+                self._trader.submit_order(order, timestamp=snapshot.timestamp)
         
         # 7. 미실현 손익 업데이트
         self._trader.update_unrealized_pnl(mid_price)

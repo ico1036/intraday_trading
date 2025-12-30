@@ -176,13 +176,19 @@ class PaperTrader:
         """대기 중인 주문 목록"""
         return list(self._pending_orders)  # deque를 list로 변환하여 반환
     
-    def submit_order(self, order: Order, ttl_seconds: Optional[float] = None) -> str:
+    def submit_order(
+        self,
+        order: Order,
+        ttl_seconds: Optional[float] = None,
+        timestamp: Optional[datetime] = None,
+    ) -> str:
         """
         주문 제출
         
         Args:
             order: 제출할 주문
             ttl_seconds: 주문 유효 시간 (초). None이면 만료 없음
+            timestamp: 주문 제출 시간 (백테스트용). None이면 현재 시간
         
         Returns:
             order_id: 주문 ID (취소 시 사용)
@@ -191,9 +197,10 @@ class PaperTrader:
             - 주문은 대기열에 저장됨
             - 다음 가격 업데이트에서 체결 여부 판단
             - TTL을 설정하면 시간 경과 후 자동 만료
+            - 백테스트 시 timestamp를 전달하여 시뮬레이션 시간 사용
         """
         order_id = str(uuid.uuid4())[:8]
-        now = datetime.now()
+        now = timestamp if timestamp is not None else datetime.now()
         
         expires_at = None
         if ttl_seconds is not None:
@@ -288,6 +295,7 @@ class PaperTrader:
         best_bid: float,
         best_ask: float,
         timestamp: datetime,
+        latency_ms: float = 0.0,
     ) -> Optional[Trade]:
         """
         가격 업데이트 시 체결 확인 (첫 번째 주문만)
@@ -297,6 +305,9 @@ class PaperTrader:
             best_bid: 최고 매수 호가
             best_ask: 최저 매도 호가
             timestamp: 현재 시간
+            latency_ms: 주문 전송 지연 시간 (밀리초). 
+                        주문 제출 후 이 시간이 지나야 체결 시도.
+                        백테스트에서 현실적인 지연 시뮬레이션에 사용.
             
         Returns:
             Trade: 체결된 거래 (체결 시)
@@ -307,6 +318,7 @@ class PaperTrader:
             - MARKET SELL: best_bid에 즉시 체결
             - LIMIT BUY: price <= limit_price 시 체결
             - LIMIT SELL: price >= limit_price 시 체결
+            - latency_ms > 0: 주문 제출 후 지연 시간이 지나야 체결 가능
         
         Note:
             하위 호환성을 위해 첫 번째 주문만 체결합니다.
@@ -321,6 +333,13 @@ class PaperTrader:
         pending = self._pending_orders[0]
         order = pending.order
         trade: Optional[Trade] = None
+        
+        # Latency 조건 확인: 주문 제출 후 충분한 시간이 지났는지
+        if latency_ms > 0:
+            elapsed_ms = (timestamp - pending.submitted_at).total_seconds() * 1000
+            if elapsed_ms < latency_ms:
+                # 아직 지연 시간이 지나지 않음 - 체결 불가
+                return None
         
         should_remove = False
         
@@ -355,6 +374,7 @@ class PaperTrader:
         best_bid: float,
         best_ask: float,
         timestamp: datetime,
+        latency_ms: float = 0.0,
     ) -> list[Trade]:
         """
         가격 업데이트 시 모든 체결 가능한 주문 처리
@@ -364,12 +384,14 @@ class PaperTrader:
             best_bid: 최고 매수 호가
             best_ask: 최저 매도 호가
             timestamp: 현재 시간
+            latency_ms: 주문 전송 지연 시간 (밀리초)
             
         Returns:
             체결된 거래 목록
         
         교육 포인트:
             - Market Making 등에서 양방향 주문 동시 체결에 유용
+            - latency_ms > 0: 주문 제출 후 지연 시간이 지나야 체결 가능
         """
         # 만료된 주문 제거
         self.expire_orders(timestamp)
@@ -381,6 +403,14 @@ class PaperTrader:
             order = pending.order
             trade: Optional[Trade] = None
             should_remove = False
+            
+            # Latency 조건 확인
+            if latency_ms > 0:
+                elapsed_ms = (timestamp - pending.submitted_at).total_seconds() * 1000
+                if elapsed_ms < latency_ms:
+                    # 아직 지연 시간이 지나지 않음 - 주문 유지
+                    remaining.append(pending)
+                    continue
             
             if order.order_type == OrderType.MARKET:
                 if order.side == Side.BUY:
