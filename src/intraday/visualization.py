@@ -71,19 +71,20 @@ class BacktestVisualizer:
         if not self.trades:
             return self._empty_figure("No trades")
         
-        # 누적 자본 계산
-        capital = self.report.initial_capital
-        timestamps = []
-        capitals = [capital]
+        # 누적 자본 계산 - 시작점 포함
+        timestamps = [self.report.start_time]
+        capitals = [self.report.initial_capital]
         
+        capital = self.report.initial_capital
         for trade in self.trades:
             capital += trade.pnl
             timestamps.append(trade.timestamp)
             capitals.append(capital)
         
-        # 마지막 시간 추가
-        if timestamps:
+        # 마지막 시간 추가 (end_time이 마지막 trade 이후라면)
+        if self.report.end_time and self.report.end_time > timestamps[-1]:
             timestamps.append(self.report.end_time)
+            capitals.append(capital)  # 마지막 capital 유지
         
         fig = go.Figure()
         
@@ -141,11 +142,12 @@ class BacktestVisualizer:
         if not self.trades:
             return self._empty_figure("No trades")
         
-        # 누적 자본 및 낙폭 계산
+        # 누적 자본 및 낙폭 계산 - 시작점 포함
+        timestamps = [self.report.start_time]
+        drawdowns = [0.0]  # 시작 시 drawdown은 0
+        
         capital = self.report.initial_capital
         peak = self.report.initial_capital
-        timestamps = []
-        drawdowns = []
         
         for trade in self.trades:
             capital += trade.pnl
@@ -159,6 +161,11 @@ class BacktestVisualizer:
             
             timestamps.append(trade.timestamp)
             drawdowns.append(dd)
+        
+        # 마지막 시간 추가 (end_time이 마지막 trade 이후라면)
+        if self.report.end_time and self.report.end_time > timestamps[-1]:
+            timestamps.append(self.report.end_time)
+            drawdowns.append(dd)  # 마지막 drawdown 유지
         
         fig = go.Figure()
         
