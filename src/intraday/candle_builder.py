@@ -247,7 +247,7 @@ class CandleBuilder:
         # 캔들 완성 확인
         if self._is_complete(trade):
             candle = self._build_candle()
-            self._start_new_candle(trade)
+            self._reset()
             return candle
         
         return None
@@ -283,7 +283,7 @@ class CandleBuilder:
             # 캔들 완성 확인
             if self._is_complete(trade):
                 candles.append(self._build_candle())
-                self._start_new_candle(trade)
+                self._reset()
         
         return candles
     

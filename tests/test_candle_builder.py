@@ -193,16 +193,15 @@ class TestCandleBuilderStreamingMode:
         assert candle1.open == 50000.0  # 첫 번째 캔들 시작가
         assert candle1.close == 50100.0  # 첫 번째 캔들 종가
         
-        # 새 캔들 시작 - 아직 5 BTC만
-        # Note: 캔들 완성 시 그 틱의 가격으로 새 캔들 시작
+        # 새 캔들 시작 - reset() 후 다음 trade가 새 캔들의 시작
         result = builder.update(make_trade(50200.0, 5.0, datetime(2024, 1, 1, 0, 0, 2)))
         assert result is None  # 새 캔들 진행 중
         
         # 두 번째 캔들 완성 (10 BTC)
         candle2 = builder.update(make_trade(50300.0, 5.0, datetime(2024, 1, 1, 0, 0, 3)))
         assert candle2 is not None
-        # 새 캔들은 이전 캔들 완성 틱(50100)부터 시작
-        assert candle2.open == 50100.0
+        # 새 캔들은 reset() 후 첫 trade(50200)부터 시작
+        assert candle2.open == 50200.0
         assert candle2.close == 50300.0
     
     def test_current_candle_property_shows_in_progress(self):
