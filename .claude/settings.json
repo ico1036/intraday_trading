@@ -8,9 +8,12 @@
       "Bash(ls*)",
       "Bash(cat*)",
       "Bash(mkdir*)",
-      "Bash(rm*)",
       "Bash(mv*)",
-      "Bash(cp*)"
+      "Bash(cp*)",
+      "Write",
+      "Edit",
+      "mcp__context7__resolve-library-id",
+      "mcp__context7__query-docs"
     ]
   },
   "hooks": {
