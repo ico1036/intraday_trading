@@ -8,9 +8,12 @@ Binance Public Data에서 aggTrades 데이터를 다운로드하고
 사용법:
     # 텍스트 리포트만
     python scripts/run_tick_backtest.py
-    
-    # 시각화 포함
+
+    # 시각화 포함 (HTML)
     python scripts/run_tick_backtest.py --visualize
+
+    # 리포트 저장 (Parquet + PNG)
+    python scripts/run_tick_backtest.py --save-report
 
 교육 포인트:
     1. 데이터 다운로드 (처음 한 번만)
@@ -52,6 +55,17 @@ def main():
         type=str,
         default=None,
         help="시각화 파일 저장 경로 (기본: ./results/backtest_YYYYMMDD_HHMMSS.html)",
+    )
+    parser.add_argument(
+        "--save-report",
+        action="store_true",
+        help="리포트 저장 (Parquet + PNG)",
+    )
+    parser.add_argument(
+        "--report-dir",
+        type=str,
+        default="./reports",
+        help="리포트 저장 디렉토리 (기본: ./reports)",
     )
     args = parser.parse_args()
     
@@ -157,9 +171,20 @@ def main():
         
         visualizer = BacktestVisualizer(report, runner.trader.trades)
         visualizer.save_html(str(output_file))
-        
+
         print(f"\n시각화 파일 저장됨: {output_file}")
         print("브라우저에서 열어서 확인하세요!")
+
+    # === 7. 리포트 저장 (옵션) ===
+    if args.save_report:
+        print("\n[Step 7] 리포트 저장...")
+
+        report_dir = runner.save_report(args.report_dir)
+        print(f"\n리포트 저장됨: {report_dir}")
+        print("  - equity_curve.parquet: 누적 수익률 시계열")
+        print("  - trades.parquet: 거래 내역")
+        print("  - summary.parquet: 요약 지표")
+        print("  - report.png: 시각화 리포트")
 
 
 if __name__ == "__main__":
