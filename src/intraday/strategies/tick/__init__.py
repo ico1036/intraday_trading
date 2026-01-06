@@ -11,10 +11,12 @@ TickBacktestRunner와 함께 사용하세요.
 
 from .volume_imbalance import VolumeImbalanceStrategy
 from .regime import RegimeStrategy, RegimeAnalyzer, RegimeState
+from .vpin_breakout import VPINBreakoutStrategy
 
 __all__ = [
     "VolumeImbalanceStrategy",
     "RegimeStrategy",
     "RegimeAnalyzer",
     "RegimeState",
+    "VPINBreakoutStrategy",
 ]
