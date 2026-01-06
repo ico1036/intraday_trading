@@ -22,7 +22,7 @@ from .candle_builder import CandleBuilder, CandleType, Candle, build_candles
 from .paper_trader import Trade, Position, PaperTrader
 
 # Performance
-from .performance import PerformanceReport, PerformanceCalculator
+from .performance import PerformanceReport, PerformanceCalculator, EquityPoint, ReportSaver
 
 # Runner
 from .runner import ForwardRunner
@@ -68,6 +68,8 @@ __all__ = [
     # Performance
     "PerformanceReport",
     "PerformanceCalculator",
+    "EquityPoint",
+    "ReportSaver",
     # Runner
     "ForwardRunner",
     # Data

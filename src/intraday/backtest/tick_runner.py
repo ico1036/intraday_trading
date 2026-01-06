@@ -19,7 +19,7 @@ from ..client import AggTrade
 from ..candle_builder import CandleBuilder, CandleType, Candle
 from ..data.loader import TickDataLoader
 from ..paper_trader import PaperTrader
-from ..performance import PerformanceReport, PerformanceCalculator
+from ..performance import PerformanceReport, PerformanceCalculator, EquityPoint, ReportSaver
 from ..strategy import Strategy, MarketState, Side
 
 
@@ -107,6 +107,10 @@ class TickBacktestRunner:
         self._bar_count = 0
         self._order_count = 0
         self._trade_count = 0
+
+        # Equity curve 추적
+        self._equity_curve: list[EquityPoint] = []
+        self._peak_equity = initial_capital
     
     def run(
         self,
@@ -137,6 +141,8 @@ class TickBacktestRunner:
         self._bar_count = 0
         self._order_count = 0
         self._trade_count = 0
+        self._equity_curve = []
+        self._peak_equity = self.initial_capital
         
         # 틱 순회
         for trade in self.data_loader.iter_trades(start_time, end_time):
@@ -180,6 +186,8 @@ class TickBacktestRunner:
         
         if executed_trade:
             self._trade_count += 1
+            # Equity curve 기록
+            self._record_equity_point(trade.timestamp)
         
         # 2. CandleBuilder 업데이트 (스트리밍 모드)
         completed_candle = self._candle_builder.update(trade)
@@ -286,3 +294,52 @@ class TickBacktestRunner:
     def current_candle(self) -> Optional[Candle]:
         """마지막으로 완성된 캔들 (current_bar의 alias)"""
         return self._current_candle
+
+    @property
+    def equity_curve(self) -> list[EquityPoint]:
+        """Equity curve 데이터"""
+        return self._equity_curve.copy()
+
+    def _record_equity_point(self, timestamp: datetime) -> None:
+        """Equity curve에 현재 상태 기록"""
+        # 현재 equity 계산 (실현 손익 기준)
+        equity = self.initial_capital + self._trader.realized_pnl
+
+        # Peak 업데이트 및 drawdown 계산
+        if equity > self._peak_equity:
+            self._peak_equity = equity
+
+        drawdown = 0.0
+        if self._peak_equity > 0:
+            drawdown = (self._peak_equity - equity) / self._peak_equity * 100
+
+        # 누적 PnL 및 수익률
+        cumulative_pnl = equity - self.initial_capital
+        cumulative_return_pct = cumulative_pnl / self.initial_capital * 100 if self.initial_capital > 0 else 0.0
+
+        self._equity_curve.append(EquityPoint(
+            timestamp=timestamp,
+            equity=equity,
+            drawdown=drawdown,
+            cumulative_pnl=cumulative_pnl,
+            cumulative_return_pct=cumulative_return_pct,
+        ))
+
+    def save_report(self, output_dir: str = "./reports") -> str:
+        """
+        백테스트 결과를 파일로 저장
+
+        Args:
+            output_dir: 저장 디렉토리
+
+        Returns:
+            리포트 디렉토리 경로
+        """
+        report = self.get_performance_report()
+        saver = ReportSaver(
+            report=report,
+            trades=self._trader.trades,
+            equity_curve=self._equity_curve,
+            output_dir=output_dir,
+        )
+        return str(saver.save_all())
