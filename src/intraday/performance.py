@@ -5,11 +5,24 @@ Performance 모듈
 교육 목적으로 상세한 주석을 포함합니다.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
-from typing import List
+from pathlib import Path
+from typing import List, Optional
+
+import pandas as pd
 
 from .paper_trader import Trade
+
+
+@dataclass
+class EquityPoint:
+    """Equity curve의 단일 포인트"""
+    timestamp: datetime
+    equity: float
+    drawdown: float  # %
+    cumulative_pnl: float
+    cumulative_return_pct: float
 
 
 @dataclass
@@ -262,4 +275,226 @@ class PerformanceCalculator:
             return sharpe
         except statistics.StatisticsError:
             return 0.0
+
+
+class ReportSaver:
+    """
+    백테스트 결과 저장기
+
+    Parquet 파일로 데이터를 저장하고 PNG 리포트를 생성합니다.
+
+    저장 구조:
+        reports/{strategy_name}_{timestamp}/
+        ├── equity_curve.parquet    # 시계열: timestamp, equity, drawdown, pnl
+        ├── trades.parquet          # 거래 내역
+        ├── summary.parquet         # 요약 지표 (1행 테이블)
+        └── report.png              # 시각화 리포트
+
+    교육 포인트:
+        - Parquet은 컬럼 기반으로 분석에 최적
+        - 누적 수익률 그래프로 전략 특성 파악
+        - 요약 지표로 빠른 성과 비교
+    """
+
+    def __init__(
+        self,
+        report: PerformanceReport,
+        trades: List[Trade],
+        equity_curve: List[EquityPoint],
+        output_dir: str = "./reports",
+    ):
+        """
+        Args:
+            report: 성과 리포트
+            trades: 거래 내역
+            equity_curve: Equity curve 데이터
+            output_dir: 저장 디렉토리
+        """
+        self.report = report
+        self.trades = trades
+        self.equity_curve = equity_curve
+        self.output_dir = Path(output_dir)
+
+        # 리포트 디렉토리 생성
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.report_dir = self.output_dir / f"{report.strategy_name}_{timestamp}"
+        self.report_dir.mkdir(parents=True, exist_ok=True)
+
+    def save_all(self) -> Path:
+        """
+        모든 데이터 저장
+
+        Returns:
+            리포트 디렉토리 경로
+        """
+        self.save_equity_curve()
+        self.save_trades()
+        self.save_summary()
+        self.save_report_png()
+
+        print(f"[ReportSaver] 리포트 저장 완료: {self.report_dir}")
+        return self.report_dir
+
+    def save_equity_curve(self) -> Path:
+        """Equity curve를 parquet으로 저장"""
+        if not self.equity_curve:
+            print("[ReportSaver] Warning: Empty equity curve")
+            return self.report_dir / "equity_curve.parquet"
+
+        df = pd.DataFrame([
+            {
+                "timestamp": ep.timestamp,
+                "equity": ep.equity,
+                "drawdown": ep.drawdown,
+                "cumulative_pnl": ep.cumulative_pnl,
+                "cumulative_return_pct": ep.cumulative_return_pct,
+            }
+            for ep in self.equity_curve
+        ])
+
+        filepath = self.report_dir / "equity_curve.parquet"
+        df.to_parquet(filepath, index=False)
+        return filepath
+
+    def save_trades(self) -> Path:
+        """거래 내역을 parquet으로 저장"""
+        if not self.trades:
+            print("[ReportSaver] Warning: Empty trades")
+            return self.report_dir / "trades.parquet"
+
+        df = pd.DataFrame([
+            {
+                "timestamp": t.timestamp,
+                "side": t.side.value,
+                "price": t.price,
+                "quantity": t.quantity,
+                "fee": t.fee,
+                "pnl": t.pnl,
+            }
+            for t in self.trades
+        ])
+
+        filepath = self.report_dir / "trades.parquet"
+        df.to_parquet(filepath, index=False)
+        return filepath
+
+    def save_summary(self) -> Path:
+        """요약 지표를 parquet으로 저장"""
+        df = pd.DataFrame([{
+            "strategy_name": self.report.strategy_name,
+            "symbol": self.report.symbol,
+            "start_time": self.report.start_time,
+            "end_time": self.report.end_time,
+            "initial_capital": self.report.initial_capital,
+            "final_capital": self.report.final_capital,
+            "total_return_pct": self.report.total_return,
+            "total_trades": self.report.total_trades,
+            "winning_trades": self.report.winning_trades,
+            "losing_trades": self.report.losing_trades,
+            "win_rate_pct": self.report.win_rate,
+            "profit_factor": self.report.profit_factor,
+            "avg_win": self.report.avg_win,
+            "avg_loss": self.report.avg_loss,
+            "max_drawdown_pct": self.report.max_drawdown,
+            "sharpe_ratio": self.report.sharpe_ratio,
+            "total_fees": self.report.total_fees,
+        }])
+
+        filepath = self.report_dir / "summary.parquet"
+        df.to_parquet(filepath, index=False)
+        return filepath
+
+    def save_report_png(self) -> Path:
+        """PNG 리포트 생성"""
+        import matplotlib.pyplot as plt
+        import matplotlib.dates as mdates
+
+        # 한글 폰트 설정 (macOS)
+        plt.rcParams['font.family'] = ['Arial Unicode MS', 'sans-serif']
+        plt.rcParams['axes.unicode_minus'] = False
+
+        fig, axes = plt.subplots(3, 1, figsize=(12, 10), gridspec_kw={'height_ratios': [3, 2, 1]})
+        fig.suptitle(
+            f"{self.report.strategy_name} | {self.report.symbol}\n"
+            f"{self.report.start_time.strftime('%Y-%m-%d %H:%M')} ~ "
+            f"{self.report.end_time.strftime('%Y-%m-%d %H:%M')}",
+            fontsize=14,
+            fontweight='bold'
+        )
+
+        # 1. Equity Curve
+        ax1 = axes[0]
+        if self.equity_curve:
+            timestamps = [ep.timestamp for ep in self.equity_curve]
+            equities = [ep.equity for ep in self.equity_curve]
+            ax1.plot(timestamps, equities, 'b-', linewidth=1)
+            ax1.fill_between(timestamps, self.report.initial_capital, equities, alpha=0.3)
+            ax1.axhline(y=self.report.initial_capital, color='gray', linestyle='--', alpha=0.5)
+        ax1.set_ylabel('Equity ($)')
+        ax1.set_title('Equity Curve')
+        ax1.grid(True, alpha=0.3)
+        ax1.xaxis.set_major_formatter(mdates.DateFormatter('%m/%d %H:%M'))
+
+        # 2. Drawdown
+        ax2 = axes[1]
+        if self.equity_curve:
+            timestamps = [ep.timestamp for ep in self.equity_curve]
+            drawdowns = [-ep.drawdown for ep in self.equity_curve]  # 음수로 표시
+            ax2.fill_between(timestamps, 0, drawdowns, color='red', alpha=0.5)
+            ax2.plot(timestamps, drawdowns, 'r-', linewidth=0.5)
+        ax2.set_ylabel('Drawdown (%)')
+        ax2.set_title('Drawdown')
+        ax2.grid(True, alpha=0.3)
+        ax2.xaxis.set_major_formatter(mdates.DateFormatter('%m/%d %H:%M'))
+
+        # 3. Summary Table
+        ax3 = axes[2]
+        ax3.axis('off')
+
+        # 요약 데이터
+        summary_data = [
+            ['Total Return', f"{self.report.total_return:+.2f}%"],
+            ['Win Rate', f"{self.report.win_rate:.1f}%"],
+            ['Total Trades', f"{self.report.total_trades}"],
+            ['Profit Factor', f"{self.report.profit_factor:.2f}"],
+            ['Max Drawdown', f"{self.report.max_drawdown:.2f}%"],
+            ['Sharpe Ratio', f"{self.report.sharpe_ratio:.2f}"],
+            ['Avg Win', f"${self.report.avg_win:.2f}"],
+            ['Avg Loss', f"${self.report.avg_loss:.2f}"],
+            ['Total Fees', f"${self.report.total_fees:.2f}"],
+        ]
+
+        # 2열로 나누어 표시
+        col1_data = summary_data[:5]
+        col2_data = summary_data[5:]
+
+        table1 = ax3.table(
+            cellText=col1_data,
+            colLabels=['Metric', 'Value'],
+            loc='center left',
+            cellLoc='left',
+            colWidths=[0.15, 0.1],
+        )
+        table1.auto_set_font_size(False)
+        table1.set_fontsize(10)
+        table1.scale(1.2, 1.5)
+
+        table2 = ax3.table(
+            cellText=col2_data,
+            colLabels=['Metric', 'Value'],
+            loc='center right',
+            cellLoc='left',
+            colWidths=[0.15, 0.1],
+        )
+        table2.auto_set_font_size(False)
+        table2.set_fontsize(10)
+        table2.scale(1.2, 1.5)
+
+        plt.tight_layout()
+
+        filepath = self.report_dir / "report.png"
+        plt.savefig(filepath, dpi=150, bbox_inches='tight')
+        plt.close()
+
+        return filepath
 
