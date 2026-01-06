@@ -68,6 +68,9 @@ logs/
 *.parquet
 data/
 
+# Backtest reports
+reports/
+
 # Local development
 *.local
 
