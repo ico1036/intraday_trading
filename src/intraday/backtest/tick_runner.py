@@ -18,6 +18,7 @@ from typing import Optional
 from ..client import AggTrade
 from ..candle_builder import CandleBuilder, CandleType, Candle
 from ..data.loader import TickDataLoader
+from ..funding import FundingRateLoader, FundingSettlement
 from ..paper_trader import PaperTrader
 from ..performance import PerformanceReport, PerformanceCalculator, EquityPoint, ReportSaver
 from ..strategy import Strategy, MarketState, Side
@@ -31,27 +32,35 @@ Bar = Candle
 class TickBacktestRunner:
     """
     틱 기반 백테스터
-    
+
     사용 예시:
         loader = TickDataLoader(Path("./data/ticks"))
         strategy = VolumeImbalanceStrategy()
-        
+
         runner = TickBacktestRunner(
             strategy=strategy,
             data_loader=loader,
             bar_type=CandleType.VOLUME,
             bar_size=1.0,  # 1 BTC마다 바 생성
         )
-        
+
         report = runner.run()
         report.print_summary()
-    
+
+    선물 거래 예시:
+        runner = TickBacktestRunner(
+            strategy=strategy,
+            data_loader=loader,
+            leverage=10,  # 10x 레버리지
+        )
+
     교육 포인트:
         - 볼륨바는 시장 활동에 따라 바 생성 빈도가 달라짐
         - 변동성 높은 시장에서 더 많은 바 → 더 빠른 반응
         - 틱바/볼륨바는 시간바보다 정보 효율이 높다는 연구 결과
+        - leverage > 1: 선물 모드 (마진 거래, 청산 있음)
     """
-    
+
     def __init__(
         self,
         strategy: Strategy,
@@ -62,6 +71,8 @@ class TickBacktestRunner:
         fee_rate: float = 0.001,
         symbol: str = "BTCUSDT",
         latency_ms: float = 50.0,
+        leverage: int = 1,
+        funding_loader: Optional[FundingRateLoader] = None,
     ):
         """
         Args:
@@ -70,18 +81,25 @@ class TickBacktestRunner:
             bar_type: 바 타입 (VOLUME, TICK, TIME, DOLLAR)
             bar_size: 바 크기 (거래량, 틱 수, 초, 또는 달러)
             initial_capital: 초기 자본금 (USD)
-            fee_rate: 수수료율 (기본 0.1%)
+            fee_rate: 수수료율 (기본 0.1%, 선물은 0.04% 권장)
             symbol: 거래쌍 (리포트용)
             latency_ms: 주문 전송 지연 시간 (밀리초, 기본 50ms)
                         주문 제출 후 이 시간이 지나야 체결 시도.
                         현실적인 네트워크 지연 시뮬레이션에 사용.
-        
+            leverage: 레버리지 배율 (1=현물, 2+=선물)
+                      선물 모드에서는 청산가 계산 및 강제 청산이 활성화됨.
+            funding_loader: Funding Rate 데이터 로더 (선물 모드에서 사용)
+                            None이면 Funding 정산 없이 실행.
+
         교육 포인트:
             - VOLUME 바: bar_size = 1.0 → 1 BTC 거래마다 바 생성
             - TICK 바: bar_size = 100 → 100틱마다 바 생성
             - TIME 바: bar_size = 60 → 60초마다 바 생성
             - DOLLAR 바: bar_size = 1000000 → 100만 달러마다 바 생성
             - latency_ms: 50ms = Binance API 평균 RTT 기준
+            - leverage=1: 현물 거래 (기존 동작)
+            - leverage>1: 선물 거래 (마진, 청산, 공매도 가능)
+            - funding_loader: 8시간마다 Funding Rate 정산 시뮬레이션
         """
         self.strategy = strategy
         self.data_loader = data_loader
@@ -91,10 +109,17 @@ class TickBacktestRunner:
         self.fee_rate = fee_rate
         self.symbol = symbol
         self.latency_ms = latency_ms
-        
+        self.leverage = leverage
+        self.funding_loader = funding_loader
+
         # CandleBuilder 사용 (중복 제거)
         self._candle_builder = CandleBuilder(bar_type, bar_size)
-        self._trader = PaperTrader(initial_capital, fee_rate)
+        self._trader = PaperTrader(initial_capital, fee_rate, leverage=leverage)
+
+        # Funding 정산 관련
+        self._funding_settlement = FundingSettlement()
+        self._last_funding_check: Optional[datetime] = None
+        self._total_funding_paid: float = 0.0
         
         # 상태
         self._start_time: Optional[datetime] = None
@@ -166,15 +191,16 @@ class TickBacktestRunner:
     def _process_tick(self, trade: AggTrade) -> None:
         """
         단일 틱 처리
-        
+
         교육 포인트:
             1. 틱으로 CandleBuilder 업데이트
             2. 캔들 완성 시 전략 실행
             3. 체결 확인 (latency 고려)
+            4. Funding Rate 정산 (선물 모드)
         """
         self._tick_count += 1
         self._last_trade_price = trade.price
-        
+
         # 1. 체결 확인 (각 틱마다, latency 고려)
         executed_trade = self._trader.on_price_update(
             price=trade.price,
@@ -183,23 +209,26 @@ class TickBacktestRunner:
             timestamp=trade.timestamp,
             latency_ms=self.latency_ms,
         )
-        
+
         if executed_trade:
             self._trade_count += 1
             # Equity curve 기록
             self._record_equity_point(trade.timestamp)
-        
+
         # 2. CandleBuilder 업데이트 (스트리밍 모드)
         completed_candle = self._candle_builder.update(trade)
-        
+
         # 3. 캔들 완성 시 전략 실행
         if completed_candle:
             self._bar_count += 1
             self._current_candle = completed_candle
             self._execute_strategy_on_candle(completed_candle, trade.timestamp)
-        
+
         # 4. 미실현 손익 업데이트
         self._trader.update_unrealized_pnl(trade.price)
+
+        # 5. Funding Rate 정산 (선물 모드에서만)
+        self._check_and_apply_funding(trade.timestamp, trade.price)
     
     def _execute_strategy_on_candle(self, candle: Candle, timestamp: datetime) -> None:
         """
@@ -268,6 +297,7 @@ class TickBacktestRunner:
             symbol=self.symbol,
             start_time=self._start_time or datetime.now(),
             end_time=self._end_time or datetime.now(),
+            total_funding_paid=self._total_funding_paid,
         )
     
     @property
@@ -299,6 +329,40 @@ class TickBacktestRunner:
     def equity_curve(self) -> list[EquityPoint]:
         """Equity curve 데이터"""
         return self._equity_curve.copy()
+
+    def _check_and_apply_funding(self, timestamp: datetime, price: float) -> None:
+        """
+        Funding Rate 정산 확인 및 적용
+
+        교육 포인트:
+            - 선물 모드에서만 적용
+            - funding_loader가 있을 때만 적용
+            - 정산 시간을 지났으면 정산 실행
+        """
+        # 현물 모드이거나 funding_loader가 없으면 스킵
+        if self.leverage == 1 or self.funding_loader is None:
+            return
+
+        # 첫 틱이면 _last_funding_check 초기화
+        if self._last_funding_check is None:
+            self._last_funding_check = timestamp
+            return
+
+        # 정산 시간을 지났는지 확인
+        if self._funding_settlement.should_settle(timestamp, self._last_funding_check):
+            # 정산 시간에 해당하는 펀딩레이트 조회
+            rate = self.funding_loader.get_latest_rate_before(timestamp)
+
+            if rate is not None:
+                # Funding 정산 적용
+                payment = self._trader.apply_funding(
+                    funding_rate=rate.funding_rate,
+                    mark_price=rate.mark_price,
+                )
+                self._total_funding_paid += payment
+
+        # 마지막 확인 시간 업데이트
+        self._last_funding_check = timestamp
 
     def _record_equity_point(self, timestamp: datetime) -> None:
         """Equity curve에 현재 상태 기록"""

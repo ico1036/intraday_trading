@@ -64,7 +64,10 @@ class PerformanceReport:
     
     # 비용
     total_fees: float
-    
+
+    # Funding (선물 거래용)
+    total_funding_paid: float = 0.0  # 음수: 지불, 양수: 수취
+
     def print_summary(self) -> None:
         """콘솔에 성과 요약 출력"""
         print("=" * 50)
@@ -85,6 +88,8 @@ class PerformanceReport:
         print(f"최대 낙폭: {self.max_drawdown:.2f}%")
         print(f"샤프 비율: {self.sharpe_ratio:.2f}")
         print(f"총 수수료: ${self.total_fees:.2f}")
+        if self.total_funding_paid != 0.0:
+            print(f"총 펀딩비: ${self.total_funding_paid:+.2f}")
         print("=" * 50)
 
 
@@ -108,10 +113,11 @@ class PerformanceCalculator:
         symbol: str,
         start_time: datetime,
         end_time: datetime,
+        total_funding_paid: float = 0.0,
     ) -> PerformanceReport:
         """
         거래 내역으로부터 성과 리포트 생성
-        
+
         Args:
             trades: 거래 내역 리스트
             initial_capital: 초기 자본금
@@ -119,7 +125,8 @@ class PerformanceCalculator:
             symbol: 거래 심볼
             start_time: 시작 시간
             end_time: 종료 시간
-            
+            total_funding_paid: 총 펀딩비 (음수=지불, 양수=수취)
+
         Returns:
             PerformanceReport: 계산된 성과 리포트
         """
@@ -143,6 +150,7 @@ class PerformanceCalculator:
                 max_drawdown=0.0,
                 sharpe_ratio=0.0,
                 total_fees=0.0,
+                total_funding_paid=total_funding_paid,
             )
         
         # 기본 통계 계산
@@ -201,6 +209,7 @@ class PerformanceCalculator:
             max_drawdown=max_drawdown,
             sharpe_ratio=sharpe_ratio,
             total_fees=total_fees,
+            total_funding_paid=total_funding_paid,
         )
     
     @staticmethod

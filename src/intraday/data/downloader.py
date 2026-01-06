@@ -7,11 +7,14 @@ Binance Public Data에서 aggTrades 데이터를 다운로드하여 Parquet로 �
     - Binance는 https://data.binance.vision/ 에서 무료 히스토리컬 데이터 제공
     - aggTrades: 같은 가격, 같은 방향의 연속 체결을 집계한 데이터
     - 월별/일별 ZIP 파일로 제공됨
+    - 현물: data/spot/monthly/aggTrades/
+    - 선물: data/futures/um/monthly/aggTrades/ (USDT-M)
 """
 
 import io
 import zipfile
 from datetime import datetime
+from enum import Enum
 from pathlib import Path
 from typing import Optional
 
@@ -21,11 +24,25 @@ import requests
 from ..client import AggTrade
 
 
+class MarketType(Enum):
+    """
+    시장 타입
+
+    교육 포인트:
+        - SPOT: 현물 거래 (Funding Rate 없음)
+        - FUTURES: USDT-M 선물 거래 (Funding Rate 있음)
+    """
+
+    SPOT = "spot"
+    FUTURES = "futures"
+
+
 class TickDataDownloader:
     """
     Binance Public Data에서 aggTrades 다운로드
-    
+
     사용 예시:
+        # 현물 데이터
         downloader = TickDataDownloader()
         filepath = downloader.download_monthly(
             symbol="BTCUSDT",
@@ -33,21 +50,41 @@ class TickDataDownloader:
             month=1,
             output_dir=Path("./data/ticks")
         )
-    
+
+        # 선물 데이터
+        futures_downloader = TickDataDownloader(market_type=MarketType.FUTURES)
+        filepath = futures_downloader.download_monthly(
+            symbol="BTCUSDT",
+            year=2024,
+            month=1,
+            output_dir=Path("./data/futures_ticks")
+        )
+
     교육 포인트:
         - 월별 데이터는 약 200MB~1GB (심볼/시장 상황에 따라 다름)
         - 다운로드 후 Parquet로 변환하여 저장 (약 50% 압축)
+        - 선물 백테스트시 반드시 선물 데이터 사용 (Funding Rate 적용됨)
     """
-    
+
     # Binance Public Data 기본 URL
-    BASE_URL = "https://data.binance.vision/data/spot"
-    
-    def __init__(self, timeout: int = 300):
+    BASE_URLS = {
+        MarketType.SPOT: "https://data.binance.vision/data/spot",
+        MarketType.FUTURES: "https://data.binance.vision/data/futures/um",
+    }
+
+    def __init__(self, timeout: int = 300, market_type: MarketType = MarketType.SPOT):
         """
         Args:
             timeout: HTTP 요청 타임아웃 (초, 기본 5분)
+            market_type: 시장 타입 (SPOT 또는 FUTURES)
         """
         self.timeout = timeout
+        self.market_type = market_type
+
+    @property
+    def base_url(self) -> str:
+        """현재 시장 타입에 맞는 base URL 반환"""
+        return self.BASE_URLS[self.market_type]
     
     def download_monthly(
         self,
@@ -79,17 +116,18 @@ class TickDataDownloader:
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
         
-        # 출력 파일 경로
-        output_file = output_dir / f"{symbol}-aggTrades-{year}-{month:02d}.parquet"
-        
+        # 출력 파일 경로 (선물/현물 구분)
+        market_prefix = "futures-" if self.market_type == MarketType.FUTURES else ""
+        output_file = output_dir / f"{market_prefix}{symbol}-aggTrades-{year}-{month:02d}.parquet"
+
         # 이미 존재하면 스킵
         if output_file.exists():
             print(f"[Downloader] File already exists: {output_file}")
             return output_file
-        
+
         # URL 구성
         url = (
-            f"{self.BASE_URL}/monthly/aggTrades/{symbol}/"
+            f"{self.base_url}/monthly/aggTrades/{symbol}/"
             f"{symbol}-aggTrades-{year}-{month:02d}.zip"
         )
         
@@ -137,16 +175,17 @@ class TickDataDownloader:
         output_dir.mkdir(parents=True, exist_ok=True)
         
         date_str = date.strftime("%Y-%m-%d")
-        output_file = output_dir / f"{symbol}-aggTrades-{date_str}.parquet"
-        
+        market_prefix = "futures-" if self.market_type == MarketType.FUTURES else ""
+        output_file = output_dir / f"{market_prefix}{symbol}-aggTrades-{date_str}.parquet"
+
         # 이미 존재하면 스킵
         if output_file.exists():
             print(f"[Downloader] File already exists: {output_file}")
             return output_file
-        
+
         # URL 구성
         url = (
-            f"{self.BASE_URL}/daily/aggTrades/{symbol}/"
+            f"{self.base_url}/daily/aggTrades/{symbol}/"
             f"{symbol}-aggTrades-{date_str}.zip"
         )
         
@@ -184,57 +223,65 @@ class TickDataDownloader:
     ) -> pd.DataFrame:
         """
         ZIP 압축 해제 및 CSV 파싱
-        
+
         Args:
             zip_content: ZIP 파일 내용
             symbol: 거래쌍
             year, month, day: 날짜 정보
-            
+
         Returns:
             파싱된 DataFrame
-            
+
         교육 포인트:
-            - Binance aggTrades CSV 컬럼:
-              agg_trade_id, price, quantity, first_trade_id, 
-              last_trade_id, timestamp, is_buyer_maker, is_best_match
+            - 현물 CSV: 헤더 없음, timestamp 컬럼, 8개 컬럼
+            - 선물 CSV: 헤더 있음, transact_time 컬럼, 7개 컬럼
         """
         # ZIP 압축 해제
         with zipfile.ZipFile(io.BytesIO(zip_content)) as zf:
             # ZIP 내 첫 번째 파일 (CSV)
             csv_filename = zf.namelist()[0]
-            
+
             with zf.open(csv_filename) as f:
-                # CSV 파싱
-                df = pd.read_csv(
-                    f,
-                    names=[
-                        "agg_trade_id",
-                        "price",
-                        "quantity",
-                        "first_trade_id",
-                        "last_trade_id",
-                        "timestamp",
-                        "is_buyer_maker",
-                        "is_best_match",
-                    ],
-                    dtype={
-                        "agg_trade_id": "int64",
-                        "price": "float64",
-                        "quantity": "float64",
-                        "first_trade_id": "int64",
-                        "last_trade_id": "int64",
-                        "timestamp": "int64",
-                        "is_buyer_maker": "bool",
-                        "is_best_match": "bool",
-                    },
-                )
-        
+                if self.market_type == MarketType.FUTURES:
+                    # 선물: 헤더 있음, transact_time 컬럼, 7개 컬럼
+                    df = pd.read_csv(f)
+                    # 컬럼명 통일
+                    df = df.rename(columns={"transact_time": "timestamp"})
+                    # is_best_match 컬럼 없으면 추가 (호환성)
+                    if "is_best_match" not in df.columns:
+                        df["is_best_match"] = True
+                else:
+                    # 현물: 헤더 없음, timestamp 컬럼, 8개 컬럼
+                    df = pd.read_csv(
+                        f,
+                        names=[
+                            "agg_trade_id",
+                            "price",
+                            "quantity",
+                            "first_trade_id",
+                            "last_trade_id",
+                            "timestamp",
+                            "is_buyer_maker",
+                            "is_best_match",
+                        ],
+                        dtype={
+                            "agg_trade_id": "int64",
+                            "price": "float64",
+                            "quantity": "float64",
+                            "first_trade_id": "int64",
+                            "last_trade_id": "int64",
+                            "timestamp": "int64",
+                            "is_buyer_maker": "bool",
+                            "is_best_match": "bool",
+                        },
+                    )
+
         # timestamp를 datetime으로 변환 (밀리초)
         df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
-        
+
         # 심볼 추가
         df["symbol"] = symbol
-        
+
         return df
     
     def get_available_months(self, symbol: str) -> list[tuple[int, int]]:

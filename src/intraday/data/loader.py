@@ -94,12 +94,21 @@ class TickDataLoader:
             if "timestamp" not in df.columns:
                 print(f"[TickDataLoader] Warning: No timestamp column in {filepath}")
                 continue
-            
-            # 시간 필터링
+
+            # 시간 필터링 (timezone 통일)
             if start_time:
-                df = df[df["timestamp"] >= start_time]
+                # start_time이 timezone-aware면 naive로 변환 (UTC 기준)
+                if start_time.tzinfo is not None:
+                    start_cmp = start_time.replace(tzinfo=None)
+                else:
+                    start_cmp = start_time
+                df = df[df["timestamp"] >= start_cmp]
             if end_time:
-                df = df[df["timestamp"] <= end_time]
+                if end_time.tzinfo is not None:
+                    end_cmp = end_time.replace(tzinfo=None)
+                else:
+                    end_cmp = end_time
+                df = df[df["timestamp"] <= end_cmp]
             
             # 시간순 정렬
             df = df.sort_values("timestamp")
