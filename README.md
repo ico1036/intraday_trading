@@ -7,6 +7,7 @@ Binance Orderbook 분석을 통한 Intraday Trading 교육 프로젝트입니다
 1. **Orderbook (호가창)** - 매수/매도 주문 데이터 이해
 2. **Bid-Ask Spread** - 유동성 지표 분석
 3. **Mid-price vs Micro-price** - 가격 예측 지표 비교
+4. **선물 거래** - 레버리지, 공매도, 청산, Funding Rate
 
 ## 설치
 
@@ -91,6 +92,58 @@ runner = TickBacktestRunner(
 report = runner.run()
 report.print_summary()
 ```
+
+### 1-1. 선물 백테스트 (레버리지, 공매도, 청산)
+
+```python
+from pathlib import Path
+from intraday import (
+    TickDataDownloader,
+    TickDataLoader,
+    TickBacktestRunner,
+    BarType,
+    OBIStrategy,
+    MarketType,
+    FundingRateDownloader,
+)
+
+# 1. 선물 데이터 다운로드
+downloader = TickDataDownloader(market_type=MarketType.FUTURES)
+downloader.download_monthly(
+    symbol="BTCUSDT",
+    year=2024,
+    month=1,
+    output_dir=Path("./data/futures_ticks"),
+)
+
+# 2. Funding Rate 다운로드 (선택)
+funding_downloader = FundingRateDownloader()
+funding_rates = funding_downloader.download_range(
+    symbol="BTCUSDT",
+    start=datetime(2024, 1, 1),
+    end=datetime(2024, 1, 31),
+)
+funding_loader = FundingRateLoader.from_list(funding_rates)
+
+# 3. 선물 백테스트 실행 (10x 레버리지)
+runner = TickBacktestRunner(
+    strategy=strategy,
+    data_loader=loader,
+    leverage=10,                    # 10x 레버리지
+    funding_loader=funding_loader,  # Funding Rate 적용
+    initial_capital=10000.0,
+)
+
+report = runner.run()
+report.print_summary()  # Funding 비용 포함
+```
+
+**선물 모드 특징:**
+- `leverage > 1`: 선물 모드 활성화
+- 마진 기반 거래 (자본금의 일부만 사용)
+- 공매도 가능 (BTC 없이 SELL 주문 가능)
+- 청산 시뮬레이션 (Binance USDT-M Isolated Margin 공식)
+- Funding Rate 정산 (8시간마다)
 
 ### 2. Orderbook 기반 백테스트 (직접 수집)
 
@@ -196,6 +249,30 @@ uv run python -m intraday.dashboard
 | `BarType.TICK` | 체결 횟수 기반 | `bar_size=100` → 100틱마다 바 생성 |
 | `BarType.TIME` | 시간 기반 | `bar_size=60` → 60초마다 바 생성 |
 
+## 선물 거래 (USDT-M Futures)
+
+### 청산가 계산 (Binance Isolated Margin 공식)
+
+```
+롱: LP = EP × (1/L - 1) / (MMR - 1)
+숏: LP = EP × (1/L + 1) / (MMR + 1)
+
+EP: 진입가, L: 레버리지, MMR: 유지마진율 (0.4% for Tier 1)
+```
+
+| 레버리지 | 롱 청산 거리 | 숏 청산 거리 |
+|---------|-------------|-------------|
+| 10x | ~9.6% 하락 | ~9.6% 상승 |
+| 20x | ~4.6% 하락 | ~4.6% 상승 |
+| 100x | ~0.6% 하락 | ~0.6% 상승 |
+
+### Funding Rate
+
+- 8시간마다 정산 (00:00, 08:00, 16:00 UTC)
+- 양수 펀딩: 롱이 숏에게 지불
+- 음수 펀딩: 숏이 롱에게 지불
+- 백테스트에서 자동 시뮬레이션 (`funding_loader` 파라미터)
+
 ## 빠른 시작 (권장 순서)
 
 ```bash
@@ -221,12 +298,14 @@ src/intraday/
 │   ├── orderbook_runner.py    # 오더북 기반 백테스터
 │   └── tick_runner.py         # 틱 기반 백테스터 (볼륨바/틱바)
 ├── data/                      # 데이터 수집/로딩
-│   ├── downloader.py          # Binance Public Data 다운로더
+│   ├── downloader.py          # Binance Public Data 다운로더 (현물/선물)
+│   ├── funding_downloader.py  # Funding Rate 다운로더
 │   ├── recorder.py            # 오더북 실시간 수집기
 │   └── loader.py              # 데이터 로더
 ├── client.py                  # Binance WebSocket 클라이언트
 ├── orderbook.py               # 오더북 처리
-├── paper_trader.py            # 가상 거래 시뮬레이터
+├── paper_trader.py            # 가상 거래 시뮬레이터 (현물/선물)
+├── funding.py                 # Funding Rate 정산 로직
 ├── performance.py             # 성과 분석
 ├── strategy.py                # 전략 인터페이스
 └── runner.py                  # 포워드 테스트 러너

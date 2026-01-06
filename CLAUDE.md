@@ -133,12 +133,19 @@ src/intraday/
 │       └── regime.py
 ├── backtest/
 │   ├── orderbook_runner.py  # OrderbookBacktestRunner
-│   └── tick_runner.py       # TickBacktestRunner
+│   └── tick_runner.py       # TickBacktestRunner (선물 지원)
+├── paper_trader.py          # PaperTrader (현물/선물 통합)
+├── funding.py               # Funding Rate 정산
+├── data/
+│   ├── downloader.py        # Tick 다운로더 (현물/선물)
+│   └── funding_downloader.py # Funding Rate 다운로더
 └── ...
 
 tests/
 ├── test_strategy_*.py       # 전략 테스트
 ├── test_backtest_*.py       # 백테스트 테스트
+├── test_futures_*.py        # 선물 거래 테스트
+├── test_funding_*.py        # Funding Rate 테스트
 └── ...
 ```
 
@@ -195,3 +202,75 @@ uv run pytest tests/ -v
 - 테스트 없이 코드 작성
 - 구조 변경과 동작 변경 동시 커밋
 - 테스트 실패 상태에서 커밋
+
+---
+
+## 선물 거래 (USDT-M Futures)
+
+### 핵심 공식 (Binance USDT-M Isolated Margin)
+
+```python
+# 청산가 계산
+롱: LP = EP × (1/L - 1) / (MMR - 1)
+숏: LP = EP × (1/L + 1) / (MMR + 1)
+
+# 마진 계산
+마진 = Notional / Leverage
+
+# Funding 정산
+지불액 = Position × MarkPrice × FundingRate
+롱 + 양수펀딩 = 지불, 숏 + 양수펀딩 = 수취
+```
+
+### 선물 모드 활성화
+
+```python
+# leverage > 1이면 자동으로 선물 모드
+trader = PaperTrader(initial_capital=10000, leverage=10)  # 선물
+trader = PaperTrader(initial_capital=10000, leverage=1)   # 현물
+
+runner = TickBacktestRunner(
+    strategy=strategy,
+    data_loader=loader,
+    leverage=10,                    # 선물 모드
+    funding_loader=funding_loader,  # Funding Rate 적용
+)
+```
+
+### 선물 테스트 검증 항목
+
+1. **레버리지**: 마진 = Notional / Leverage
+2. **청산가**: Binance 공식과 일치 (test_futures_math_verification.py)
+3. **공매도**: BTC 없이 SELL 가능 (선물만)
+4. **Funding**: 8시간마다 정산, 캔들 타입과 독립
+
+---
+
+## 라이브러리 문서 조회
+
+**외부 라이브러리 관련 작업 시 반드시 Context7 MCP를 활용한다.**
+
+```
+# 라이브러리 ID 조회
+mcp_context7_resolve-library-id(libraryName="pandas", query="...")
+
+# 문서/예제 조회
+mcp_context7_query-docs(libraryId="/pandas/pandas", query="...")
+```
+
+### 필수 사용 상황
+
+- 새 라이브러리 도입 시
+- 라이브러리 API 사용법 확인 시
+- 버전별 차이 확인 시
+- 에러 해결 시
+
+### 주요 라이브러리 ID
+
+| 라이브러리 | Context7 ID |
+|------------|-------------|
+| pandas | `/pandas/pandas` |
+| numpy | `/numpy/numpy` |
+| pytest | `/pytest-dev/pytest` |
+| plotly | `/plotly/plotly.py` |
+| websockets | `/python-websockets/websockets` |
