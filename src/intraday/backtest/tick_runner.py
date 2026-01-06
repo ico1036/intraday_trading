@@ -218,6 +218,13 @@ class TickBacktestRunner:
             best_ask_qty=candle.sell_volume,
             position_side=position.side,
             position_qty=position.quantity,
+            # OHLCV 필드 추가
+            open=candle.open,
+            high=candle.high,
+            low=candle.low,
+            close=candle.close,
+            volume=candle.volume,
+            vwap=candle.vwap,
         )
         
         # 전략 실행

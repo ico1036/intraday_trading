@@ -98,6 +98,14 @@ class MarketState:
     position_side: Optional[Side] = None  # BUY/SELL/None
     position_qty: float = 0.0
 
+    # OHLCV 필드 (Tick Runner 전용, Orderbook Runner는 None)
+    open: Optional[float] = None
+    high: Optional[float] = None
+    low: Optional[float] = None
+    close: Optional[float] = None
+    volume: Optional[float] = None
+    vwap: Optional[float] = None
+
 
 class Strategy(Protocol):
     """
