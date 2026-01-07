@@ -12,8 +12,10 @@
       "Bash(cp*)",
       "Write",
       "Edit",
-      "mcp__context7__resolve-library-id",
-      "mcp__context7__query-docs"
+      "mcp__context7__*",
+      "mcp__server-sequential-thinking__*",
+      "mcp__playwright__*",
+      "mcp__chrome-devtools__*"
     ]
   },
   "hooks": {
