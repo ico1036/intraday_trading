@@ -16,6 +16,7 @@ Usage:
 """
 
 import importlib
+import json
 import sys
 from pathlib import Path
 from typing import Any
@@ -169,7 +170,7 @@ async def get_available_strategies(args: dict[str, Any]) -> dict[str, Any]:
         "initial_capital": float,
         "leverage": int,
         "include_funding": bool,  # For futures only
-        "strategy_params": dict,
+        "strategy_params": str,  # JSON string of strategy parameters
     }
 )
 async def run_backtest(args: dict[str, Any]) -> dict[str, Any]:
@@ -187,7 +188,7 @@ async def run_backtest(args: dict[str, Any]) -> dict[str, Any]:
         initial_capital: Initial capital in USD
         leverage: Leverage (1=spot, >1=futures)
         include_funding: Whether to include funding rate (futures only)
-        strategy_params: Dictionary of strategy-specific parameters
+        strategy_params: JSON string of strategy-specific parameters
 
     Returns:
         Backtest performance report
@@ -204,7 +205,22 @@ async def run_backtest(args: dict[str, Any]) -> dict[str, Any]:
         initial_capital = float(args.get("initial_capital", 10000.0))
         leverage = int(args.get("leverage", 1))
         include_funding = args.get("include_funding", False)
-        strategy_params = args.get("strategy_params", {})
+
+        # Parse strategy_params - handle both dict and JSON string
+        strategy_params_raw = args.get("strategy_params", {})
+        if isinstance(strategy_params_raw, str):
+            try:
+                strategy_params = json.loads(strategy_params_raw) if strategy_params_raw else {}
+            except json.JSONDecodeError:
+                return {
+                    "content": [{
+                        "type": "text",
+                        "text": f"Error: Invalid JSON in strategy_params: {strategy_params_raw}"
+                    }],
+                    "is_error": True
+                }
+        else:
+            strategy_params = strategy_params_raw if strategy_params_raw else {}
 
         # Parse dates
         start_date = None
