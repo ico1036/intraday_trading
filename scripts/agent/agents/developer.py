@@ -209,8 +209,48 @@ def test_{name}_respects_spread_filter():  # Orderbook only
 5. **Create test file** in `tests/`
 6. **Run tests**: `uv run pytest tests/test_strategy_{name}.py -v`
 7. **Fix any issues**
-8. **Update exports**: Add to `__init__.py`
-9. **Report** success/failure to Orchestrator
+8. **Report** success/failure to Orchestrator
+
+---
+
+## IMPORTANT: Auto-Discovery System
+
+**DO NOT modify `__init__.py` files!**
+
+Both `tick/__init__.py` and `orderbook/__init__.py` use **auto-discovery**:
+- Any file ending with `Strategy` class is automatically discovered
+- Just create `{name}.py` with `{Name}Strategy` class
+- No need to update `__init__.py` - it finds strategies automatically
+
+**How it works:**
+```python
+# tick/__init__.py auto-discovers:
+# - volume_imbalance.py → VolumeImbalanceStrategy
+# - regime.py → RegimeStrategy
+# - your_new.py → YourNewStrategy  ← Just create the file!
+```
+
+**Verification after creating strategy:**
+```bash
+uv run python -c "from intraday.strategies.tick import YourNewStrategy; print('OK')"
+```
+
+---
+
+## FORBIDDEN: Do NOT Create Backtest Scripts
+
+**NEVER create `run_*_backtest.py` or `scripts/run_*.py` files!**
+
+Backtests are executed by the **Analyst agent** using the MCP backtest tool.
+You only need to:
+1. Create the strategy file (`src/intraday/strategies/{tick|orderbook}/{name}.py`)
+2. Create the test file (`tests/test_strategy_{name}.py`)
+
+The Analyst will handle backtesting via:
+```python
+# Analyst uses MCP tool - NOT a script
+run_backtest(strategy_name="YourNewStrategy", start_date="2024-01-01", ...)
+```
 
 ---
 
@@ -223,7 +263,8 @@ def test_{name}_respects_spread_filter():  # Orderbook only
 5. **Forgetting to call `setup()`** in tests
 6. **Missing spread filter** for Orderbook strategies
 7. **Handling leverage in strategy** - Leverage is runner config, not strategy
-8. **Forgetting `__init__.py` exports**
+8. **Editing `__init__.py`** - Auto-discovery handles this!
+9. **Creating backtest scripts** - Analyst uses MCP tool!
 
 ## Anti-Patterns
 
@@ -232,6 +273,8 @@ def test_{name}_respects_spread_filter():  # Orderbook only
 - Don't override `__init__` - use `setup()` instead
 - Don't use MARKET orders for Orderbook strategies (use LIMIT)
 - Don't use LIMIT orders for Tick strategies (no real spread)
+- Don't modify `__init__.py` - strategies are auto-discovered
+- Don't create `run_*_backtest.py` scripts - use MCP tool
 """
 
 
