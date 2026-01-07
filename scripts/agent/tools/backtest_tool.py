@@ -93,13 +93,8 @@ def _get_all_strategies() -> dict[str, dict]:
     return result
 
 
-@tool(
-    "get_available_strategies",
-    "List available trading strategies and their default parameters",
-    {}
-)
-async def get_available_strategies(args: dict[str, Any]) -> dict[str, Any]:
-    """Return list of available strategies with their parameters."""
+async def _get_available_strategies_impl(args: dict[str, Any]) -> dict[str, Any]:
+    """Return list of available strategies with their parameters (implementation)."""
     import inspect
 
     all_strategies = _get_all_strategies()
@@ -157,25 +152,18 @@ async def get_available_strategies(args: dict[str, Any]) -> dict[str, Any]:
 
 
 @tool(
-    "run_backtest",
-    "Run a backtest with specified strategy and parameters. Returns performance metrics.",
-    {
-        "strategy": str,
-        "data_type": str,  # "tick" or "orderbook"
-        "data_path": str,
-        "start_date": str,  # "YYYY-MM-DD" or "YYYY-MM-DD HH:MM:SS"
-        "end_date": str,  # "YYYY-MM-DD" or "YYYY-MM-DD HH:MM:SS"
-        "bar_type": str,  # For tick strategies only
-        "bar_size": float,  # For tick strategies only
-        "initial_capital": float,
-        "leverage": int,
-        "include_funding": bool,  # For futures only
-        "strategy_params": str,  # JSON string of strategy parameters
-    }
+    "get_available_strategies",
+    "List available trading strategies and their default parameters",
+    {}
 )
-async def run_backtest(args: dict[str, Any]) -> dict[str, Any]:
+async def get_available_strategies(args: dict[str, Any]) -> dict[str, Any]:
+    """Return list of available strategies with their parameters."""
+    return await _get_available_strategies_impl(args)
+
+
+async def _run_backtest_impl(args: dict[str, Any]) -> dict[str, Any]:
     """
-    Run a backtest with the specified strategy.
+    Run a backtest with the specified strategy (implementation).
 
     Args:
         strategy: Strategy class name (e.g., "VolumeImbalanceStrategy")
@@ -334,6 +322,28 @@ async def run_backtest(args: dict[str, Any]) -> dict[str, Any]:
             }],
             "is_error": True
         }
+
+
+@tool(
+    "run_backtest",
+    "Run a backtest with specified strategy and parameters. Returns performance metrics.",
+    {
+        "strategy": str,
+        "data_type": str,  # "tick" or "orderbook"
+        "data_path": str,
+        "start_date": str,  # "YYYY-MM-DD" or "YYYY-MM-DD HH:MM:SS"
+        "end_date": str,  # "YYYY-MM-DD" or "YYYY-MM-DD HH:MM:SS"
+        "bar_type": str,  # For tick strategies only
+        "bar_size": float,  # For tick strategies only
+        "initial_capital": float,
+        "leverage": int,
+        "include_funding": bool,  # For futures only
+        "strategy_params": str,  # JSON string of strategy parameters
+    }
+)
+async def run_backtest(args: dict[str, Any]) -> dict[str, Any]:
+    """Run a backtest with the specified strategy."""
+    return await _run_backtest_impl(args)
 
 
 def _run_tick_backtest(
