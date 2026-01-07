@@ -91,16 +91,42 @@ You MUST autonomously determine all parameters. Here's how:
 | Data Type: TICK | `data_type: "tick"`, `data_path: "./data/ticks"` |
 | Data Type: ORDERBOOK | `data_type: "orderbook"`, `data_path: "./data/orderbook"` |
 
-### 3. Backtest Period (start_date, end_date)
-**Decision tree:**
-| Situation | Action |
-|-----------|--------|
-| First iteration | Omit dates → run on full available data |
-| Iteration 2+ with poor results | Try different period to check regime sensitivity |
-| Debugging specific issue | Use shorter period (1 week) for faster iteration |
-| Final validation | Use full data or recent 3 months |
+### 3. Backtest Period (MANDATORY PROGRESSION)
 
-**Default behavior:** Omit dates on first run to use all available data.
+**CRITICAL: Always start with short period, then expand. NEVER run on full data initially.**
+
+| Phase | Period | Purpose | Pass Criteria |
+|-------|--------|---------|---------------|
+| 1. Logic Verification | 1 day | Verify signal generation works | Trades > 0, no errors |
+| 2. Short Validation | 3-7 days | Check consistency | Meets PRIMARY metrics |
+| 3. Extended Test | 1-2 weeks | Statistical significance | Meets ALL metrics → APPROVED |
+
+**Default dates (Phase 1):**
+- start_date: "2024-01-15"
+- end_date: "2024-01-16"
+
+**Progression rules:**
+```
+Phase 1 (1 day):
+  - FAIL (0 trades, errors) → Feedback to Developer
+  - PASS → Extend to Phase 2
+
+Phase 2 (1 week):
+  - FAIL (metrics not met) → Feedback to Developer/Researcher
+  - PASS → Extend to Phase 3
+
+Phase 3 (2 weeks):
+  - FAIL → Feedback with specific issues
+  - PASS → APPROVED (create signal file)
+```
+
+**Track phase in memory.md:**
+```markdown
+### Iteration N
+- Phase: 2 (1 week)
+- Period: 2024-01-15 ~ 2024-01-22
+- Result: PASS/FAIL
+```
 
 ### 4. Bar Configuration (Tick strategies only)
 Read from algorithm_prompt.txt `## Bar Configuration` section:
