@@ -103,10 +103,30 @@ await mcp__backtest__run_backtest({
 
 ## Step 4: Analyze Results
 
-### Phase 1 Analysis (Logic Check)
-- Trades > 0? → Proceed to Phase 2
-- Trades = 0? → NEED_IMPROVEMENT (signal generation broken)
+### Phase 1 Analysis (Logic Check + Sanity Check)
+
+**Logic Check (에러 여부):**
 - Errors? → NEED_IMPROVEMENT (code bug)
+- Trades = 0? → NEED_IMPROVEMENT (signal generation broken)
+
+**Sanity Check (anomaly 감지):**
+| Anomaly | Symptom | Action |
+|---------|---------|--------|
+| No Position | Position always None | NEED_IMPROVEMENT (entry logic never triggers) |
+| Dead Strategy | Total PnL = 0 | NEED_IMPROVEMENT (no price movement captured) |
+| One-sided | All BUY or all SELL | NEED_IMPROVEMENT (exit logic broken) |
+| Broken Win/Loss | Win Rate = 0% or 100% | NEED_IMPROVEMENT (logic error) |
+| No Exits | Open positions = Total trades | NEED_IMPROVEMENT (exit never triggers) |
+
+**Pass Criteria for Phase 1:**
+- Trades > 0
+- Position opened at least once
+- Total PnL ≠ 0
+- Both BUY and SELL present
+- 0% < Win Rate < 100%
+
+→ All pass? Proceed to Phase 2
+→ Any fail? NEED_IMPROVEMENT with specific anomaly identified
 
 ### Phase 2+ Analysis (Quality Gates)
 
