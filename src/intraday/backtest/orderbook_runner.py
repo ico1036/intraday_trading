@@ -48,35 +48,54 @@ class OrderbookBacktestRunner:
         strategy: Strategy,
         data_loader: OrderbookDataLoader,
         initial_capital: float = 10000.0,
-        fee_rate: float = 0.001,
+        fee_rate: float | None = None,
         symbol: str = "BTCUSDT",
         latency_ms: float = 50.0,
+        maker_fee_rate: float = 0.0002,  # 0.02% (Binance Futures)
+        taker_fee_rate: float = 0.0005,  # 0.05% (Binance Futures)
     ):
         """
         Args:
             strategy: 실행할 전략 (Strategy Protocol 구현체)
             data_loader: 오더북 데이터 로더
             initial_capital: 초기 자본금 (USD)
-            fee_rate: 수수료율 (기본 0.1%)
+            fee_rate: 수수료율 (deprecated, 하위 호환용. None이면 maker/taker 사용)
             symbol: 거래쌍 (리포트용)
             latency_ms: 주문 전송 지연 시간 (밀리초, 기본 50ms)
                         주문 제출 후 이 시간이 지나야 체결 시도.
-        
+            maker_fee_rate: Limit Order 수수료율 (기본 0.02%)
+            taker_fee_rate: Market Order 수수료율 (기본 0.05%)
+
         교육 포인트:
             - 전략은 Protocol로 정의되어 있어 교체가 용이
             - ForwardRunner에서 사용하던 전략을 그대로 사용
             - latency_ms: 50ms = Binance API 평균 RTT 기준
+            - Maker/Taker 수수료: Limit Order는 maker (낮음), Market Order는 taker (높음)
         """
         self.strategy = strategy
         self.data_loader = data_loader
         self.initial_capital = initial_capital
-        self.fee_rate = fee_rate
         self.symbol = symbol
         self.latency_ms = latency_ms
-        
+
+        # 수수료 설정 (하위 호환)
+        if fee_rate is not None:
+            self.fee_rate = fee_rate
+            self.maker_fee_rate = fee_rate
+            self.taker_fee_rate = fee_rate
+        else:
+            self.maker_fee_rate = maker_fee_rate
+            self.taker_fee_rate = taker_fee_rate
+            self.fee_rate = taker_fee_rate  # 하위 호환용
+
         # 내부 컴포넌트 (ForwardRunner와 동일)
         self._processor = OrderbookProcessor(max_history=1000)
-        self._trader = PaperTrader(initial_capital, fee_rate)
+        self._trader = PaperTrader(
+            initial_capital,
+            fee_rate=fee_rate,
+            maker_fee_rate=self.maker_fee_rate,
+            taker_fee_rate=self.taker_fee_rate,
+        )
         
         # 상태
         self._start_time: Optional[datetime] = None

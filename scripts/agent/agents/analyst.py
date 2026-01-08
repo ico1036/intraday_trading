@@ -30,11 +30,12 @@ Execute backtests efficiently, analyze results, and provide actionable feedback.
 | Field | Section | Backtest Parameter |
 |-------|---------|-------------------|
 | Strategy Name | `# Strategy: {Name}` | `strategy` = `{Name}Strategy` |
-| Data Type | `## Strategy Configuration` | `data_type` |
 | Asset Type | `## Strategy Configuration` | `data_path`, `include_funding` |
+| Order Type | `## Strategy Configuration` | (수수료 계산용) |
 | Leverage | `## Risk Management` | `leverage` |
-| Bar Type | `## Bar Configuration` | `bar_type` |
-| Bar Size | `## Bar Configuration` | `bar_size` (MUST be ≥ 10.0) |
+| Bar Type | `## Data Period Design` | `bar_type` |
+| Bar Size | `## Data Period Design` | `bar_size` |
+| EDA/IS/OS Periods | `## Data Period Design` | `start_date`, `end_date` |
 | Parameters | `## Parameters` | `strategy_params` |
 
 **Fields you DON'T need (Developer handles these):**
@@ -48,7 +49,6 @@ Execute backtests efficiently, analyze results, and provide actionable feedback.
 
 ### Hard Constraints (Return to Researcher if violated)
 - Multi-symbol (BTC + ETH) → Single symbol only
-- TICK + ORDERBOOK combined → Choose one
 - Multiple strategies (ensemble) → Single strategy only
 
 ### Principle
@@ -62,74 +62,82 @@ Write brief feedback to `{name}_dir/backtest_report.md` explaining the constrain
 
 ## Step 2: Plan the Backtest
 
-**Why plan?** Full data can have 80+ million ticks. Running on all data wastes hours if basic logic is broken.
+**핵심 원칙**: EDA / IS / OS **범위는 고정**, 실제 기간은 전략 빈도에 따라 선택
 
-### Progressive Testing Strategy
+```
+[----EDA----][----------IS----------][-----OS-----]
+   1월           2월 ~ 8월              9월 ~ 12월
+  (고정)          (고정)                 (고정)
+              ↓
+         Analyst가 전략 특성 보고
+         범위 내에서 실제 테스트 기간 선택
+```
 
-| Phase | Period | Purpose | Pass Criteria |
-|-------|--------|---------|---------------|
-| 1 | 1 day | Logic verification | Trades > 0, no errors |
-| 2 | 1 week | Consistency check | Primary metrics met |
-| 3 | 2 weeks | Statistical validity | ALL metrics → APPROVED |
+### 고정 범위 (algorithm_prompt.txt에서 확인)
 
-**Start with Phase 1. Only proceed to next phase if current phase passes.**
+| Period | Range | Purpose |
+|--------|-------|---------|
+| **EDA** | 2024-01-01 ~ 2024-01-31 | Researcher 전용 |
+| **IS** | 2024-02-01 ~ 2024-08-31 | Iteration feedback |
+| **OS** | 2024-09-01 ~ 2024-12-31 | 최종 검증 (feedback 금지) |
+
+### 실제 테스트 기간 선택 (전략 빈도 기반)
+
+| Expected Frequency | IS 기간 | OS 기간 | 기준 |
+|-------------------|---------|---------|------|
+| **HFT** (>100 trades/day) | 3일 | 1주 | 빠른 수렴 |
+| **MFT** (10-100 trades/day) | 2주 | 1개월 | 중간 |
+| **LFT** (<10 trades/day) | 1개월 | 2개월 | 충분한 샘플 필요 |
+
+**algorithm_prompt.txt의 `Expected Frequency` 필드 확인 후 기간 결정**
+
+### Testing Flow
+
+| Step | Period | Purpose | Pass Criteria |
+|------|--------|---------|---------------|
+| 1 | IS 1일 | Logic verification | Trades > 0, no errors |
+| 2 | IS (빈도 기반) | Performance check | Primary metrics met |
+| 3 | OS (빈도 기반) | Final validation | ALL metrics (보고서용) |
+
+**중요**: OS 결과는 다음 iteration feedback에 사용 금지! IS 결과만 참고.
 
 ### Determine Parameters
 
 | Parameter | How to Determine |
 |-----------|-----------------|
 | `strategy` | `{Name}` from header + "Strategy" suffix |
-| `data_type` | "tick" or "orderbook" from config |
+| `data_type` | "tick" (고정) |
 | `data_path` | FUTURES → `./data/futures_ticks`, SPOT → `./data/ticks` |
-| `bar_type` | From algorithm_prompt.txt `## Bar Configuration` (default: "VOLUME") |
-| `bar_size` | From algorithm_prompt.txt `## Bar Configuration` (default: 10.0 for VOLUME) |
-| `leverage` | From algorithm_prompt.txt `## Risk Management` (SPOT=1, FUTURES=from 2% rule) |
+| `bar_type` | From algorithm_prompt.txt |
+| `bar_size` | From algorithm_prompt.txt (Researcher가 EDA에서 결정) |
+| `leverage` | From algorithm_prompt.txt `## Risk Management` |
 | `include_funding` | FUTURES → true, SPOT → false |
-| `strategy_params` | From algorithm_prompt.txt `## Parameters` section |
+| `strategy_params` | From algorithm_prompt.txt `## Parameters` |
 
-### Determine Backtest Periods (FROM algorithm_prompt.txt)
+### Determine Backtest Periods
 
-**Read `## Backtest Period` section from algorithm_prompt.txt.** Researcher specifies periods based on signal frequency.
+**Step 1: algorithm_prompt.txt에서 `Expected Frequency` 확인**
+- HFT (>100 trades/day)
+- MFT (10-100 trades/day)
+- LFT (<10 trades/day)
 
-| Field | Source |
-|-------|--------|
-| Phase 1 duration | From algorithm_prompt.txt (e.g., "Phase 1: 2 days") |
-| Phase 2 duration | From algorithm_prompt.txt (e.g., "Phase 2: 5 days") |
-| Phase 3 duration | From algorithm_prompt.txt (e.g., "Phase 3: 2 weeks") |
+**Step 2: 빈도에 따라 실제 테스트 기간 계산**
 
-**Calculate dates from base date 2024-01-22:**
-- `end_date`: Always "2024-01-22" (latest available data)
-- `start_date`: `end_date` - phase duration
+| Frequency | IS 시작 | IS 종료 | OS 시작 | OS 종료 |
+|-----------|---------|---------|---------|---------|
+| HFT | 2024-02-01 | 2024-02-03 (3일) | 2024-09-01 | 2024-09-07 (1주) |
+| MFT | 2024-02-01 | 2024-02-14 (2주) | 2024-09-01 | 2024-09-30 (1개월) |
+| LFT | 2024-02-01 | 2024-02-29 (1개월) | 2024-09-01 | 2024-10-31 (2개월) |
 
-**Example:**
-- Phase 1 (3 days): start=2024-01-19, end=2024-01-22
-- Phase 2 (1 week): start=2024-01-15, end=2024-01-22
-- Phase 3 (2 weeks): start=2024-01-08, end=2024-01-22
+**Step 3: Phase별 기간**
 
-**If NOT specified in algorithm_prompt.txt → STOP and request Researcher fix:**
+| Phase | Period | 계산 방법 |
+|-------|--------|----------|
+| Phase 1 (Logic) | IS 1일 | IS 시작일만 |
+| Phase 2 (Performance) | IS 전체 | 빈도 기반 |
+| Phase 3 (Validation) | OS 전체 | 빈도 기반 |
 
-DO NOT use fallback defaults. Instead:
-1. Write feedback to `{name}_dir/backtest_report.md`:
-   ```markdown
-   # Backtest Report: {Strategy Name}
-
-   ## Status: BLOCKED - Missing Configuration
-
-   ### Issue
-   `algorithm_prompt.txt` is missing the `## Backtest Period` section.
-
-   ### Required Action
-   Researcher must add backtest period specification based on signal frequency.
-
-   ### Feedback to Researcher
-   Please add the following to algorithm_prompt.txt:
-   - Estimated Signals/Day: {N} ({reasoning})
-   - Phase 1: {N days}
-   - Phase 2: {N days}
-   - Phase 3: {N days}
-   ```
-2. Return status: **NEED_IMPROVEMENT** with target: **Researcher**
-3. DO NOT proceed with backtest using arbitrary defaults
+**If `Expected Frequency` NOT specified → Default to MFT**
 
 ---
 
@@ -138,59 +146,49 @@ DO NOT use fallback defaults. Instead:
 ```python
 await mcp__backtest__run_backtest({
     "strategy": "<StrategyName>Strategy",
-    "data_type": "<tick|orderbook>",
-    "data_path": "<path>",
+    "data_type": "tick",                  # 고정
+    "data_path": "<FUTURES: ./data/futures_ticks, SPOT: ./data/ticks>",
     "start_date": "<YYYY-MM-DD>",
     "end_date": "<YYYY-MM-DD>",
     "bar_type": "VOLUME",
-    "bar_size": 10.0,                    # MUST be >= 10.0 for VOLUME bars
+    "bar_size": 10.0,
     "initial_capital": 10000.0,
-    "leverage": <int>,                   # 1=SPOT, 10=FUTURES
-    "include_funding": <bool>,           # false=SPOT, true=FUTURES
+    "leverage": <int>,                    # 1=SPOT, 10=FUTURES
+    "include_funding": <bool>,            # false=SPOT, true=FUTURES
     "strategy_params": {<params>},
-    "output_dir": "{name}_dir"           # REQUIRED: saves report to workspace
+    "output_dir": "{name}_dir"
 })
 ```
 
 **bar_size Rules:**
-- For VOLUME bars: **MUST be >= 10.0** (e.g., 10.0 = 10 BTC per bar)
-- Values < 10.0 will be REJECTED by backtest tool (creates millions of bars)
-- If algorithm_prompt.txt specifies < 10.0, override to 10.0 and note in report
+- VOLUME bars: >= 10 BTC (실용적 제한, 백테스트 속도)
+- TIME bars: >= 60 sec (1분)
+- Researcher가 EDA에서 수수료 기반으로 결정한 값 사용
 
-**Wait for completion** (1-5 minutes with proper bar_size).
+**Wait for completion** (1-5 minutes).
 
 ---
 
 ## Step 4: Analyze Results
 
-### Phase 1 Analysis (Logic Check + Sanity Check)
+### IS 1일 Analysis (Logic Check)
 
 **Logic Check (에러 여부):**
 - Errors? → NEED_IMPROVEMENT (code bug)
 - Trades = 0? → NEED_IMPROVEMENT (signal generation broken)
 
-**Sanity Check (anomaly 감지):**
+**Sanity Check:**
 | Anomaly | Symptom | Action |
 |---------|---------|--------|
-| No Position | Position always None | NEED_IMPROVEMENT (entry logic never triggers) |
-| Dead Strategy | Total PnL = 0 | NEED_IMPROVEMENT (no price movement captured) |
-| One-sided | All BUY or all SELL | NEED_IMPROVEMENT (exit logic broken) |
-| Broken Win/Loss | Win Rate = 0% or 100% | NEED_IMPROVEMENT (logic error) |
-| No Exits | Open positions = Total trades | NEED_IMPROVEMENT (exit never triggers) |
+| No Position | Position always None | NEED_IMPROVEMENT |
+| Dead Strategy | Total PnL = 0 | NEED_IMPROVEMENT |
+| One-sided | All BUY or all SELL | NEED_IMPROVEMENT |
+| Broken Win/Loss | Win Rate = 0% or 100% | NEED_IMPROVEMENT |
 
-**Pass Criteria for Phase 1:**
-- Trades > 0
-- Position opened at least once
-- Total PnL ≠ 0
-- Both BUY and SELL present
-- 0% < Win Rate < 100%
+→ All pass? Proceed to IS 전체
+→ Any fail? NEED_IMPROVEMENT
 
-→ All pass? Proceed to Phase 2
-→ Any fail? NEED_IMPROVEMENT with specific anomaly identified
-
-### Phase 2+ Analysis (Quality Gates)
-
-**Read SUCCESS CRITERIA from memory.md first.** If not specified, use defaults:
+### IS 전체 Analysis (Performance - Feedback용)
 
 **Primary Metrics (ALL must pass for APPROVED):**
 | Metric | APPROVED | NEED_IMPROVEMENT | REJECT |
@@ -200,16 +198,26 @@ await mcp__backtest__run_backtest({
 | Total Return | ≥ 5% | 0% ~ 5% | < 0% |
 | Total Trades | ≥ 30 | 15 ~ 30 | < 15 |
 
-**Secondary Metrics (informational):**
-| Metric | Good | Acceptable | Poor |
-|--------|------|------------|------|
-| Win Rate | ≥ 40% | 25% ~ 40% | < 25% |
-| Sharpe Ratio | ≥ 1.0 | 0 ~ 1.0 | < 0 |
-
 **Auto-Reject (→ Return to Researcher):**
 - Win Rate < 10%: Strategy logic fundamentally flawed
 - Sharpe < -0.5: Loss-making strategy
 - Total Trades < 5: No signal generation
+
+→ IS 통과? Proceed to OS
+→ IS 실패? NEED_IMPROVEMENT (IS 결과만 feedback에 포함)
+
+### OS 전체 Analysis (Validation - 보고서용만)
+
+**⚠️ 중요: OS 결과는 iteration feedback에 사용 금지!**
+
+OS는 과적합 여부 확인용:
+| Check | Healthy | Overfit Warning |
+|-------|---------|-----------------|
+| IS vs OS Return | OS ≥ IS × 0.7 | OS < IS × 0.5 |
+| IS vs OS Sharpe | 방향 동일 | 방향 반대 |
+| IS vs OS Win Rate | ±10% 이내 | 20% 이상 차이 |
+
+**OS 결과는 최종 보고서에만 기록, feedback 루프에 포함하지 않음!**
 
 ---
 
@@ -218,28 +226,33 @@ await mcp__backtest__run_backtest({
 ### Decision Tree
 
 ```
-Phase 1:
-  Trades = 0 → NEED_IMPROVEMENT (Developer: fix signal generation)
-  Trades > 0 → Run Phase 2
+IS 1일:
+  Trades = 0 → NEED_IMPROVEMENT
+  Trades > 0 → Run IS 전체
 
-Phase 2:
-  Any REJECT metric → NEED_IMPROVEMENT
-  All PRIMARY metrics APPROVED → Run Phase 3
-  Otherwise → NEED_IMPROVEMENT with specific feedback
+IS 전체:
+  Any REJECT → NEED_IMPROVEMENT (IS 결과로 feedback)
+  All APPROVED → Run OS
 
-Phase 3:
-  All metrics pass → APPROVED
-  Otherwise → NEED_IMPROVEMENT
+OS 전체:
+  Overfit detected → NEED_IMPROVEMENT (but feedback은 IS 결과만!)
+  Healthy → APPROVED
 ```
 
-### If Iteration > 1: Pattern Analysis
+### Feedback 원칙
 
-Before deciding, check memory.md for patterns:
+| 결과 | Feedback에 포함 | 포함 안함 |
+|------|-----------------|----------|
+| IS 결과 | ✅ 모든 메트릭 | - |
+| OS 결과 | ❌ | ✅ 보고서만 |
+| Overfit 여부 | ✅ 경고만 | OS 상세 수치 |
+
+### If Iteration > 1: Pattern Analysis
 
 | Pattern | Meaning | Action |
 |---------|---------|--------|
 | 3+ parameter tweaks failed | Parameter space exhausted | → Researcher |
-| Metric oscillating | Fundamental issue | → Researcher |
+| IS 좋은데 OS 나쁨 반복 | Overfitting | → Researcher (전략 단순화) |
 | Steady improvement | On right track | → Developer |
 | Win rate stuck < 20% | Entry logic broken | → Researcher |
 
@@ -267,8 +280,8 @@ Before deciding, check memory.md for patterns:
 ## Configuration
 | Field | Value |
 |-------|-------|
-| Data Type | TICK / ORDERBOOK |
 | Asset Type | SPOT / FUTURES |
+| Order Type | MARKET / LIMIT |
 | Leverage | {value} |
 | Period | {start} ~ {end} |
 | Phase | {1/2/3} |
@@ -337,7 +350,6 @@ Before deciding, check memory.md for patterns:
 |------------|------|
 | SPOT | `./data/ticks` |
 | FUTURES | `./data/futures_ticks` |
-| ORDERBOOK | `./data/orderbook` |
 
 ---
 

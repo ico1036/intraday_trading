@@ -195,6 +195,7 @@ async def _run_backtest_impl(args: dict[str, Any]) -> dict[str, Any]:
         leverage: Leverage (1=spot, >1=futures)
         include_funding: Whether to include funding rate (futures only)
         strategy_params: JSON string of strategy-specific parameters
+        fee_rate: Trading fee rate (default: 0.0005 = 0.05% for futures taker)
 
     Returns:
         Backtest performance report
@@ -211,6 +212,14 @@ async def _run_backtest_impl(args: dict[str, Any]) -> dict[str, Any]:
         initial_capital = float(args.get("initial_capital", 10000.0))
         leverage = int(args.get("leverage", 1))
         include_funding = args.get("include_funding", False)
+        # CRITICAL: Use realistic fee rates (Binance futures)
+        # Reference: https://www.binance.com/en/fee/schedule (Regular user: 0.02% maker, 0.05% taker)
+        # fee_rate is deprecated but kept for backward compatibility
+        fee_rate = args.get("fee_rate")  # None means use maker/taker rates
+        if fee_rate is not None:
+            fee_rate = float(fee_rate)
+        maker_fee_rate = float(args.get("maker_fee_rate", 0.0002))  # 0.02%
+        taker_fee_rate = float(args.get("taker_fee_rate", 0.0005))  # 0.05%
 
         # Parse strategy_params - handle both dict and JSON string
         strategy_params_raw = args.get("strategy_params", {})
@@ -284,12 +293,24 @@ async def _run_backtest_impl(args: dict[str, Any]) -> dict[str, Any]:
                 "is_error": True
             }
 
-        # CRITICAL: Validate bar_size for VOLUME bars (prevents hours-long backtests)
+        # Validate bar_size for VOLUME bars (practical limit to prevent slow backtests)
         if data_type == "tick" and bar_type_str == "VOLUME" and bar_size < 10.0:
             return {
                 "content": [{
                     "type": "text",
-                    "text": f"Error: bar_size={bar_size} is too small for VOLUME bars. MUST be >= 10.0 (10 BTC per bar). Values < 10.0 create millions of bars and take hours to run."
+                    "text": f"Error: bar_size={bar_size} BTC is too small. MUST be >= 10.0 BTC.\n"
+                           f"(Creates millions of bars, backtest takes hours)"
+                }],
+                "is_error": True
+            }
+        
+        # Validate bar_size for TIME bars (practical limit)
+        if data_type == "tick" and bar_type_str == "TIME" and bar_size < 60:
+            return {
+                "content": [{
+                    "type": "text",
+                    "text": f"Error: bar_size={bar_size} seconds is too small. MUST be >= 60 (1 minute).\n"
+                           f"(Creates millions of bars, backtest takes hours)"
                 }],
                 "is_error": True
             }
@@ -332,6 +353,9 @@ async def _run_backtest_impl(args: dict[str, Any]) -> dict[str, Any]:
                 include_funding=include_funding,
                 start_date=start_date,
                 end_date=end_date,
+                fee_rate=fee_rate,
+                maker_fee_rate=maker_fee_rate,
+                taker_fee_rate=taker_fee_rate,
             )
         else:
             report, runner = _run_orderbook_backtest(
@@ -341,6 +365,9 @@ async def _run_backtest_impl(args: dict[str, Any]) -> dict[str, Any]:
                 leverage=leverage,
                 start_date=start_date,
                 end_date=end_date,
+                fee_rate=fee_rate,
+                maker_fee_rate=maker_fee_rate,
+                taker_fee_rate=taker_fee_rate,
             )
 
         # Format results
@@ -393,6 +420,9 @@ async def _run_backtest_impl(args: dict[str, Any]) -> dict[str, Any]:
         "include_funding": bool,  # For futures only
         "strategy_params": str,  # JSON string of strategy parameters
         "output_dir": str,  # Directory to save report (e.g., "vpin_momentum_filter_dir")
+        "fee_rate": float,  # (deprecated) Single fee rate for all orders. Use maker/taker_fee_rate instead.
+        "maker_fee_rate": float,  # Limit Order fee rate (default: 0.0002 = 0.02%)
+        "taker_fee_rate": float,  # Market Order fee rate (default: 0.0005 = 0.05%)
     }
 )
 async def run_backtest(args: dict[str, Any]) -> dict[str, Any]:
@@ -410,6 +440,9 @@ def _run_tick_backtest(
     include_funding: bool,
     start_date=None,
     end_date=None,
+    fee_rate: float | None = None,
+    maker_fee_rate: float = 0.0002,
+    taker_fee_rate: float = 0.0005,
 ):
     """Run tick backtest with TickBacktestRunner."""
     from intraday.data.loader import TickDataLoader
@@ -433,6 +466,9 @@ def _run_tick_backtest(
         bar_type=bar_type,
         bar_size=bar_size,
         initial_capital=initial_capital,
+        fee_rate=fee_rate,
+        maker_fee_rate=maker_fee_rate,
+        taker_fee_rate=taker_fee_rate,
         leverage=leverage,
         funding_loader=funding_loader,
     )
@@ -448,6 +484,9 @@ def _run_orderbook_backtest(
     leverage: int,
     start_date=None,
     end_date=None,
+    fee_rate: float | None = None,
+    maker_fee_rate: float = 0.0002,
+    taker_fee_rate: float = 0.0005,
 ):
     """Run orderbook backtest with OrderbookBacktestRunner."""
     try:
@@ -462,7 +501,9 @@ def _run_orderbook_backtest(
         strategy=strategy,
         data_loader=loader,
         initial_capital=initial_capital,
-        leverage=leverage,
+        fee_rate=fee_rate,
+        maker_fee_rate=maker_fee_rate,
+        taker_fee_rate=taker_fee_rate,
     )
 
     report = runner.run(start_time=start_date, end_time=end_date)
@@ -471,6 +512,18 @@ def _run_orderbook_backtest(
 
 def _format_report(report, runner, data_type: str) -> str:
     """Format backtest report as structured text."""
+    # Get fee rates from runner's trader
+    maker_fee_rate = 0.0002  # default (Binance futures maker)
+    taker_fee_rate = 0.0005  # default (Binance futures taker)
+    if hasattr(runner, '_trader'):
+        if hasattr(runner._trader, 'maker_fee_rate'):
+            maker_fee_rate = runner._trader.maker_fee_rate
+        if hasattr(runner._trader, 'taker_fee_rate'):
+            taker_fee_rate = runner._trader.taker_fee_rate
+    elif hasattr(runner, 'maker_fee_rate') and hasattr(runner, 'taker_fee_rate'):
+        maker_fee_rate = runner.maker_fee_rate
+        taker_fee_rate = runner.taker_fee_rate
+
     # Basic metrics available in all reports
     lines = [
         "# Backtest Results",
@@ -480,6 +533,8 @@ def _format_report(report, runner, data_type: str) -> str:
         "|------|-------|",
         f"| Data Type | {data_type.upper()} |",
         f"| Leverage | {runner.leverage if hasattr(runner, 'leverage') else 1}x |",
+        f"| Maker Fee | {maker_fee_rate * 100:.3f}% (Limit) |",
+        f"| Taker Fee | {taker_fee_rate * 100:.3f}% (Market) |",
         "",
         "## Summary",
         "| Item | Value |",

@@ -122,24 +122,39 @@ class PaperTrader:
     def __init__(
         self,
         initial_capital: float,
-        fee_rate: float = 0.001,
+        fee_rate: float | None = None,
         leverage: int = 1,
+        maker_fee_rate: float = 0.0002,
+        taker_fee_rate: float = 0.0005,
     ):
         """
         Args:
             initial_capital: 초기 자본금 (USD)
-            fee_rate: 수수료율 (기본 0.1% = 0.001)
+            fee_rate: 수수료율 (deprecated, 하위 호환용)
             leverage: 레버리지 배율 (1=현물, 2+=선물)
+            maker_fee_rate: 메이커 수수료율 (기본 0.02% = 0.0002)
+            taker_fee_rate: 테이커 수수료율 (기본 0.05% = 0.0005)
 
         교육 포인트:
-            - Binance 기본 수수료: 현물 0.1%, 선물 0.04% (taker)
+            - Binance 선물 수수료: maker 0.02%, taker 0.05%
+            - Limit Order가 호가창에 걸려서 체결 → Maker (저렴)
+            - Market Order 또는 즉시 체결 Limit → Taker
             - 수수료는 왕복으로 발생 (진입 + 청산)
             - leverage=1: 현물 모드 (기존 동작)
             - leverage>1: 선물 모드 (마진 거래, 청산 있음)
         """
         self.initial_capital = initial_capital
-        self.fee_rate = fee_rate
         self.leverage = leverage
+
+        # 하위 호환: fee_rate가 지정되면 maker/taker 모두 동일하게 설정
+        if fee_rate is not None:
+            self.maker_fee_rate = fee_rate
+            self.taker_fee_rate = fee_rate
+            self.fee_rate = fee_rate  # 하위 호환용
+        else:
+            self.maker_fee_rate = maker_fee_rate
+            self.taker_fee_rate = taker_fee_rate
+            self.fee_rate = taker_fee_rate  # 하위 호환용 (기본값은 taker)
         self.capital = initial_capital
 
         # 잔고 관리 (Information Hiding: property로만 노출)
@@ -384,22 +399,22 @@ class PaperTrader:
         should_remove = False
         
         if order.order_type == OrderType.MARKET:
-            # MARKET 주문: 즉시 체결 시도
+            # MARKET 주문: 즉시 체결 시도 (Taker)
             if order.side == Side.BUY:
-                trade = self._execute_trade(order, best_ask, timestamp)
+                trade = self._execute_trade(order, best_ask, timestamp, is_maker=False)
             else:
-                trade = self._execute_trade(order, best_bid, timestamp)
+                trade = self._execute_trade(order, best_bid, timestamp, is_maker=False)
             # MARKET 주문은 성공/실패 관계없이 제거 (재시도 없음)
             should_remove = True
-        
+
         elif order.order_type == OrderType.LIMIT:
-            # LIMIT 주문: 조건 충족 시 체결
+            # LIMIT 주문: 조건 충족 시 체결 (Maker - 호가창에 걸려서 대기 후 체결)
             if order.side == Side.BUY and price <= order.limit_price:
-                trade = self._execute_trade(order, order.limit_price, timestamp)
+                trade = self._execute_trade(order, order.limit_price, timestamp, is_maker=True)
                 # 체결 시도됨 (성공/잔고부족 관계없이 제거)
                 should_remove = True
             elif order.side == Side.SELL and price >= order.limit_price:
-                trade = self._execute_trade(order, order.limit_price, timestamp)
+                trade = self._execute_trade(order, order.limit_price, timestamp, is_maker=True)
                 should_remove = True
             # 조건 미충족: 주문 유지 (should_remove = False)
         
@@ -461,19 +476,21 @@ class PaperTrader:
                     continue
             
             if order.order_type == OrderType.MARKET:
+                # MARKET 주문: Taker 수수료
                 if order.side == Side.BUY:
-                    trade = self._execute_trade(order, best_ask, timestamp)
+                    trade = self._execute_trade(order, best_ask, timestamp, is_maker=False)
                 else:
-                    trade = self._execute_trade(order, best_bid, timestamp)
+                    trade = self._execute_trade(order, best_bid, timestamp, is_maker=False)
                 # MARKET 주문은 성공/실패 관계없이 제거
                 should_remove = True
-            
+
             elif order.order_type == OrderType.LIMIT:
+                # LIMIT 주문: Maker 수수료 (호가창에 걸려서 대기 후 체결)
                 if order.side == Side.BUY and price <= order.limit_price:
-                    trade = self._execute_trade(order, order.limit_price, timestamp)
+                    trade = self._execute_trade(order, order.limit_price, timestamp, is_maker=True)
                     should_remove = True
                 elif order.side == Side.SELL and price >= order.limit_price:
-                    trade = self._execute_trade(order, order.limit_price, timestamp)
+                    trade = self._execute_trade(order, order.limit_price, timestamp, is_maker=True)
                     should_remove = True
                 # 조건 미충족: 주문 유지
             
@@ -522,7 +539,13 @@ class PaperTrader:
                 # 매도: BTC 잔고 확인 (공매도 불가)
                 return self._btc_balance >= order.quantity - epsilon
     
-    def _execute_trade(self, order: Order, execution_price: float, timestamp: datetime) -> Optional[Trade]:
+    def _execute_trade(
+        self,
+        order: Order,
+        execution_price: float,
+        timestamp: datetime,
+        is_maker: bool = False,
+    ) -> Optional[Trade]:
         """
         거래 체결 처리
 
@@ -530,18 +553,25 @@ class PaperTrader:
             order: 체결할 주문
             execution_price: 체결 가격
             timestamp: 체결 시간
+            is_maker: Maker 주문 여부 (True면 maker 수수료, False면 taker 수수료)
 
         Returns:
             체결된 Trade (성공 시)
             None (잔고 부족 시)
+
+        교육 포인트:
+            - Maker: Limit Order가 호가창에 걸려서 대기 후 체결 (유동성 제공)
+            - Taker: Market Order 또는 즉시 체결되는 Limit Order (유동성 소비)
+            - Maker 수수료가 Taker보다 저렴 (Binance: 0.02% vs 0.05%)
         """
         # 잔고 확인
         if not self._check_balance(order, execution_price):
             return None
 
-        # 수수료 계산
+        # 수수료 계산 (Maker/Taker 구분)
         notional = execution_price * order.quantity
-        fee = notional * self.fee_rate
+        fee_rate = self.maker_fee_rate if is_maker else self.taker_fee_rate
+        fee = notional * fee_rate
 
         pnl = 0.0
 

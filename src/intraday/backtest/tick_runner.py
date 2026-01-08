@@ -68,11 +68,13 @@ class TickBacktestRunner:
         bar_type: CandleType = CandleType.VOLUME,
         bar_size: float = 1.0,
         initial_capital: float = 10000.0,
-        fee_rate: float = 0.001,
+        fee_rate: float | None = None,
         symbol: str = "BTCUSDT",
         latency_ms: float = 50.0,
         leverage: int = 1,
         funding_loader: Optional[FundingRateLoader] = None,
+        maker_fee_rate: float = 0.0002,
+        taker_fee_rate: float = 0.0005,
     ):
         """
         Args:
@@ -81,7 +83,7 @@ class TickBacktestRunner:
             bar_type: 바 타입 (VOLUME, TICK, TIME, DOLLAR)
             bar_size: 바 크기 (거래량, 틱 수, 초, 또는 달러)
             initial_capital: 초기 자본금 (USD)
-            fee_rate: 수수료율 (기본 0.1%, 선물은 0.04% 권장)
+            fee_rate: 수수료율 (deprecated, 하위 호환용)
             symbol: 거래쌍 (리포트용)
             latency_ms: 주문 전송 지연 시간 (밀리초, 기본 50ms)
                         주문 제출 후 이 시간이 지나야 체결 시도.
@@ -90,6 +92,8 @@ class TickBacktestRunner:
                       선물 모드에서는 청산가 계산 및 강제 청산이 활성화됨.
             funding_loader: Funding Rate 데이터 로더 (선물 모드에서 사용)
                             None이면 Funding 정산 없이 실행.
+            maker_fee_rate: 메이커 수수료율 (기본 0.02% = 0.0002)
+            taker_fee_rate: 테이커 수수료율 (기본 0.05% = 0.0005)
 
         교육 포인트:
             - VOLUME 바: bar_size = 1.0 → 1 BTC 거래마다 바 생성
@@ -100,21 +104,38 @@ class TickBacktestRunner:
             - leverage=1: 현물 거래 (기존 동작)
             - leverage>1: 선물 거래 (마진, 청산, 공매도 가능)
             - funding_loader: 8시간마다 Funding Rate 정산 시뮬레이션
+            - Maker: Limit Order가 호가창에 걸려서 체결 (0.02%)
+            - Taker: Market Order 또는 즉시 체결 (0.05%)
         """
         self.strategy = strategy
         self.data_loader = data_loader
         self.bar_type = bar_type
         self.bar_size = bar_size
         self.initial_capital = initial_capital
-        self.fee_rate = fee_rate
         self.symbol = symbol
         self.latency_ms = latency_ms
         self.leverage = leverage
         self.funding_loader = funding_loader
 
+        # 하위 호환: fee_rate가 지정되면 maker/taker 모두 동일하게 설정
+        if fee_rate is not None:
+            self.fee_rate = fee_rate
+            self.maker_fee_rate = fee_rate
+            self.taker_fee_rate = fee_rate
+        else:
+            self.maker_fee_rate = maker_fee_rate
+            self.taker_fee_rate = taker_fee_rate
+            self.fee_rate = taker_fee_rate  # 하위 호환용
+
         # CandleBuilder 사용 (중복 제거)
         self._candle_builder = CandleBuilder(bar_type, bar_size)
-        self._trader = PaperTrader(initial_capital, fee_rate, leverage=leverage)
+        self._trader = PaperTrader(
+            initial_capital,
+            fee_rate=fee_rate,
+            leverage=leverage,
+            maker_fee_rate=self.maker_fee_rate,
+            taker_fee_rate=self.taker_fee_rate,
+        )
 
         # Funding 정산 관련
         self._funding_settlement = FundingSettlement()
