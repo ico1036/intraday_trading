@@ -243,11 +243,14 @@ uv run python -m intraday.dashboard
 
 ## Bar 타입 (TickBacktestRunner)
 
-| 타입 | 설명 | 예시 |
-|-----|------|------|
-| `BarType.VOLUME` | 거래량 기반 | `bar_size=10.0` → 10 BTC마다 바 생성 |
-| `BarType.TICK` | 체결 횟수 기반 | `bar_size=100` → 100틱마다 바 생성 |
-| `BarType.TIME` | 시간 기반 | `bar_size=60` → 60초마다 바 생성 |
+| 타입 | 설명 | 예시 | 최소값 |
+|-----|------|------|-------|
+| `BarType.VOLUME` | 거래량 기반 | `bar_size=10.0` → 10 BTC마다 바 생성 | **>= 10.0** |
+| `BarType.TICK` | 체결 횟수 기반 | `bar_size=100` → 100틱마다 바 생성 | - |
+| `BarType.TIME` | 시간 기반 | `bar_size=60` → 60초마다 바 생성 | - |
+| `BarType.DOLLAR` | 달러 기반 | `bar_size=1000000` → $1M마다 바 생성 | - |
+
+**VOLUME bar 제약**: bar_size < 10.0은 수백만 개의 바를 생성하여 백테스트가 수 시간 걸릴 수 있습니다.
 
 ## 선물 거래 (USDT-M Futures)
 
@@ -297,6 +300,14 @@ src/intraday/
 ├── backtest/                  # 백테스터
 │   ├── orderbook_runner.py    # 오더북 기반 백테스터
 │   └── tick_runner.py         # 틱 기반 백테스터 (볼륨바/틱바)
+├── strategies/                # 전략 구현
+│   ├── base.py                # StrategyBase (수정 금지)
+│   ├── tick/                  # Tick 기반 전략
+│   │   ├── _template.py       # 템플릿
+│   │   └── *.py               # 구현된 전략들
+│   └── orderbook/             # Orderbook 기반 전략
+│       ├── _template.py       # 템플릿
+│       └── *.py               # 구현된 전략들
 ├── data/                      # 데이터 수집/로딩
 │   ├── downloader.py          # Binance Public Data 다운로더 (현물/선물)
 │   ├── funding_downloader.py  # Funding Rate 다운로더
@@ -314,8 +325,50 @@ scripts/
 ├── run_tick_backtest.py       # Tick 백테스트 예제
 ├── run_orderbook_backtest.py  # Orderbook 백테스트 예제
 ├── record_orderbook.py        # 오더북 수집 스크립트
-└── run_forward_test.py        # 포워드 테스트 예제
+├── run_forward_test.py        # 포워드 테스트 예제
+└── agent/                     # AI Agent 시스템
+    ├── run_all.sh             # Agent 실행 스크립트
+    ├── agents/                # Agent 프롬프트
+    │   ├── orchestrator.py    # 워크플로우 조율
+    │   ├── researcher.py      # 전략 설계 (가설, Devil's Advocate)
+    │   ├── developer.py       # 전략 구현
+    │   └── analyst.py         # 백테스트 실행 및 분석
+    └── tools/
+        └── backtest_tool.py   # MCP 백테스트 도구
 ```
+
+## AI Agent 시스템 (자동 전략 개발)
+
+Claude Code 기반의 멀티 에이전트 시스템으로 전략을 자동 설계, 구현, 검증합니다.
+
+```bash
+# Agent 실행
+./scripts/agent/run_all.sh
+```
+
+### 워크플로우
+
+```
+User Idea → Orchestrator → Researcher → Developer → Analyst
+                              ↑                        │
+                              └────── NEED_IMPROVEMENT ┘
+```
+
+| Agent | 역할 | Output |
+|-------|------|--------|
+| Orchestrator | 워크플로우 조율 | 작업 디렉토리 생성 |
+| Researcher | 가설 설계, Devil's Advocate | `algorithm_prompt.txt` |
+| Developer | 전략 코드 구현 | `{name}.py`, 테스트 |
+| Analyst | 백테스트 실행 및 분석 | `backtest_report.md` |
+
+### 주요 설정
+
+| 항목 | 값 | 설명 |
+|------|-----|------|
+| AUM | $100K | 운용 자산 |
+| 2% Rule | Leverage = 2% / Stop Loss | 리스크 관리 |
+| Progressive Testing | 1일 → 1주 → 2주 | 단계별 검증 |
+| bar_size | >= 10.0 BTC | VOLUME bar 최소값 |
 
 ## 테스트
 

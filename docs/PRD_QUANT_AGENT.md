@@ -119,8 +119,9 @@ Claude Agent SDK 기반 퀀트 연구 자동화 시스템.
 **역할**: 백테스트 실행 및 성과 분석
 
 **책임**:
-- run_backtest MCP 도구로 백테스트 실행
-- 성과 메트릭 분석 (Sharpe, Win Rate, Drawdown)
+- **Progressive Testing**: Phase 1 (1일) → Phase 2 (1주) → Phase 3 (2주)로 단계적 검증
+- run_backtest MCP 도구로 백테스트 실행 (bar_size ≥ 10.0 필수)
+- 성과 메트릭 분석 (Profit Factor, Max Drawdown, Total Return, Win Rate)
 - 품질 게이트 검증
 - APPROVED/NEED_IMPROVEMENT 결정
 - 피드백 생성 (개선점, 다음 방향)
@@ -130,6 +131,7 @@ Claude Agent SDK 기반 퀀트 연구 자동화 시스템.
 **출력**:
 - `strategies/{name}/backtest_report.md`
 - `strategies/{name}/memory.md` 업데이트
+- `strategies/{name}/APPROVED.signal` (승인 시)
 
 ---
 
@@ -178,16 +180,33 @@ Orchestrator → Analyst
 
 | Metric | APPROVED | NEED_IMPROVEMENT | REJECT |
 |--------|----------|------------------|--------|
-| Sharpe Ratio | ≥ 0.5 | 0 ~ 0.5 | < 0 |
-| Win Rate | ≥ 30% | 10% ~ 30% | < 10% |
-| Max Drawdown | ≥ -20% | -20% ~ -30% | < -30% |
-| Total Trades | ≥ 20 | 10 ~ 20 | < 10 |
-| Profit Factor | ≥ 1.2 | 1.0 ~ 1.2 | < 1.0 |
+| Profit Factor | ≥ 1.3 | 1.0 ~ 1.3 | < 1.0 |
+| Max Drawdown | ≥ -15% | -15% ~ -25% | < -25% |
+| Total Return | ≥ 5% | 0% ~ 5% | < 0% |
+| Total Trades | ≥ 30 | 15 ~ 30 | < 15 |
+| Win Rate | ≥ 40% | 25% ~ 40% | < 25% (secondary) |
+| Sharpe Ratio | ≥ 1.0 | 0 ~ 1.0 | < 0 (secondary) |
 
 **자동 실패 조건** (REJECT → 즉시 Researcher 호출):
 - Win Rate < 10%: "전략 로직 근본적 문제"
 - Sharpe < -0.5: "손실 전략"
 - Total Trades < 5: "신호 발생 안함"
+
+## Progressive Testing Strategy
+
+**CRITICAL: 백테스트는 반드시 단계적으로 실행**
+
+| Phase | Period | Purpose | Pass Criteria |
+|-------|--------|---------|---------------|
+| 1 | 1 day | Logic verification | Trades > 0, no errors |
+| 2 | 1 week | Consistency check | Primary metrics met |
+| 3 | 2 weeks | Statistical validity | ALL metrics → APPROVED |
+
+## Backtest Tool Validations
+
+- `bar_size` ≥ 10.0 (VOLUME bars): 값이 작으면 수백만 개 bar 생성으로 수시간 소요
+- 최대 기간 14일: Progressive testing 강제
+- `output_dir` 파라미터: 리포트 자동 저장
 
 ---
 
