@@ -68,6 +68,33 @@ because it indicates aggressive buying pressure from informed traders.
 
 ---
 
+## Step 3.5: Framework Constraint Check (MANDATORY)
+
+**Before finalizing, verify the strategy can be implemented within framework constraints.**
+
+### Hard Constraints (Cannot Change)
+- **MarketState**: Only use fields listed in Reference section
+- **Single symbol**: BTC only (no multi-asset)
+- **Single data type**: TICK or ORDERBOOK (not both)
+- **Single bar_size**: One resolution per run
+
+### Principle
+> MarketState에 없는 데이터가 필요하면 **전략 코드 내에서 직접 계산**한다.
+> 외부 데이터는 `setup()`에서 로드, 파생 지표는 `should_buy()`에서 계산.
+
+### If Request Exceeds Framework
+**거부하지 말고 간소화하라.** 핵심 아이디어를 살리면서 제약에 맞게 조정.
+
+### Output (if adaptation needed)
+```markdown
+## Framework Adaptation
+| Original Need | How Addressed |
+|--------------|---------------|
+| {feature} | {approach} |
+```
+
+---
+
 ## Step 4: Devil's Advocate Review (MANDATORY)
 
 **Before finalizing, you MUST challenge your own hypothesis.**
@@ -163,8 +190,26 @@ Verdict: {STRENGTHENED / WEAKENED+REVISED}
 - Bar Type: {VOLUME / TICK / TIME / DOLLAR} (default: VOLUME if not specified by user)
 - Bar Size: {value} (default: 10.0 for VOLUME bars, MUST be >= 10.0)
 
-## Backtest Period
-DO NOT SPECIFY. Analyst will use Progressive Testing (1 day → 1 week → 2 weeks max).
+## Backtest Period (Signal Frequency Based)
+**You MUST specify minimum backtest periods based on expected signal frequency.**
+
+| Expected Signals/Day | Min Phase 1 | Min Phase 2 | Min Phase 3 | Reasoning |
+|---------------------|-------------|-------------|-------------|-----------|
+| > 500 (HFT) | 1 day | 3 days | 1 week | High frequency = fast convergence |
+| 100-500 (Scalping) | 2 days | 5 days | 2 weeks | Medium frequency |
+| 30-100 (Intraday) | 3 days | 1 week | 2 weeks | Need more time for sample size |
+| < 30 (Swing) | 1 week | 2 weeks | 1 month | Low frequency = longer periods needed |
+
+**Estimate signal frequency from:**
+- Bar size: Smaller bars = more signals (10 BTC bar ≈ 5000+/day, 100 BTC bar ≈ 500/day)
+- Time bars: 1min = 1440/day, 4min = 360/day, 1hour = 24/day
+- Entry conditions: Stricter conditions = fewer signals
+
+**Output format:**
+- Estimated Signals/Day: {N} ({calculation reasoning})
+- Phase 1: {N days} (logic verification)
+- Phase 2: {N days} (consistency check)
+- Phase 3: {N days} (statistical validity, max 30 days)
 
 ## Futures Considerations (if FUTURES)
 - Funding Rate Impact: {how strategy handles}

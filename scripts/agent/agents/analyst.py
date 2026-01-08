@@ -42,6 +42,24 @@ Execute backtests efficiently, analyze results, and provide actionable feedback.
 
 ---
 
+## Step 1.5: Validate Framework Compatibility
+
+**Before running backtest, check if algorithm_prompt.txt requires unsupported features.**
+
+### Hard Constraints (Return to Researcher if violated)
+- Multi-symbol (BTC + ETH) → Single symbol only
+- TICK + ORDERBOOK combined → Choose one
+- Multiple strategies (ensemble) → Single strategy only
+
+### Principle
+> 전략 내 자체 구현(setup/should_buy에서 계산)은 OK.
+> 프레임워크 자체를 바꿔야 하는 요구사항만 Researcher에게 반환.
+
+### If Blocked
+Write brief feedback to `{name}_dir/backtest_report.md` explaining the constraint, return **NEED_IMPROVEMENT** → **Researcher**.
+
+---
+
 ## Step 2: Plan the Backtest
 
 **Why plan?** Full data can have 80+ million ticks. Running on all data wastes hours if basic logic is broken.
@@ -63,13 +81,55 @@ Execute backtests efficiently, analyze results, and provide actionable feedback.
 | `strategy` | `{Name}` from header + "Strategy" suffix |
 | `data_type` | "tick" or "orderbook" from config |
 | `data_path` | FUTURES → `./data/futures_ticks`, SPOT → `./data/ticks` |
-| `start_date` | Phase 1: "2024-01-15", Phase 2: "2024-01-15", Phase 3: "2024-01-08" |
-| `end_date` | Phase 1: "2024-01-16", Phase 2: "2024-01-22", Phase 3: "2024-01-22" |
 | `bar_type` | From algorithm_prompt.txt `## Bar Configuration` (default: "VOLUME") |
 | `bar_size` | From algorithm_prompt.txt `## Bar Configuration` (default: 10.0 for VOLUME) |
 | `leverage` | From algorithm_prompt.txt `## Risk Management` (SPOT=1, FUTURES=from 2% rule) |
 | `include_funding` | FUTURES → true, SPOT → false |
 | `strategy_params` | From algorithm_prompt.txt `## Parameters` section |
+
+### Determine Backtest Periods (FROM algorithm_prompt.txt)
+
+**Read `## Backtest Period` section from algorithm_prompt.txt.** Researcher specifies periods based on signal frequency.
+
+| Field | Source |
+|-------|--------|
+| Phase 1 duration | From algorithm_prompt.txt (e.g., "Phase 1: 2 days") |
+| Phase 2 duration | From algorithm_prompt.txt (e.g., "Phase 2: 5 days") |
+| Phase 3 duration | From algorithm_prompt.txt (e.g., "Phase 3: 2 weeks") |
+
+**Calculate dates from base date 2024-01-22:**
+- `end_date`: Always "2024-01-22" (latest available data)
+- `start_date`: `end_date` - phase duration
+
+**Example:**
+- Phase 1 (3 days): start=2024-01-19, end=2024-01-22
+- Phase 2 (1 week): start=2024-01-15, end=2024-01-22
+- Phase 3 (2 weeks): start=2024-01-08, end=2024-01-22
+
+**If NOT specified in algorithm_prompt.txt → STOP and request Researcher fix:**
+
+DO NOT use fallback defaults. Instead:
+1. Write feedback to `{name}_dir/backtest_report.md`:
+   ```markdown
+   # Backtest Report: {Strategy Name}
+
+   ## Status: BLOCKED - Missing Configuration
+
+   ### Issue
+   `algorithm_prompt.txt` is missing the `## Backtest Period` section.
+
+   ### Required Action
+   Researcher must add backtest period specification based on signal frequency.
+
+   ### Feedback to Researcher
+   Please add the following to algorithm_prompt.txt:
+   - Estimated Signals/Day: {N} ({reasoning})
+   - Phase 1: {N days}
+   - Phase 2: {N days}
+   - Phase 3: {N days}
+   ```
+2. Return status: **NEED_IMPROVEMENT** with target: **Researcher**
+3. DO NOT proceed with backtest using arbitrary defaults
 
 ---
 

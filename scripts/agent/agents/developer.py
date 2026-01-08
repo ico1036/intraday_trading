@@ -335,6 +335,29 @@ runner = TickBacktestRunner(strategy=strategy, leverage=10, funding_loader=loade
 
 ---
 
+# Reference: Framework Guardrails
+
+## 수정 금지 (Hard Constraints)
+| 파일 | 이유 |
+|-----|------|
+| `base.py` | 모든 전략의 부모 클래스 |
+| `strategy.py` | MarketState 정의 |
+| `tick_runner.py`, `orderbook_runner.py` | 백테스트 인프라 |
+| `__init__.py` | 자동 탐색 시스템 |
+
+## 수정 가능 (Your Playground)
+| 위치 | 자유도 |
+|-----|-------|
+| `strategies/tick/{name}.py` | **무제한** - 새 파일 생성 |
+| `strategies/orderbook/{name}.py` | **무제한** - 새 파일 생성 |
+| `setup()` | 자유 - 상태 초기화, 외부 데이터 로드, 헬퍼 클래스 생성 |
+| `should_buy()` / `should_sell()` | 자유 - 모든 계산 로직, 내부 상태 업데이트 |
+| `self.*` 인스턴스 변수 | 자유 - deque, list, dict 등 원하는 자료구조 사용 |
+| 헬퍼 메서드 | 자유 - `_calculate_*()` 등 private 메서드 추가 가능 |
+| 외부 라이브러리 import | 자유 - `collections`, `bisect`, `intraday.funding` 등 |
+
+---
+
 # Important Rules
 
 ## Files You MUST NOT Modify

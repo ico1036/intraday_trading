@@ -62,6 +62,24 @@ def _discover_strategies(data_type: str) -> dict[str, type]:
 
         module_name = f"intraday.strategies.{data_type}.{py_file.stem}"
         try:
+            # CRITICAL: Force reload of strategy module AND its dependencies
+            # This ensures latest code changes are used during backtests
+
+            # Step 1: Clear base module cache (strategies depend on this)
+            base_module = "intraday.strategies.base"
+            if base_module in sys.modules:
+                del sys.modules[base_module]
+
+            # Step 2: Clear the strategy module cache
+            if module_name in sys.modules:
+                del sys.modules[module_name]
+
+            # Step 3: Clear __init__ cache (may hold references)
+            init_module = f"intraday.strategies.{data_type}"
+            if init_module in sys.modules:
+                del sys.modules[init_module]
+
+            # Step 4: Fresh import
             module = importlib.import_module(module_name)
 
             # Find strategy classes (classes ending with "Strategy")
@@ -276,14 +294,14 @@ async def _run_backtest_impl(args: dict[str, Any]) -> dict[str, Any]:
                 "is_error": True
             }
 
-        # CRITICAL: Validate backtest period (max 14 days)
+        # CRITICAL: Validate backtest period (max 30 days)
         if start_date and end_date:
             period_days = (end_date - start_date).days
-            if period_days > 14:
+            if period_days > 30:
                 return {
                     "content": [{
                         "type": "text",
-                        "text": f"Error: Backtest period is {period_days} days. Maximum allowed is 14 days. Use Progressive Testing: Phase 1 (1 day) → Phase 2 (1 week) → Phase 3 (2 weeks max)."
+                        "text": f"Error: Backtest period is {period_days} days. Maximum allowed is 30 days. Use Progressive Testing with appropriate phase durations based on signal frequency."
                     }],
                     "is_error": True
                 }
