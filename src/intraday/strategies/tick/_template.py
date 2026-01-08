@@ -30,6 +30,10 @@ TickBacktestRunner와 함께 사용합니다.
 - Footprint / Delta 분석
 - CVD (Cumulative Volume Delta)
 
+=== 외부 데이터 접근 (선택) ===
+- Funding Rate: self.params.get("funding_loader") 또는 setup()에서 직접 로드
+- 외부 지표: setup()에서 계산 및 저장, should_buy()에서 사용
+
 === 수정 가능/불가 영역 ===
 # >>> MODIFY: 수정 가능
 # <<< DO NOT MODIFY: 수정 금지
@@ -54,7 +58,21 @@ class MyTickStrategy(StrategyBase):
 
     # >>> MODIFY: 초기화 로직
     def setup(self) -> None:
-        """파라미터 초기화"""
+        """
+        파라미터 초기화
+
+        외부 데이터 접근 예시:
+            # Funding Rate 사용 시
+            self.funding_loader = self.params.get("funding_loader")
+
+            # 또는 직접 로드
+            # from intraday.funding import FundingRateLoader
+            # self.funding_loader = FundingRateLoader.from_list(rates)
+
+            # Rolling window 사용 시
+            # from collections import deque
+            # self.price_history = deque(maxlen=50)
+        """
         self.buy_threshold = self.params.get("buy_threshold", 0.4)
         self.sell_threshold = self.params.get("sell_threshold", -0.4)
 

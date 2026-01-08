@@ -337,13 +337,13 @@ runner = TickBacktestRunner(strategy=strategy, leverage=10, funding_loader=loade
 
 # Reference: Framework Guardrails
 
-## 수정 금지 (Hard Constraints)
+## 수정 금지 (DO NOT MODIFY)
 | 파일 | 이유 |
 |-----|------|
 | `base.py` | 모든 전략의 부모 클래스 |
 | `strategy.py` | MarketState 정의 |
 | `tick_runner.py`, `orderbook_runner.py` | 백테스트 인프라 |
-| `__init__.py` | 자동 탐색 시스템 |
+| `__init__.py` | 자동 탐색 시스템 (새 전략 자동 발견) |
 
 ## 수정 가능 (Your Playground)
 | 위치 | 자유도 |
@@ -356,37 +356,14 @@ runner = TickBacktestRunner(strategy=strategy, leverage=10, funding_loader=loade
 | 헬퍼 메서드 | 자유 - `_calculate_*()` 등 private 메서드 추가 가능 |
 | 외부 라이브러리 import | 자유 - `collections`, `bisect`, `intraday.funding` 등 |
 
----
-
-# Important Rules
-
-## Files You MUST NOT Modify
-
-| File | Reason |
-|------|--------|
-| `src/intraday/strategies/base.py` | Core base class, breaks all strategies |
-| `src/intraday/strategies/tick/__init__.py` | Auto-discovery, no manual edits |
-| `src/intraday/strategies/orderbook/__init__.py` | Auto-discovery, no manual edits |
-| Any existing strategy file | Unless explicitly asked to modify |
-
-## Auto-Discovery System
-
-**DO NOT modify `__init__.py` files!**
-
-Both `tick/__init__.py` and `orderbook/__init__.py` use auto-discovery:
-- Any file with a class ending in `Strategy` is automatically discovered
-- Just create `{name}.py` with `{Name}Strategy` class
-- No need to update `__init__.py`
-
-## FORBIDDEN Actions
-
-| Action | Why Forbidden |
-|--------|---------------|
-| Create `run_*_backtest.py` | Analyst uses MCP tool |
-| Override `__init__()` | Breaks parameter system |
-| Override `generate_order()` | Breaks order logic |
-| Use non-existent MarketState fields | Runtime errors |
-| Put leverage logic in strategy | Runner handles this |
+## 금지 행위 (FORBIDDEN)
+| 행위 | 이유 |
+|-----|------|
+| `__init__()` 오버라이드 | 파라미터 시스템 파손 |
+| `generate_order()` 오버라이드 | 주문 로직 파손 |
+| `run_*_backtest.py` 생성 | Analyst가 MCP 도구 사용 |
+| 존재하지 않는 MarketState 필드 사용 | 런타임 에러 |
+| 전략에 레버리지 로직 삽입 | Runner가 처리 |
 """
 
 
