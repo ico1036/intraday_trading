@@ -189,7 +189,7 @@ async def _run_backtest_impl(args: dict[str, Any]) -> dict[str, Any]:
         data_type = args.get("data_type", "tick").lower()
         data_path = Path(args.get("data_path", f"./data/{data_type}s"))
         bar_type_str = args.get("bar_type", "VOLUME").upper()
-        bar_size = float(args.get("bar_size", 1.0))
+        bar_size = float(args.get("bar_size", 10.0))
         initial_capital = float(args.get("initial_capital", 10000.0))
         leverage = int(args.get("leverage", 1))
         include_funding = args.get("include_funding", False)
@@ -234,14 +234,14 @@ async def _run_backtest_impl(args: dict[str, Any]) -> dict[str, Any]:
                 "is_error": True
             }
 
-        # Discover and validate strategy
+        # Discover and validate strategy (exact match required)
         all_strategies = _get_all_strategies()
         if strategy_name not in all_strategies:
             available = [n for n, i in all_strategies.items() if i["data_type"] == data_type]
             return {
                 "content": [{
                     "type": "text",
-                    "text": f"Error: Unknown strategy '{strategy_name}'. Available {data_type} strategies: {available}"
+                    "text": f"Error: Unknown strategy '{strategy_name}'. Available {data_type} strategies: {available}. Strategy name must match exactly as defined in algorithm_prompt.txt (e.g., '# Strategy: VPINMomentumFilter' → 'VPINMomentumFilterStrategy')."
                 }],
                 "is_error": True
             }
@@ -265,6 +265,28 @@ async def _run_backtest_impl(args: dict[str, Any]) -> dict[str, Any]:
                 }],
                 "is_error": True
             }
+
+        # CRITICAL: Validate bar_size for VOLUME bars (prevents hours-long backtests)
+        if data_type == "tick" and bar_type_str == "VOLUME" and bar_size < 10.0:
+            return {
+                "content": [{
+                    "type": "text",
+                    "text": f"Error: bar_size={bar_size} is too small for VOLUME bars. MUST be >= 10.0 (10 BTC per bar). Values < 10.0 create millions of bars and take hours to run."
+                }],
+                "is_error": True
+            }
+
+        # CRITICAL: Validate backtest period (max 14 days)
+        if start_date and end_date:
+            period_days = (end_date - start_date).days
+            if period_days > 14:
+                return {
+                    "content": [{
+                        "type": "text",
+                        "text": f"Error: Backtest period is {period_days} days. Maximum allowed is 14 days. Use Progressive Testing: Phase 1 (1 day) → Phase 2 (1 week) → Phase 3 (2 weeks max)."
+                    }],
+                    "is_error": True
+                }
 
         # Validate data path
         if not data_path.exists():
@@ -306,6 +328,19 @@ async def _run_backtest_impl(args: dict[str, Any]) -> dict[str, Any]:
         # Format results
         result = _format_report(report, runner, data_type)
 
+        # Save report to specified output directory
+        output_dir_str = args.get("output_dir")
+        if output_dir_str:
+            output_dir = PROJECT_ROOT / output_dir_str
+            if output_dir.exists():
+                try:
+                    report_path = runner.save_report(output_dir)
+                    result += f"\n\n**Report saved to**: {report_path}"
+                except Exception as e:
+                    result += f"\n\n**Warning**: Failed to save report: {e}"
+            else:
+                result += f"\n\n**Warning**: output_dir '{output_dir_str}' not found, report not saved"
+
         return {
             "content": [{
                 "type": "text",
@@ -339,6 +374,7 @@ async def _run_backtest_impl(args: dict[str, Any]) -> dict[str, Any]:
         "leverage": int,
         "include_funding": bool,  # For futures only
         "strategy_params": str,  # JSON string of strategy parameters
+        "output_dir": str,  # Directory to save report (e.g., "vpin_momentum_filter_dir")
     }
 )
 async def run_backtest(args: dict[str, Any]) -> dict[str, Any]:
