@@ -159,6 +159,12 @@ class TickBacktestRunner:
         print(f"[Backtest] Bar Type: {self.bar_type.value}, Size: {self.bar_size}")
         print(f"[Backtest] Initial Capital: ${self.initial_capital:,.2f}")
         print(f"[Backtest] Latency: {self.latency_ms:.1f}ms")
+        if start_time and end_time:
+            print(f"[Backtest] Period: {start_time.strftime('%Y-%m-%d')} ~ {end_time.strftime('%Y-%m-%d')}")
+        elif start_time:
+            print(f"[Backtest] Period: {start_time.strftime('%Y-%m-%d')} ~ (end of data)")
+        elif end_time:
+            print(f"[Backtest] Period: (start of data) ~ {end_time.strftime('%Y-%m-%d')}")
         
         # 상태 초기화
         self._candle_builder._reset()
