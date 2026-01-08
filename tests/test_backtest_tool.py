@@ -229,7 +229,7 @@ class TestRunBacktestIntegration:
             "start_date": "2024-01-15",
             "end_date": "2024-01-16",
             "bar_type": "VOLUME",
-            "bar_size": 1.0,
+            "bar_size": 10.0,  # MUST be >= 10.0 for VOLUME bars
             "initial_capital": 10000.0,
             "leverage": 1,
         })
@@ -258,7 +258,7 @@ class TestRunBacktestIntegration:
             "start_date": "2024-01-15",
             "end_date": "2024-01-16",
             "bar_type": "VOLUME",
-            "bar_size": 1.0,
+            "bar_size": 10.0,  # MUST be >= 10.0 for VOLUME bars
             "strategy_params": json.dumps({
                 "buy_threshold": 0.6,
                 "sell_threshold": -0.6,
@@ -279,7 +279,7 @@ class TestRunBacktestIntegration:
             "start_date": "2024-01-15",
             "end_date": "2024-01-16",
             "bar_type": "VOLUME",
-            "bar_size": 1.0,
+            "bar_size": 10.0,  # MUST be >= 10.0 for VOLUME bars
             "leverage": 5,
             "include_funding": False,
         })
