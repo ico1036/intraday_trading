@@ -85,9 +85,44 @@ def check_and_consume_signal(workspace_dir: Path, signal_name: str) -> bool:
         return False
 
 
+def get_existing_workspace_dirs() -> set[Path]:
+    """
+    Get all existing *_dir workspace directories.
+
+    Returns:
+        Set of Path objects for existing workspace directories
+    """
+    project_root = Path(__file__).parent.parent.parent
+    return set(project_root.glob("*_dir"))
+
+
+def find_new_workspace_dir(existing_dirs: set[Path]) -> Path | None:
+    """
+    Find a newly created workspace directory by comparing with existing dirs.
+
+    Args:
+        existing_dirs: Set of workspace directories that existed before
+
+    Returns:
+        Path to newly created directory, or None if not found
+    """
+    current_dirs = get_existing_workspace_dirs()
+    new_dirs = current_dirs - existing_dirs
+
+    if len(new_dirs) == 1:
+        return new_dirs.pop()
+    elif len(new_dirs) > 1:
+        # Multiple new dirs (unlikely), return most recent
+        return max(new_dirs, key=lambda p: p.stat().st_mtime)
+    return None
+
+
 def find_workspace_dir() -> Path | None:
     """
-    Find the most recently created *_dir workspace directory.
+    DEPRECATED: Find the most recently created *_dir workspace directory.
+
+    WARNING: This function can return wrong directory when multiple strategies
+    are running. Use find_workspace_dir_by_name() instead.
 
     Returns:
         Path to workspace directory, or None if not found
@@ -435,6 +470,10 @@ async def main(initial_query: str | None = None):
 async def run_workflow(client: ClaudeSDKClient, user_request: str):
     """Run the full strategy development workflow."""
 
+    # Snapshot existing workspace directories BEFORE Orchestrator creates one
+    existing_dirs = get_existing_workspace_dirs()
+    workspace_dir: Path | None = None
+
     # Send user request to Orchestrator
     await client.query(user_request)
 
@@ -463,9 +502,13 @@ async def run_workflow(client: ClaudeSDKClient, user_request: str):
 
         print("\n")
 
-        # Check for completion signals via signal files (more reliable than text parsing)
-        workspace_dir = find_workspace_dir()
+        # Find workspace directory (only once, by detecting newly created dir)
+        if workspace_dir is None:
+            workspace_dir = find_new_workspace_dir(existing_dirs)
+            if workspace_dir:
+                print(f"[System] Detected workspace: {workspace_dir.name}/")
 
+        # Check for completion signals via signal files
         if workspace_dir:
             # Check APPROVED signal
             if check_and_consume_signal(workspace_dir, APPROVED_SIGNAL):
