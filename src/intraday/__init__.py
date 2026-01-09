@@ -26,6 +26,7 @@ from .performance import PerformanceReport, PerformanceCalculator, EquityPoint, 
 
 # Runner
 from .runner import ForwardRunner
+from .tick_forward_runner import TickForwardRunner
 
 # Data (히스토리컬 데이터 수집/로딩)
 from .data import TickDataDownloader, OrderbookRecorder, TickDataLoader, OrderbookDataLoader
@@ -72,6 +73,7 @@ __all__ = [
     "ReportSaver",
     # Runner
     "ForwardRunner",
+    "TickForwardRunner",
     # Data
     "TickDataDownloader",
     "OrderbookRecorder",
