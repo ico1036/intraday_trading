@@ -71,9 +71,12 @@ class TestPaperTraderInit:
     def test_default_initialization(self):
         """기본값으로 초기화"""
         trader = PaperTrader(initial_capital=10000.0)
-        
+
         assert trader.initial_capital == 10000.0
-        assert trader.fee_rate == 0.001  # 기본 0.1%
+        # 기본값: taker fee rate (0.05%)
+        assert trader.fee_rate == 0.0005
+        assert trader.maker_fee_rate == 0.0002  # 0.02%
+        assert trader.taker_fee_rate == 0.0005  # 0.05%
         assert trader.capital == 10000.0
         assert trader.position.side is None
         assert trader.realized_pnl == 0.0
