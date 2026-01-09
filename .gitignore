@@ -73,9 +73,10 @@ reports/
 
 # Local development
 *.local
-
-
-
+*.png
+*_dir
+src/intraday/strategies/tick/*.py
+tests/test_strategy_*.py
 
 
 
