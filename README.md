@@ -28,12 +28,22 @@ uv run python scripts/agent/run.py "VPIN 기반 모멘텀 필터 전략"
 uv run python scripts/run_tick_backtest.py
 ```
 
-### 3. 실시간 테스트
+### 3. 실시간 Forward Test
 
-실시간 데이터로 전략을 검증합니다.
+실시간 Binance 데이터로 전략을 검증합니다.
 
 ```bash
-uv run python scripts/run_forward_test.py
+# 전략 목록 확인
+uv run python scripts/run_tick_forward_test.py --list-strategies
+
+# BB Squeeze 4분봉 테스트 (1시간)
+uv run python scripts/run_tick_forward_test.py --strategy bb_squeeze --duration 3600 --leverage 10
+
+# VPIN 볼륨바 테스트
+uv run python scripts/run_tick_forward_test.py --strategy vpin --candle-type volume --candle-size 100
+
+# 무한 실행 (Ctrl+C로 종료, 결과 리포트 출력됨)
+uv run python scripts/run_tick_forward_test.py --strategy bb_squeeze
 ```
 
 ## AI Agent 워크플로우
