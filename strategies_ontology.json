@@ -1,0 +1,4405 @@
+{
+  "version": "1.0",
+  "generated_at": "2026-01-09T20:39:15.328782",
+  "strategies": {
+    "absorption": {
+      "name": "AbsorptionAccumulationStrategy",
+      "display_name": "Absorption",
+      "category": "mean_reversion",
+      "indicators": [
+        "ofi",
+        "ema",
+        "volume_imbalance",
+        "sma"
+      ],
+      "hypothesis": "Mean Return",
+      "best_metrics": {},
+      "status": "in_progress",
+      "iterations": 1,
+      "memory_path": "absorption_dir/memory.md",
+      "code_path": "src/intraday/strategies/tick/absorption_accumulation.py",
+      "tags": [
+        "mean_reversion",
+        "ofi",
+        "ema",
+        "volume_imbalance",
+        "sma"
+      ],
+      "_semantic": {
+        "core_logic": "Absorption bar (|imbalance| > 0.35 + body_ratio < 0.34) 감지 → 다음 봉에서 confirmation breakout 시 진입.",
+        "implicit_assumptions": [
+          "Doji + high imbalance = institutional accumulation",
+          "가격이 안 움직였지만 volume imbalance = 큰손이 흡수 중",
+          "Confirmation bar breakout이 방향 확정"
+        ],
+        "failure_nuance": "Absorption 감지는 잘 되나 confirmation 조건이 까다로움. False absorption도 많음.",
+        "similar_patterns": [
+          "doji_breakout",
+          "institutional_accumulation",
+          "absorption_exhaustion"
+        ],
+        "hidden_risks": [
+          "body_ratio threshold (0.34)가 시장별로 다를 수 있음",
+          "Confirmation breakout이 fakeout일 가능성",
+          "Max hold (20 bars)가 너무 길거나 짧을 수 있음"
+        ],
+        "state_machine": "IDLE → ABSORPTION_DETECTED → HOLDING_LONG/SHORT → COOLDOWN",
+        "key_parameters": {
+          "imbalance_threshold": 0.35,
+          "body_ratio_threshold": 0.34,
+          "stop_loss_pct": 0.5,
+          "take_profit_pct": 1.0,
+          "reversal_threshold": 0.3,
+          "max_hold_bars": 20
+        },
+        "order_type": "LIMIT (maker fee 0.02%)",
+        "code_quality": "Uses dataclass for CandleData. Clean state machine with ABSORPTION_DETECTED intermediate state."
+      }
+    },
+    "bb_squeeze": {
+      "name": "BBSqueezeStrategy",
+      "display_name": "Bb Squeeze",
+      "category": "volatility_breakout",
+      "indicators": [
+        "squeeze",
+        "ofi",
+        "bollinger_bands",
+        "sma"
+      ],
+      "hypothesis": "변동성 폭발 직전의 고요함(Squeeze)은 4분봉에서 먼저 감지됨. 1분 선점 = 슬리피지 없는 물량 확보",
+      "best_metrics": {
+        "total_return": 18.46,
+        "profit_factor": 3.57,
+        "max_drawdown": -1.56,
+        "total_trades": 82.0,
+        "win_rate": 56.1,
+        "sharpe_ratio": 0.46,
+        "avg_win": 111.54,
+        "avg_loss": 39.96
+      },
+      "status": "approved",
+      "iterations": 3,
+      "memory_path": "bb_squeeze_dir/memory.md",
+      "code_path": "src/intraday/strategies/tick/bb_squeeze.py",
+      "tags": [
+        "volatility_breakout",
+        "squeeze",
+        "ofi",
+        "bollinger_bands",
+        "sma"
+      ],
+      "_semantic": {
+        "core_logic": "BB bandwidth percentile로 squeeze 감지 → 상단 돌파 시 LONG, 하단 돌파 시 SHORT 진입. 4분봉 기반으로 5분봉 트레이더보다 1분 선점.",
+        "implicit_assumptions": [
+          "변동성은 mean-reverting 특성을 가짐",
+          "4분봉이 5분봉보다 1분 먼저 squeeze 감지 가능",
+          "Squeeze 후 breakout 방향으로 추세 지속",
+          "Long-only가 Short 포함보다 안정적"
+        ],
+        "failure_nuance": "Iteration 1-2에서 PF 3.57이었으나 Total Return 0.37%에 불과. 원인은 position sizing (quantity=0.01). Iteration 3에서 quantity=0.5로 50배 증가하여 해결.",
+        "similar_patterns": [
+          "volatility_breakout",
+          "squeeze_play",
+          "keltner_channel_breakout",
+          "expansion_after_contraction"
+        ],
+        "hidden_risks": [
+          "IS-OS degradation 심함 (PF 3.57→1.27, WR 56%→32%)",
+          "Short 포함 시 성과 하락 (use_short=false가 최적)",
+          "Squeeze percentile 파라미터에 민감",
+          "Market regime에 따라 성과 변동 큼"
+        ],
+        "state_machine": "WARMUP(100 bars) → IDLE → HOLDING_LONG/SHORT → COOLDOWN(15 bars)",
+        "key_parameters": {
+          "bb_period": 20,
+          "bb_std_mult": 2.0,
+          "squeeze_percentile": 10,
+          "bandwidth_lookback": 100,
+          "take_profit_pct": 0.6,
+          "stop_loss_pct": 0.3
+        },
+        "code_quality": "Clean implementation with proper state machine. Uses deque for rolling calculations."
+      }
+    },
+    "breakout_frontrun": {
+      "name": "BreakoutFrontrunStrategy",
+      "display_name": "Breakout Frontrun",
+      "category": "volatility_breakout",
+      "indicators": [
+        "ofi",
+        "vpin"
+      ],
+      "hypothesis": "Signal Type",
+      "best_metrics": {},
+      "status": "in_progress",
+      "iterations": 17,
+      "memory_path": "breakout_frontrun_dir/memory.md",
+      "code_path": "src/intraday/strategies/tick/breakout_frontrun.py",
+      "tags": [
+        "volatility_breakout",
+        "ofi",
+        "vpin"
+      ],
+      "_semantic": {
+        "core_logic": "4분봉에서 high/low breakout 감지 → 5분봉 트레이더보다 1분 먼저 진입. Momentum following.",
+        "implicit_assumptions": [
+          "4분봉이 5분봉보다 1분 먼저 breakout 감지",
+          "Breakout 후 momentum 지속",
+          "Early entry = better fill price"
+        ],
+        "failure_nuance": "Frontrun 가설은 valid하나 false breakout이 많음. Filter 추가 필요.",
+        "similar_patterns": [
+          "breakout_momentum",
+          "early_entry",
+          "timeframe_arbitrage"
+        ],
+        "hidden_risks": [
+          "False breakout으로 인한 whipsaw",
+          "Late entry 시 이미 움직임 끝",
+          "4분봉과 5분봉의 phase 차이가 일정하지 않음"
+        ],
+        "state_machine": "WARMUP → IDLE → HOLDING_LONG/SHORT → COOLDOWN",
+        "key_parameters": {
+          "lookback_bars": 20,
+          "breakout_threshold_pct": 0.1,
+          "stop_loss_pct": 0.3,
+          "take_profit_pct": 0.5
+        },
+        "code_quality": "Standard tick strategy implementation with rolling high/low tracking."
+      }
+    },
+    "btc_eth_catchup": {
+      "name": "BtcEthCatchupStrategy",
+      "display_name": "Btc Eth Catchup",
+      "category": "uncategorized",
+      "indicators": [],
+      "hypothesis": "5분봉 봇들의 사각지대(4분)에서 메이저 알트(ETH)의 대장주(BTC) 추종 지연 활용",
+      "best_metrics": {},
+      "status": "in_progress",
+      "iterations": 1,
+      "memory_path": "btc_eth_catchup_dir/memory.md",
+      "code_path": null,
+      "tags": [
+        "uncategorized"
+      ],
+      "_semantic": {
+        "core_logic": "BTC 양봉 + ETH 음봉/도지 상황에서 ETH 롱 진입. Cross-asset momentum lag 활용.",
+        "implicit_assumptions": [
+          "ETH가 BTC를 따라가는 지연 현상 존재",
+          "4분봉이 5분봉 봇의 사각지대",
+          "대장주(BTC) 움직임이 알트(ETH) 방향 예측"
+        ],
+        "failure_nuance": "CONCEPT_INVALID - 프레임워크 제약으로 구현 불가. ETH 데이터 없음, 단일 심볼 프레임워크.",
+        "similar_patterns": [
+          "cross_asset_momentum",
+          "lead_lag",
+          "btc_dominance"
+        ],
+        "hidden_risks": [
+          "Multi-symbol 데이터 필요",
+          "Cross-asset 상태 동기화 복잡",
+          "Lead-lag 관계가 일정하지 않음"
+        ],
+        "status": "CONCEPT_INVALID",
+        "required_infrastructure": [
+          "ETH 틱 데이터 수집",
+          "MultiSymbolTickBacktestRunner 개발",
+          "Cross-asset 상태 동기화"
+        ],
+        "code_quality": "No implementation - concept only"
+      }
+    },
+    "dual_vpin_cdf": {
+      "name": "DualVpinCdfStrategy",
+      "display_name": "Dual Vpin Cdf",
+      "category": "market_making",
+      "indicators": [
+        "ofi",
+        "volume_imbalance",
+        "vpin",
+        "rsi",
+        "bollinger_bands",
+        "ema"
+      ],
+      "hypothesis": "Fast VPIN(초단기 독성)과 Slow VPIN(구조적 정보)을 CDF(분위수) 매핑하여 Flash Crash 감지 및 Regime 판별 기반 트레이딩",
+      "best_metrics": {},
+      "status": "in_progress",
+      "iterations": 5,
+      "memory_path": "dual_vpin_cdf_dir/memory.md",
+      "code_path": "src/intraday/strategies/tick/dual_vpin_cdf.py",
+      "tags": [
+        "market_making",
+        "ofi",
+        "volume_imbalance",
+        "vpin",
+        "rsi",
+        "bollinger_bands",
+        "ema"
+      ],
+      "_semantic": {
+        "core_logic": "Fast/Slow VPIN을 CDF로 정규화 후 divergence 감지. Fast CDF > Slow CDF + threshold → breakout 진입.",
+        "implicit_assumptions": [
+          "CDF 정규화로 VPIN 값 비교 용이",
+          "Fast VPIN이 Slow VPIN보다 높으면 단기 정보 유입",
+          "Divergence가 breakout 예고"
+        ],
+        "failure_nuance": "dual_vpin에서 CDF 변환 추가. 정규화는 도움이 되나 여전히 parameter 조합 문제.",
+        "similar_patterns": [
+          "dual_vpin",
+          "vpin_divergence",
+          "cdf_normalization"
+        ],
+        "hidden_risks": [
+          "CDF lookback 기간 선택이 어려움",
+          "Historical CDF가 regime 변화에 적응 못함",
+          "Fast/Slow CDF threshold 동시 최적화 어려움"
+        ],
+        "evolution_from": "dual_vpin",
+        "key_parameters": {
+          "fast_cdf_lookback": 200,
+          "slow_cdf_lookback": 500,
+          "cdf_divergence_threshold": 0.2
+        },
+        "code_quality": "Extends dual_vpin with CDF calculation. scipy.stats for normal CDF."
+      }
+    },
+    "dual_vpin": {
+      "name": "DualVpinStrategy",
+      "display_name": "Dual Vpin",
+      "category": "market_making",
+      "indicators": [
+        "ofi",
+        "vpin"
+      ],
+      "hypothesis": "Fast/Slow VPIN CDF 기반 트레이딩 전략 - 단기 독성과 장기 정보 비대칭 분리",
+      "best_metrics": {},
+      "status": "rejected",
+      "iterations": 5,
+      "memory_path": "dual_vpin_dir/memory.md",
+      "code_path": "src/intraday/strategies/tick/dual_vpin.py",
+      "tags": [
+        "market_making",
+        "ofi",
+        "vpin"
+      ],
+      "_semantic": {
+        "core_logic": "Fast VPIN(50 buckets, 단기 독성)과 Slow VPIN(200 buckets, 구조적 정보) 비교. Fast > Slow + OFI 방향 일치 시 breakout 진입.",
+        "implicit_assumptions": [
+          "Fast VPIN - Slow VPIN divergence가 정보 비대칭 신호",
+          "두 VPIN이 모두 높을 때 volatility 폭발",
+          "OFI 방향이 breakout 방향 예측"
+        ],
+        "failure_nuance": "5 iterations 후 rejected. Dual VPIN 개념은 valid하나 parameter 조합 찾기 어려움. IS에서도 PF < 1.3 달성 못함.",
+        "similar_patterns": [
+          "multi_timeframe_analysis",
+          "volatility_regime",
+          "information_asymmetry"
+        ],
+        "hidden_risks": [
+          "Fast/Slow bucket size 조합이 exponential search space",
+          "VPIN calculation overhead가 큼",
+          "CDF 변환 없이 raw VPIN 사용 시 정규화 문제"
+        ],
+        "state_machine": "WARMUP(200 buckets) → IDLE → HOLDING_LONG/SHORT → COOLDOWN",
+        "key_parameters": {
+          "fast_bucket_size": 500,
+          "slow_bucket_size": 2000,
+          "fast_bucket_count": 50,
+          "slow_bucket_count": 200,
+          "vpin_threshold": 0.6
+        },
+        "evolution": "dual_vpin → dual_vpin_cdf (CDF 추가) → dual_vpin_rsi (RSI 필터 추가)",
+        "code_quality": "Well-structured with separate VPINCalculator class. Trailing stop implementation included."
+      }
+    },
+    "dual_vpin_rsi": {
+      "name": "DualVpinRsiStrategy",
+      "display_name": "Dual Vpin Rsi",
+      "category": "market_making",
+      "indicators": [
+        "ofi",
+        "vpin",
+        "rsi",
+        "volume_imbalance"
+      ],
+      "hypothesis": "**DEFINITIVELY INVALIDATED** - Neither RSI nor VPIN spike has predictive value",
+      "best_metrics": {},
+      "status": "in_progress",
+      "iterations": 5,
+      "memory_path": "dual_vpin_rsi_dir/memory.md",
+      "code_path": "src/intraday/strategies/tick/dual_vpin_rsi.py",
+      "tags": [
+        "market_making",
+        "ofi",
+        "vpin",
+        "rsi",
+        "volume_imbalance"
+      ],
+      "_semantic": {
+        "core_logic": "Dual VPIN + RSI 필터. VPIN divergence + RSI oversold/overbought 조합으로 진입.",
+        "implicit_assumptions": [
+          "RSI가 추가적인 confirmation 제공",
+          "VPIN과 RSI 조합이 단일 지표보다 정확",
+          "Oversold + VPIN divergence = stronger signal"
+        ],
+        "failure_nuance": "RSI 필터 추가로 신호 품질 향상 시도. 하지만 신호 빈도 감소로 trade count 부족.",
+        "similar_patterns": [
+          "dual_vpin",
+          "rsi_filter",
+          "multi_indicator"
+        ],
+        "hidden_risks": [
+          "RSI와 VPIN 신호 timing mismatch",
+          "Filter 추가로 신호 감소 → 통계적 유의성 부족",
+          "RSI period와 VPIN bucket size 조합 최적화 어려움"
+        ],
+        "evolution_from": "dual_vpin_cdf",
+        "key_parameters": {
+          "rsi_period": 14,
+          "rsi_oversold": 30,
+          "rsi_overbought": 70,
+          "vpin_divergence_threshold": 0.2
+        },
+        "code_quality": "Clean RSI implementation added to dual_vpin_cdf base."
+      }
+    },
+    "fast_vpin_scalping": {
+      "name": "FastVpinScalpingStrategy",
+      "display_name": "Fast Vpin Scalping",
+      "category": "volatility_breakout",
+      "indicators": [
+        "ofi",
+        "vpin",
+        "rsi",
+        "volume_imbalance"
+      ],
+      "hypothesis": "Fast VPIN CDF > 90 = Informed move EXHAUSTED. FADE the OFI direction. Exit with 0.2% SL / 0.25% TP calibrated to observed volatility.",
+      "best_metrics": {},
+      "status": "in_progress",
+      "iterations": 5,
+      "memory_path": "fast_vpin_scalping_dir/memory.md",
+      "code_path": "src/intraday/strategies/tick/fast_vpin_scalping.py",
+      "tags": [
+        "volatility_breakout",
+        "ofi",
+        "vpin",
+        "rsi",
+        "volume_imbalance"
+      ],
+      "_semantic": {
+        "core_logic": "Fast VPIN CDF > 90% (극단적 독성) + OFI 방향 일치 + spread proxy 확인 → OFI 방향으로 scalping.",
+        "implicit_assumptions": [
+          "VPIN CDF > 90 = informed traders aggressive",
+          "MM withdrawal creates temporary price impact amplification",
+          "Exit quickly before mean reversion"
+        ],
+        "failure_nuance": "Scalping 특성상 tight SL(0.25%)과 short hold(15 bars). VPIN normalization (CDF < 70) 시 exit.",
+        "similar_patterns": [
+          "toxicity_momentum",
+          "informed_flow_piggybacking",
+          "mm_withdrawal_scalping"
+        ],
+        "hidden_risks": [
+          "OFI reversal exit가 너무 빠를 수 있음",
+          "Spread proxy threshold (10bps)가 시장 상황에 따라 부적절",
+          "Tight SL (0.25%)로 인한 높은 stop-out rate"
+        ],
+        "state_machine": "WARMUP(200 bars) → IDLE → HOLDING_LONG/SHORT → COOLDOWN(5 bars)",
+        "key_parameters": {
+          "fast_vpin_buckets": 30,
+          "vpin_entry_percentile": 90,
+          "vpin_exit_percentile": 70,
+          "ofi_threshold": 0.3,
+          "spread_proxy_threshold_bps": 10,
+          "stop_loss_pct": 0.25,
+          "take_profit_pct": 0.5
+        },
+        "differentiators_from_dual_vpin": [
+          "Shorter VPIN window (30 vs 50)",
+          "Higher entry threshold (90th vs 70th percentile)",
+          "OFI filter for direction",
+          "Spread proxy filter for MM withdrawal",
+          "Tighter stops (0.25% vs 0.5%)"
+        ],
+        "code_quality": "Clean scalping implementation. OFI calculated from BVC. Spread proxy as MM withdrawal indicator."
+      }
+    },
+    "footprint_pseudoobi": {
+      "name": "FootprintPseudoObiStrategy",
+      "display_name": "Footprint Pseudoobi",
+      "category": "uncategorized",
+      "indicators": [
+        "ofi",
+        "volume_imbalance",
+        "sma",
+        "footprint",
+        "rsi",
+        "atr"
+      ],
+      "hypothesis": "Tick 데이터로 Footprint Tensor + Pseudo-OBI 지표 생성하여 잠재 유동성 장벽 기반 트레이딩",
+      "best_metrics": {},
+      "status": "in_progress",
+      "iterations": 8,
+      "memory_path": "footprint_pseudoobi_dir/memory.md",
+      "code_path": "src/intraday/strategies/tick/footprint_pseudoobi.py",
+      "tags": [
+        "uncategorized",
+        "ofi",
+        "volume_imbalance",
+        "sma",
+        "footprint",
+        "rsi",
+        "atr"
+      ],
+      "_semantic": {
+        "core_logic": "Footprint chart 스타일 volume profile 분석. Tick 데이터로 pseudo-OBI 계산하여 imbalance 감지.",
+        "implicit_assumptions": [
+          "Tick-level volume 분포가 institutional activity 노출",
+          "Pseudo-OBI가 실제 orderbook imbalance proxy",
+          "Imbalance 방향으로 가격 움직임"
+        ],
+        "failure_nuance": "Orderbook 데이터 없이 tick으로 approximation. 정확도 한계.",
+        "similar_patterns": [
+          "volume_profile",
+          "orderbook_imbalance",
+          "footprint_analysis"
+        ],
+        "hidden_risks": [
+          "Tick 데이터만으로는 실제 depth 정보 부족",
+          "Pseudo-OBI가 실제 OBI와 괴리",
+          "계산 overhead 높음"
+        ],
+        "state_machine": "WARMUP → IDLE → HOLDING_LONG/SHORT → COOLDOWN",
+        "key_parameters": {
+          "price_bucket_size": 10,
+          "volume_lookback": 50,
+          "imbalance_threshold": 0.6
+        },
+        "code_quality": "Complex volume bucketing implementation. Memory-intensive."
+      }
+    },
+    "funding_divergence": {
+      "name": "FundingDivergenceStrategy",
+      "display_name": "Funding Divergence",
+      "category": "mean_reversion",
+      "indicators": [
+        "ofi",
+        "rsi",
+        "sma"
+      ],
+      "hypothesis": "Trade around funding settlement times. Fade pre-settlement price moves expecting reversion",
+      "best_metrics": {},
+      "status": "in_progress",
+      "iterations": 4,
+      "memory_path": "funding_divergence_dir/memory.md",
+      "code_path": "src/intraday/strategies/tick/funding_divergence.py",
+      "tags": [
+        "mean_reversion",
+        "ofi",
+        "rsi",
+        "sma"
+      ],
+      "_semantic": {
+        "core_logic": "Funding rate와 가격 방향 divergence 감지. Positive funding + price down = LONG (carry + reversal).",
+        "implicit_assumptions": [
+          "Funding rate는 market positioning proxy",
+          "Divergence는 mean reversion 신호",
+          "Carry cost가 positioning에 영향"
+        ],
+        "failure_nuance": "Funding rate 데이터 8시간마다만 업데이트. Tick 전략과 timeframe mismatch.",
+        "similar_patterns": [
+          "carry_trade",
+          "funding_arbitrage",
+          "sentiment_divergence"
+        ],
+        "hidden_risks": [
+          "Funding 업데이트 주기가 너무 느림",
+          "Extreme funding 상황에서 역방향 지속",
+          "Funding rate 자체가 lagging indicator"
+        ],
+        "key_parameters": {
+          "funding_threshold": 0.0003,
+          "divergence_lookback": 20,
+          "stop_loss_pct": 0.5
+        },
+        "code_quality": "Requires FundingLoader integration. Clean but limited by data frequency."
+      }
+    },
+    "gap_retracement": {
+      "name": "GapRetracementStrategy",
+      "display_name": "Gap Retracement",
+      "category": "uncategorized",
+      "indicators": [
+        "ofi",
+        "ema"
+      ],
+      "hypothesis": "4분봉 시가와 직전 4분봉 종가 사이 갭 발생 시, 급격한 장대봉의 50% 되돌림(눌림목)에서 지정가 매수 진입",
+      "best_metrics": {},
+      "status": "in_progress",
+      "iterations": 1,
+      "memory_path": "gap_retracement_dir/memory.md",
+      "code_path": "src/intraday/strategies/tick/gap_retracement.py",
+      "tags": [
+        "uncategorized",
+        "ofi",
+        "ema"
+      ],
+      "_semantic": {
+        "core_logic": "Long candle (2x avg body) 감지 후 78.6% Fib retracement에서 LIMIT 진입. Trend filter (20-SMA) 적용.",
+        "implicit_assumptions": [
+          "Impulse move 후 retracement 발생",
+          "78.6% level이 optimal R:R (2.58:1) 제공",
+          "Trend-aligned entry가 win rate 개선"
+        ],
+        "failure_nuance": "V1 (50% retracement) 실패. EDA 결과 50% 패턴 미존재 (win 41.6% vs loss 49.9%). V2에서 78.6%로 깊은 진입 + trend filter로 재설계.",
+        "similar_patterns": [
+          "fibonacci_retracement",
+          "pullback_entry",
+          "trend_continuation"
+        ],
+        "hidden_risks": [
+          "34% 저승률로 심리적 부담",
+          "LIMIT-only exit으로 fast move 시 손절 실패 가능",
+          "15분봉 사용으로 trade 빈도 감소"
+        ],
+        "state_machine": "IDLE → PENDING_ORDER → ACTIVE_POSITION → COOLDOWN",
+        "key_parameters": {
+          "long_candle_multiplier": 2.0,
+          "retracement_level": 0.786,
+          "entry_window": 4,
+          "exit_timeout": 4,
+          "ma_period": 20
+        },
+        "evolution": "V1 (50% retracement, failed) → V2 (78.6% + trend filter + 15min bars)",
+        "code_quality": "Implemented. Uses dataclass for PendingOrder/ActivePosition."
+      }
+    },
+    "iceberg_breakout": {
+      "name": "IcebergBreakoutStrategy",
+      "display_name": "Iceberg Breakout",
+      "category": "volatility_breakout",
+      "indicators": [
+        "iceberg",
+        "ofi",
+        "rsi"
+      ],
+      "hypothesis": "대량 거래에도 가격 불변 = 아이스버그 주문이 받아냄 -> 5분봉 마감 직전 벽 붕괴 시 폭발적 시세",
+      "best_metrics": {},
+      "status": "in_progress",
+      "iterations": 5,
+      "memory_path": "iceberg_breakout_dir/memory.md",
+      "code_path": "src/intraday/strategies/tick/iceberg_breakout.py",
+      "tags": [
+        "volatility_breakout",
+        "iceberg",
+        "ofi",
+        "rsi"
+      ],
+      "_semantic": {
+        "core_logic": "V3: Iceberg 감지 (high volume + compressed range) 후 breakout FADE. Mean reversion 가설.",
+        "implicit_assumptions": [
+          "Iceberg order = large hidden order absorbing flow",
+          "V2 follow breakout 실패 (35% WR) → V3 fade breakout",
+          "Breakout 후 compression range로 회귀"
+        ],
+        "failure_nuance": "V2에서 breakout follow가 35% WR로 실패. V3에서 fade로 가설 반전.",
+        "similar_patterns": [
+          "absorption_fade",
+          "compression_breakout",
+          "iceberg_detection"
+        ],
+        "hidden_risks": [
+          "Iceberg 감지 false positive",
+          "Fade 진입 후 진짜 breakout 지속 시 큰 손실",
+          "Symmetric stop/target (0.12%) 너무 tight"
+        ],
+        "state_machine": "WARMUP → IDLE → ICEBERG_DETECTED → HOLDING_LONG/SHORT → COOLDOWN",
+        "key_parameters": {
+          "detection_window": 4,
+          "volume_multiplier": 1.5,
+          "range_threshold": 0.0015,
+          "stop_loss_pct": 0.12,
+          "take_profit_pct": 0.12
+        },
+        "evolution": "V1 (basic) → V2 (follow breakout, failed) → V3 (fade breakout)",
+        "code_quality": "Clean state machine with ICEBERG_DETECTED intermediate state. Uses LIMIT orders."
+      }
+    },
+    "ofi_momentum": {
+      "name": "OfiContrarianStrategy",
+      "display_name": "Ofi Momentum",
+      "category": "momentum",
+      "indicators": [
+        "ofi",
+        "ema",
+        "rsi"
+      ],
+      "hypothesis": "Extreme OFI (P97) indicates institutional flow that CONTINUES, not exhausts",
+      "best_metrics": {},
+      "status": "in_progress",
+      "iterations": 4,
+      "memory_path": "ofi_momentum_dir/memory.md",
+      "code_path": "src/intraday/strategies/tick/ofi_momentum.py",
+      "tags": [
+        "momentum",
+        "ofi",
+        "ema",
+        "rsi"
+      ],
+      "_semantic": {
+        "core_logic": "OFI (Order Flow Imbalance) percentile 기반. 극단적 OFI 감지 시 FADE (contrarian).",
+        "implicit_assumptions": [
+          "Extreme OFI = exhaustion signal",
+          "High OFI (90th percentile) → fade selling",
+          "Low OFI (10th percentile) → fade buying"
+        ],
+        "failure_nuance": "원래 momentum 전략이 18.3% WR로 실패 → contrarian으로 전환. 이름과 로직 불일치.",
+        "similar_patterns": [
+          "ofi_contrarian",
+          "exhaustion_fade",
+          "flow_reversal"
+        ],
+        "hidden_risks": [
+          "OFI percentile lookback 기간 선택 중요",
+          "Extreme OFI가 반전 아닌 acceleration일 수 있음",
+          "Time exit (3 bars)이 너무 짧을 수 있음"
+        ],
+        "state_machine": "WARMUP(100 bars) → IDLE → HOLDING_LONG/SHORT → COOLDOWN(5 bars)",
+        "key_parameters": {
+          "ofi_lookback": 4,
+          "percentile_threshold": 90,
+          "percentile_lookback": 200,
+          "stop_loss_pct": 1.0,
+          "take_profit_pct": 0.6,
+          "time_exit_bars": 3
+        },
+        "name_vs_logic": "클래스명 OfiContrarianStrategy와 파일명 ofi_momentum.py 불일치 - backward compatibility alias 존재",
+        "code_quality": "Clean implementation with proper percentile calculation. LIMIT orders for maker fee."
+      }
+    },
+    "ofi_vpin_explosion": {
+      "name": "OfiVpinExplosionStrategy",
+      "display_name": "Ofi Vpin Explosion",
+      "category": "uncategorized",
+      "indicators": [
+        "ofi",
+        "volume_imbalance",
+        "sma",
+        "vpin",
+        "rsi"
+      ],
+      "hypothesis": "OFI + VPIN 기반 수익성 있는 전략",
+      "best_metrics": {},
+      "status": "in_progress",
+      "iterations": 4,
+      "memory_path": "ofi_vpin_explosion_dir/memory.md",
+      "code_path": "src/intraday/strategies/tick/ofi_vpin_explosion.py",
+      "tags": [
+        "uncategorized",
+        "ofi",
+        "volume_imbalance",
+        "sma",
+        "vpin",
+        "rsi"
+      ],
+      "_semantic": {
+        "core_logic": "OFI extreme (|normalized_ofi| > 2σ) + VPIN spike (> 0.7) 감지 시 OFI 반대 방향 fade. Mean reversion 가설.",
+        "implicit_assumptions": [
+          "Extreme OFI는 exhaustion 신호",
+          "VPIN spike와 OFI extreme 동시 발생 = 반전 임박",
+          "Fade 전략이 momentum보다 edge 있음"
+        ],
+        "failure_nuance": "V3까지 iteration. OFI-VPIN 조합 자체는 신호 생성하나 timing이 문제. Entry 직후 adverse move가 잦음.",
+        "similar_patterns": [
+          "exhaustion_fade",
+          "vpin_contrarian",
+          "ofi_mean_reversion"
+        ],
+        "hidden_risks": [
+          "OFI normalization 방식에 따라 결과 크게 달라짐",
+          "VPIN threshold와 OFI threshold 동시 최적화 어려움",
+          "Fade 진입 후 추세 지속 시 큰 손실"
+        ],
+        "state_machine": "WARMUP(100 bars) → IDLE → HOLDING_LONG/SHORT → COOLDOWN",
+        "key_parameters": {
+          "ofi_lookback": 100,
+          "ofi_threshold": 2.0,
+          "vpin_threshold": 0.7,
+          "take_profit_pct": 0.3,
+          "stop_loss_pct": 0.2
+        },
+        "versions": [
+          "V1 (basic)",
+          "V2 (parameter tuning)",
+          "V3 (OFI normalization)",
+          "V4-V7 (continued iterations)"
+        ],
+        "code_quality": "Clean with configurable parameters. Uses numpy for OFI normalization."
+      }
+    },
+    "orderbook_depth_support": {
+      "name": "OrderbookDepthSupportStrategy",
+      "display_name": "Orderbook Depth Support",
+      "category": "uncategorized",
+      "indicators": [],
+      "hypothesis": "호가창 Depth 기반 지지선 터치 후 반등 매매",
+      "best_metrics": {},
+      "status": "in_progress",
+      "iterations": 5,
+      "memory_path": "orderbook_depth_support_dir/memory.md",
+      "code_path": null,
+      "tags": [
+        "uncategorized"
+      ],
+      "_semantic": {
+        "core_logic": "호가창 Depth 기반 지지선 터치 후 반등 매매. VWAP/Volume Profile을 proxy로 사용 시도.",
+        "implicit_assumptions": [
+          "호가창 잔량(Depth)이 진짜 지지선",
+          "매물대 두꺼운 가격대에서 반등",
+          "4분봉 마감 시점에 지지 확인하면 신뢰도 높음"
+        ],
+        "failure_nuance": "CONCEPT_INVALID - Tick 데이터로는 orderbook depth 테스트 불가. Volume Profile, VWAP proxy 모두 실패 (OS에서 ~0% return).",
+        "similar_patterns": [
+          "orderbook_imbalance",
+          "support_resistance",
+          "depth_analysis"
+        ],
+        "hidden_risks": [
+          "Tick 데이터는 executed trades만 제공 (resting orders 정보 없음)",
+          "모든 tick-based proxy가 depth 개념 캡처 못함",
+          "L2 orderbook 데이터 필요"
+        ],
+        "status": "CONCEPT_INVALID",
+        "required_infrastructure": [
+          "L2 Orderbook Snapshots",
+          "Weighted Mid Price 계산",
+          "Historical Depth Time Series"
+        ],
+        "proxy_attempts": {
+          "Volume Profile (POC/VAL)": "PF 1.25 IS → 0.87 OS (FAILED)",
+          "VWAP Deviation + MA50": "PF 10.10 IS → 1.00 OS (FAILED)"
+        },
+        "code_quality": "No implementation - concept invalid due to data limitation"
+      }
+    },
+    "stacked_imbalance": {
+      "name": "StackedImbalanceMomentumStrategy",
+      "display_name": "Stacked Imbalance",
+      "category": "momentum",
+      "indicators": [
+        "ofi",
+        "volume_imbalance",
+        "stacked_imbalance"
+      ],
+      "hypothesis": "Footprint 상에서 연속된 Price Node의 Imbalance + VPIN 필터로 Momentum 진입",
+      "best_metrics": {},
+      "status": "in_progress",
+      "iterations": 5,
+      "memory_path": "stacked_imbalance_dir/memory.md",
+      "code_path": "src/intraday/strategies/tick/stacked_imbalance.py",
+      "tags": [
+        "momentum",
+        "ofi",
+        "volume_imbalance",
+        "stacked_imbalance"
+      ],
+      "_semantic": {
+        "core_logic": "N개 연속 high-imbalance bar (institutional sweep) 감지 + breakout confirmation → momentum entry.",
+        "implicit_assumptions": [
+          "Stacked imbalance = algorithmic sweeping",
+          "연속 high-imbalance = aggressive informed trading",
+          "Breakout filter로 price impact 확인"
+        ],
+        "failure_nuance": "Stacked imbalance 개념은 valid하나 consecutive count와 threshold 조합 어려움.",
+        "similar_patterns": [
+          "sweep_detection",
+          "institutional_flow",
+          "consecutive_imbalance"
+        ],
+        "hidden_risks": [
+          "min_consecutive가 높으면 signal 희소",
+          "imbalance_threshold (0.5)가 market regime에 따라 부적절",
+          "Reversal threshold (0.3)로 인한 early exit"
+        ],
+        "state_machine": "WARMUP → IDLE → HOLDING_LONG/SHORT → COOLDOWN",
+        "key_parameters": {
+          "imbalance_threshold": 0.5,
+          "min_consecutive": 2,
+          "lookback_bars": 5,
+          "stop_loss_pct": 0.5,
+          "take_profit_pct": 1.0,
+          "reversal_threshold": 0.3,
+          "max_hold_bars": 10
+        },
+        "code_quality": "Uses hash-based bar detection. Clean imbalance history tracking."
+      }
+    },
+    "td9": {
+      "name": "TD9Strategy",
+      "display_name": "Td9",
+      "category": "uncategorized",
+      "indicators": [
+        "td9",
+        "ofi",
+        "volume_imbalance",
+        "rsi"
+      ],
+      "hypothesis": "Tom Demark Sequential(TD9) 카운팅을 4분봉에 적용하여 추세 고갈을 노려라",
+      "best_metrics": {
+        "profit_factor": 1.18,
+        "max_drawdown": -0.12,
+        "total_return": 0.08,
+        "total_trades": 128.0,
+        "win_rate": 53.1,
+        "sharpe_ratio": 0.07,
+        "avg_win": 1.56,
+        "avg_loss": 1.49,
+        "w/l_ratio": 1.05
+      },
+      "status": "in_progress",
+      "iterations": 5,
+      "memory_path": "td9_dir/memory.md",
+      "code_path": "src/intraday/strategies/tick/td9.py",
+      "tags": [
+        "uncategorized",
+        "td9",
+        "ofi",
+        "volume_imbalance",
+        "rsi"
+      ],
+      "_semantic": {
+        "core_logic": "TD Sequential 9-count 완성 시 mean reversion 진입. 10분봉 기반 내부 aggregation.",
+        "implicit_assumptions": [
+          "TD9 = trend exhaustion 신호",
+          "Green 9 → SHORT (uptrend 고갈)",
+          "Red 9 → LONG (downtrend 고갈)"
+        ],
+        "failure_nuance": "V1-V4 volume imbalance filter 시도 후 plateau. V5에서 RSI filter로 전환.",
+        "similar_patterns": [
+          "td_sequential",
+          "count_based",
+          "exhaustion_count"
+        ],
+        "hidden_risks": [
+          "TD9 자체가 lagging indicator",
+          "RSI와 TD9 timing mismatch",
+          "10분봉 내부 aggregation으로 tick data 장점 상실"
+        ],
+        "state_machine": "WARMUP(14 bars) → IDLE → HOLDING_LONG/SHORT → COOLDOWN(1 bar)",
+        "key_parameters": {
+          "td9_lookback": 4,
+          "td9_count": 9,
+          "stop_loss_pct": 0.2,
+          "take_profit_pct": 0.4,
+          "max_hold_bars": 5,
+          "rsi_period": 14,
+          "rsi_overbought": 70,
+          "rsi_oversold": 30
+        },
+        "evolution": "V1 (basic) → V2-V4 (volume imbalance filter) → V5 (RSI filter, final)",
+        "code_quality": "Clean TD9 counting logic. RSI calculation implemented inline."
+      }
+    },
+    "tip_exhaustion": {
+      "name": "TipExhaustionStrategy",
+      "display_name": "Tip Exhaustion",
+      "category": "uncategorized",
+      "indicators": [],
+      "hypothesis": "고점에서 매수할 사람이 없으면 적은 매도세로도 급락",
+      "best_metrics": {},
+      "status": "in_progress",
+      "iterations": 0,
+      "memory_path": "tip_exhaustion_dir/memory.md",
+      "code_path": null,
+      "tags": [
+        "uncategorized"
+      ],
+      "_semantic": {
+        "core_logic": "신규 고점에서 Top Node Volume < Bottom Node Volume * 0.1 감지 → 매수세 고갈 → Short 진입.",
+        "implicit_assumptions": [
+          "고점에서 거래량 급감 = 매수세 고갈",
+          "Top Node 거래량이 Bottom의 10% 미만이면 exhaustion",
+          "적은 매도세로도 급락 가능"
+        ],
+        "failure_nuance": "아직 iteration 없음. Volume Profile 기반 Tip Exhaustion 로직 설계만 완료.",
+        "similar_patterns": [
+          "volume_profile",
+          "exhaustion_detection",
+          "delta_reversal"
+        ],
+        "hidden_risks": [
+          "Volume Profile 계산 복잡성",
+          "Top/Bottom Node 정의가 arbitrary",
+          "Exhaustion signal이 continuation일 수 있음"
+        ],
+        "status": "CONCEPT_ONLY",
+        "implementation_approach": [
+          "Volume Profile: 가격대별 거래량 분포",
+          "Delta: 순매수 - 순매도",
+          "Tip Exhaustion: Top Volume < Bottom * 0.1"
+        ],
+        "code_quality": "No implementation yet"
+      }
+    },
+    "volume_climax": {
+      "name": "VolumeClimaxStrategy",
+      "display_name": "Volume Climax",
+      "category": "uncategorized",
+      "indicators": [
+        "ofi",
+        "rsi",
+        "sma"
+      ],
+      "hypothesis": "4분봉 거래량이 직전 20개 평균의 5배 이상 급증(Buying/Selling Climax) 시 역매매",
+      "best_metrics": {},
+      "status": "in_progress",
+      "iterations": 5,
+      "memory_path": "volume_climax_dir/memory.md",
+      "code_path": "src/intraday/strategies/tick/volume_climax.py",
+      "tags": [
+        "uncategorized",
+        "ofi",
+        "rsi",
+        "sma"
+      ],
+      "_semantic": {
+        "core_logic": "Volume climax (5x avg) + reversal wick 감지 → FADE. V5에서 regime filter 추가.",
+        "implicit_assumptions": [
+          "Volume climax = exhaustion",
+          "Reversal wick (>50% body) = rejection",
+          "Bullish climax만 fade (SHORT-only)"
+        ],
+        "failure_nuance": "EDA 결과 SHORT-only가 유효 (58.8% WR). LONG은 35.5% WR. V5에서 MA deviation으로 regime filter.",
+        "similar_patterns": [
+          "climax_fade",
+          "exhaustion_reversal",
+          "wick_rejection"
+        ],
+        "hidden_risks": [
+          "Volume multiplier (5x)가 market에 따라 부적절",
+          "Bull trending market에서 SHORT fade 위험",
+          "MA deviation filter가 너무 restrictive"
+        ],
+        "state_machine": "WARMUP(50 bars) → IDLE → HOLDING_SHORT → COOLDOWN(2 bars)",
+        "key_parameters": {
+          "volume_lookback": 20,
+          "volume_multiplier": 5.0,
+          "wick_ratio": 0.5,
+          "min_body_pct": 0.05,
+          "ma_period": 50,
+          "max_ma_deviation": 0.0075,
+          "stop_buffer_pct": 0.1,
+          "take_profit_ratio": 1.0
+        },
+        "direction_filter": "short_only (default)",
+        "evolution": "V1-V3 (bidirectional) → V4 (short-only) → V5 (regime filter)",
+        "code_quality": "Clean regime filter implementation. Climax-based exit levels."
+      }
+    },
+    "vpin_breakout_filter": {
+      "name": "VpinBreakoutFilterStrategy",
+      "display_name": "Vpin Breakout Filter",
+      "category": "volatility_breakout",
+      "indicators": [
+        "ofi",
+        "volume_imbalance",
+        "sma",
+        "vpin",
+        "rsi"
+      ],
+      "hypothesis": "Slow VPIN(100 BTC)을 필터로 사용하여 저항선 돌파 시 Fakeout vs 진짜 추세를 구분",
+      "best_metrics": {},
+      "status": "in_progress",
+      "iterations": 1,
+      "memory_path": "vpin_breakout_filter_dir/memory.md",
+      "code_path": "src/intraday/strategies/tick/vpin_breakout_filter.py",
+      "tags": [
+        "volatility_breakout",
+        "ofi",
+        "volume_imbalance",
+        "sma",
+        "vpin",
+        "rsi"
+      ],
+      "_semantic": {
+        "core_logic": "LOW VPIN CDF(<0.3) + Breakout 감지 → 진입. 역발상: 낮은 VPIN = MM이 flow 흡수 안함 = clean breakout.",
+        "implicit_assumptions": [
+          "HIGH VPIN = MM absorption zone = 반전 가능성 높음",
+          "LOW VPIN = MM이 비켜섬 = breakout 지속",
+          "v1 (HIGH VPIN entry)이 16.4% WR로 실패 → 가설 반전"
+        ],
+        "failure_nuance": "v1에서 HIGH VPIN entry가 실패. MM이 fade하고 있었음. v2에서 가설 반전하여 LOW VPIN entry로 수정.",
+        "similar_patterns": [
+          "breakout_momentum",
+          "mm_withdrawal_detection",
+          "clean_breakout"
+        ],
+        "hidden_risks": [
+          "LOW VPIN threshold (0.3)가 너무 restrictive하면 signal 부족",
+          "MM absorption filter (>0.6)와 entry filter (<0.3) 사이의 gap이 넓음",
+          "Breakout false positive 시 손실"
+        ],
+        "state_machine": "WARMUP(200 bars) → IDLE → HOLDING_LONG/SHORT → COOLDOWN(10 bars)",
+        "key_parameters": {
+          "lookback_bars": 20,
+          "vpin_entry_cdf": 0.3,
+          "vpin_ignore_cdf": 0.6,
+          "vpin_exit_cdf": 0.7,
+          "stop_loss_pct": 0.8,
+          "take_profit_pct": 1.2
+        },
+        "market_microstructure": "BVC (Bulk Volume Classification)로 buy/sell volume 분류. Normal CDF 기반.",
+        "code_quality": "Well-documented with clear v1→v2 hypothesis evolution. Proper MM absorption filter."
+      }
+    },
+    "vpin_contrarian": {
+      "name": "VPINContrarianStrategy",
+      "display_name": "Vpin Contrarian",
+      "category": "mean_reversion",
+      "indicators": [
+        "ofi",
+        "volume_imbalance",
+        "sma",
+        "vpin",
+        "rsi"
+      ],
+      "hypothesis": "4분봉 가격 급등 + VPIN High Toxicity 괴리를 이용한 역매매 전략",
+      "best_metrics": {},
+      "status": "rejected",
+      "iterations": 6,
+      "memory_path": "vpin_contrarian_dir/memory.md",
+      "code_path": "src/intraday/strategies/tick/vpin_contrarian.py",
+      "tags": [
+        "mean_reversion",
+        "ofi",
+        "volume_imbalance",
+        "sma",
+        "vpin",
+        "rsi"
+      ],
+      "_semantic": {
+        "core_logic": "VPIN > threshold (informed trading detected) + RSI 확인 → OFI 방향 반대로 fade 진입. Mean reversion 가설.",
+        "implicit_assumptions": [
+          "VPIN spike = 정보거래자 진입 = 곧 가격 조정",
+          "RSI oversold/overbought와 VPIN spike 조합이 반전 신호",
+          "OFI 방향의 반대가 수익 방향"
+        ],
+        "failure_nuance": "6번의 iteration 동안 실패. 핵심 문제: Win Rate 58.8%이나 Avg Win($0.73) < Avg Loss($1.00)로 Risk-Reward Inversion 발생. PF 0.94로 fee까지 고려하면 적자.",
+        "similar_patterns": [
+          "mean_reversion",
+          "ofi_fade",
+          "informed_trading_detection",
+          "toxicity_fade"
+        ],
+        "hidden_risks": [
+          "VPIN threshold 0.7은 너무 낮아 noise 포함",
+          "RSI 신호와 VPIN 신호 timing mismatch",
+          "Fee-dominated loss 패턴 (WR 높으나 손실)",
+          "가설 자체가 invalidated - VPIN spike가 반전이 아닌 추세 지속 신호일 수 있음"
+        ],
+        "state_machine": "WARMUP(50 buckets) → IDLE → HOLDING_LONG/SHORT → COOLDOWN(10 bars)",
+        "key_parameters": {
+          "vpin_threshold": 0.7,
+          "vpin_bucket_size": 1000,
+          "rsi_period": 14,
+          "rsi_oversold": 30,
+          "rsi_overbought": 70
+        },
+        "lessons_learned": [
+          "L001: Risk-Reward Inversion - WR만 보면 안됨",
+          "VPIN contrarian 가설 자체 검증 필요",
+          "OFI 방향 fade가 항상 정답은 아님"
+        ],
+        "code_quality": "Complex implementation with volume bucket management. VPIN calculation follows academic definition."
+      }
+    },
+    "vpin_ofi_scalping": {
+      "name": "VpinOfiScalpingStrategy",
+      "display_name": "Vpin Ofi Scalping",
+      "category": "market_making",
+      "indicators": [
+        "ofi",
+        "vpin",
+        "rsi"
+      ],
+      "hypothesis": "Fast VPIN CDF가 High Toxicity 구간일 때 OFI(Order Flow Imbalance) 방향으로 스캘핑",
+      "best_metrics": {},
+      "status": "in_progress",
+      "iterations": 5,
+      "memory_path": "vpin_ofi_scalping_dir/memory.md",
+      "code_path": "src/intraday/strategies/tick/vpin_ofi_scalping.py",
+      "tags": [
+        "market_making",
+        "ofi",
+        "vpin",
+        "rsi"
+      ],
+      "_semantic": {
+        "core_logic": "VPIN CDF > 90 (exhaustion) + recent price move > 0.5% → FADE. Price move 방향 반대로 진입.",
+        "implicit_assumptions": [
+          "VPIN > 90 = informed trading completed",
+          "Price move + high VPIN = information priced in",
+          "Late chasers create mean reversion opportunity"
+        ],
+        "failure_nuance": "V4에서 0.3% price move threshold → V5에서 0.5%로 상향 (signal quality 개선).",
+        "similar_patterns": [
+          "exhaustion_fade",
+          "vpin_timing",
+          "price_move_filter"
+        ],
+        "hidden_risks": [
+          "Trailing stop trigger (0.2%)가 너무 tight",
+          "VPIN normalization exit (CDF < 70)이 premature",
+          "Price move threshold가 regime에 따라 다를 수 있음"
+        ],
+        "state_machine": "WARMUP(200 bars) → IDLE → HOLDING_LONG/SHORT → COOLDOWN(5 bars)",
+        "key_parameters": {
+          "fast_vpin_buckets": 30,
+          "vpin_entry_percentile": 90,
+          "vpin_exit_percentile": 70,
+          "price_move_lookback": 5,
+          "price_move_threshold": 0.005,
+          "stop_loss_pct": 0.3,
+          "take_profit_pct": 0.5,
+          "trailing_trigger_pct": 0.2,
+          "min_hold_bars": 2,
+          "max_hold_bars": 15
+        },
+        "evolution": "V1-V3 → V4 (0.3% threshold) → V5 (0.5% threshold, faster exits)",
+        "code_quality": "Clean BVC-based VPIN calculation. Trailing stop implementation."
+      }
+    },
+    "vpin_rsi_mean_reversion": {
+      "name": "VpinRsiMeanReversionStrategy",
+      "display_name": "Vpin Rsi Mean Reversion",
+      "category": "mean_reversion",
+      "indicators": [
+        "ofi",
+        "sma",
+        "vpin",
+        "rsi",
+        "bollinger_bands"
+      ],
+      "hypothesis": "Fast/Slow VPIN이 모두 Low Toxicity(Safe Zone)일 때 RSI 역매매(Mean Reversion) 수행. 포지션 보유 중 Fast VPIN 급등 시 즉시 청산",
+      "best_metrics": {},
+      "status": "in_progress",
+      "iterations": 3,
+      "memory_path": "vpin_rsi_mean_reversion_dir/memory.md",
+      "code_path": "src/intraday/strategies/tick/vpin_rsi_mean_reversion.py",
+      "tags": [
+        "mean_reversion",
+        "ofi",
+        "sma",
+        "vpin",
+        "rsi",
+        "bollinger_bands"
+      ],
+      "_semantic": {
+        "core_logic": "Range Regime (Safe Zone + ADX < 25) + BB touch → mean reversion 진입. VPIN spike 시 emergency exit.",
+        "implicit_assumptions": [
+          "Low VPIN = safe zone (no informed trading)",
+          "Low ADX = no trend (oscillatory)",
+          "BB touch in ranging market = mean reversion opportunity"
+        ],
+        "failure_nuance": "V1 실패 원인: Low VPIN이 trending을 필터링 못함. V2에서 ADX filter 추가.",
+        "similar_patterns": [
+          "range_trading",
+          "bollinger_reversion",
+          "regime_filter"
+        ],
+        "hidden_risks": [
+          "ADX threshold (25)가 너무 낮거나 높을 수 있음",
+          "VPIN spike emergency exit이 정상 변동에도 trigger",
+          "Asymmetric TP/SL (0.8%/0.3%)가 실제로 효과적인지 검증 필요"
+        ],
+        "state_machine": "WARMUP(400 bars) → IDLE → HOLDING_LONG/SHORT → COOLDOWN(5 bars)",
+        "key_parameters": {
+          "safe_zone_threshold": 0.4,
+          "adx_period": 14,
+          "adx_threshold": 25,
+          "bb_period": 20,
+          "bb_std_mult": 2.0,
+          "vpin_spike_threshold": 0.7,
+          "take_profit_pct": 0.8,
+          "stop_loss_pct": 0.3,
+          "max_hold_bars": 30
+        },
+        "evolution": "V1 (Safe Zone only, failed) → V2 (ADX + BB, redesigned)",
+        "code_quality": "Complex with Dual VPIN, ADX, BB calculations. Wilder's smoothing for ADX."
+      }
+    },
+    "vpin_rsi_meanreversion": {
+      "name": "VpinRsiMeanreversionStrategy",
+      "display_name": "Vpin Rsi Meanreversion",
+      "category": "mean_reversion",
+      "indicators": [],
+      "hypothesis": "Fast/Slow VPIN이 모두 Low Toxicity 구간(Safe Zone)일 때 RSI 역매매(Mean Reversion) 수행. 포지션 보유 중 Fast VPIN 급등 시 즉시 청산",
+      "best_metrics": {},
+      "status": "in_progress",
+      "iterations": 0,
+      "memory_path": "vpin_rsi_meanreversion_dir/memory.md",
+      "code_path": null,
+      "tags": [
+        "mean_reversion"
+      ],
+      "_semantic": {
+        "core_logic": "Fast/Slow VPIN이 모두 Low Toxicity (Safe Zone, CDF < 0.3)일 때 RSI 역매매. VPIN spike 시 emergency exit.",
+        "implicit_assumptions": [
+          "Low VPIN = Noise Trading 구간",
+          "Noise 구간에서 RSI 역매매 유효",
+          "VPIN spike = 정보 거래자 유입 → 즉시 탈출"
+        ],
+        "failure_nuance": "Previous RSI strategies failed in High VPIN zones. This strategy filters to Low VPIN only.",
+        "similar_patterns": [
+          "vpin_rsi_mean_reversion",
+          "safe_zone_trading",
+          "noise_trading"
+        ],
+        "hidden_risks": [
+          "Safe Zone 조건이 너무 restrictive (CDF < 0.3)",
+          "RSI와 VPIN timing mismatch",
+          "Emergency exit이 정상 변동에도 trigger"
+        ],
+        "relationship": "vpin_rsi_mean_reversion의 초기 버전 (V1) - 이후 V2로 redesign됨",
+        "key_parameters": {
+          "safe_zone_threshold": 0.3,
+          "rsi_overbought": 70,
+          "rsi_oversold": 30,
+          "vpin_spike_threshold": 0.7,
+          "stop_loss_pct": 0.5,
+          "take_profit_pct": 0.5
+        },
+        "code_quality": "Concept precursor to vpin_rsi_mean_reversion V2 implementation"
+      }
+    },
+    "vpin_strategy": {
+      "name": "VpinStrategyStrategy",
+      "display_name": "Vpin Strategy",
+      "category": "uncategorized",
+      "indicators": [],
+      "hypothesis": "정보를 가진 트레이더(Informed Trader)는 대량 주문을 넣는다. 이들의 거래 비중이 높아지면 VPIN이 상승한다. VPIN은 '시장에 정보 비대칭이 얼마나 존재하는가'를 수치화한 것이다.",
+      "best_metrics": {},
+      "status": "in_progress",
+      "iterations": 3,
+      "memory_path": "vpin_strategy_dir/memory.md",
+      "code_path": null,
+      "tags": [
+        "uncategorized"
+      ],
+      "_semantic": {
+        "core_logic": "VPIN 급등 시 변동성 증가 예측. VPIN + 가격 방향 조합으로 진입.",
+        "implicit_assumptions": [
+          "Informed traders는 대량 주문 → VPIN 상승",
+          "VPIN은 정보 비대칭 측정 지표",
+          "VPIN spike는 변동성 증가 예고"
+        ],
+        "failure_nuance": "Iteration 1에서 catastrophic failure. 1294 trades/day (vs 예상 5-15), WR 3.2%, PF 0.01. Excessive trading과 VPIN threshold 문제.",
+        "similar_patterns": [
+          "vpin_momentum",
+          "informed_trading",
+          "volatility_prediction"
+        ],
+        "hidden_risks": [
+          "VPIN threshold (0.4)가 너무 자주 trigger",
+          "Exit threshold (0.25)로 premature exit",
+          "Flip-flopping between positions"
+        ],
+        "key_parameters": {
+          "n_buckets": 50,
+          "vpin_threshold": 0.4,
+          "vpin_exit_threshold": 0.25,
+          "momentum_lookback": 10,
+          "n_sigma_lookback": 50
+        },
+        "root_cause": "VPIN이 대부분의 시간 threshold 이상 유지 → 과도한 재진입",
+        "code_quality": "Initial VPIN implementation. BVC (Bulk Volume Classification) based."
+      }
+    },
+    "vwap_reversion": {
+      "name": "VWAPReversionStrategy",
+      "display_name": "Vwap Reversion",
+      "category": "mean_reversion",
+      "indicators": [
+        "ofi",
+        "sma",
+        "vpin",
+        "rsi",
+        "vwap"
+      ],
+      "hypothesis": "4분봉 종가가 당일 VWAP에서 표준편차 2배 이상 벌어졌을 때 평균 회귀 매매 (추세 방향 정렬)",
+      "best_metrics": {},
+      "status": "in_progress",
+      "iterations": 3,
+      "memory_path": "vwap_reversion_dir/memory.md",
+      "code_path": "src/intraday/strategies/tick/vwap_reversion.py",
+      "tags": [
+        "mean_reversion",
+        "ofi",
+        "sma",
+        "vpin",
+        "rsi",
+        "vwap"
+      ],
+      "_semantic": {
+        "core_logic": "VWAP deviation > 2σ 감지 시 mean reversion 진입. V2에서 MA50 regime filter 추가.",
+        "implicit_assumptions": [
+          "기관 알고리즘은 VWAP 벤치마크 추종",
+          "VWAP에서 크게 벗어나면 회귀 압력",
+          "Regime filter로 trending market 제외"
+        ],
+        "failure_nuance": "V1에서 trending market에서 손실. V2에서 MA50 filter: LONG은 bullish regime만, SHORT은 bearish regime만.",
+        "similar_patterns": [
+          "mean_reversion",
+          "vwap_bands",
+          "institutional_benchmark"
+        ],
+        "hidden_risks": [
+          "Intraday VWAP reset으로 overnight gap 문제",
+          "deviation std 계산 기간 선택 중요",
+          "Regime filter가 오히려 좋은 기회 필터링"
+        ],
+        "state_machine": "WARMUP(50 bars) → IDLE → HOLDING_LONG/SHORT → COOLDOWN(3 bars)",
+        "key_parameters": {
+          "ma_period": 50,
+          "vwap_sigma": 2.0,
+          "dev_lookback": 20,
+          "stop_loss_pct": 0.5,
+          "max_hold_bars": 5
+        },
+        "evolution": "V1 (basic) → V2 (MA50 regime filter)",
+        "code_quality": "Clean VWAP calculation with daily reset. MA regime filter integrated."
+      }
+    }
+  },
+  "relationships": [
+    {
+      "source": "absorption",
+      "target": "bb_squeeze",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "sma"
+      ]
+    },
+    {
+      "source": "absorption",
+      "target": "breakout_frontrun",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi"
+      ]
+    },
+    {
+      "source": "absorption",
+      "target": "dual_vpin_cdf",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "ema",
+        "volume_imbalance"
+      ]
+    },
+    {
+      "source": "absorption",
+      "target": "dual_vpin",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi"
+      ]
+    },
+    {
+      "source": "absorption",
+      "target": "dual_vpin_rsi",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "volume_imbalance"
+      ]
+    },
+    {
+      "source": "absorption",
+      "target": "fast_vpin_scalping",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "volume_imbalance"
+      ]
+    },
+    {
+      "source": "absorption",
+      "target": "footprint_pseudoobi",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "volume_imbalance",
+        "sma"
+      ]
+    },
+    {
+      "source": "absorption",
+      "target": "funding_divergence",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "sma"
+      ]
+    },
+    {
+      "source": "absorption",
+      "target": "funding_divergence",
+      "type": "similar_to",
+      "similarity_score": 0.5,
+      "shared_concepts": [
+        "ofi",
+        "sma",
+        "mean_reversion"
+      ]
+    },
+    {
+      "source": "absorption",
+      "target": "gap_retracement",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "ema"
+      ]
+    },
+    {
+      "source": "absorption",
+      "target": "iceberg_breakout",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi"
+      ]
+    },
+    {
+      "source": "absorption",
+      "target": "ofi_momentum",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "ema"
+      ]
+    },
+    {
+      "source": "absorption",
+      "target": "ofi_vpin_explosion",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "volume_imbalance",
+        "sma"
+      ]
+    },
+    {
+      "source": "absorption",
+      "target": "stacked_imbalance",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "volume_imbalance"
+      ]
+    },
+    {
+      "source": "absorption",
+      "target": "td9",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "volume_imbalance"
+      ]
+    },
+    {
+      "source": "absorption",
+      "target": "volume_climax",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "sma"
+      ]
+    },
+    {
+      "source": "absorption",
+      "target": "vpin_breakout_filter",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "volume_imbalance",
+        "sma"
+      ]
+    },
+    {
+      "source": "absorption",
+      "target": "vpin_contrarian",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "volume_imbalance",
+        "sma"
+      ]
+    },
+    {
+      "source": "absorption",
+      "target": "vpin_contrarian",
+      "type": "similar_to",
+      "similarity_score": 0.6,
+      "shared_concepts": [
+        "ofi",
+        "volume_imbalance",
+        "sma",
+        "mean_reversion"
+      ]
+    },
+    {
+      "source": "absorption",
+      "target": "vpin_ofi_scalping",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi"
+      ]
+    },
+    {
+      "source": "absorption",
+      "target": "vpin_rsi_mean_reversion",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "sma"
+      ]
+    },
+    {
+      "source": "absorption",
+      "target": "vpin_rsi_mean_reversion",
+      "type": "similar_to",
+      "similarity_score": 0.4,
+      "shared_concepts": [
+        "ofi",
+        "sma",
+        "mean_reversion"
+      ]
+    },
+    {
+      "source": "absorption",
+      "target": "vwap_reversion",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "sma"
+      ]
+    },
+    {
+      "source": "absorption",
+      "target": "vwap_reversion",
+      "type": "similar_to",
+      "similarity_score": 0.4,
+      "shared_concepts": [
+        "ofi",
+        "sma",
+        "mean_reversion"
+      ]
+    },
+    {
+      "source": "bb_squeeze",
+      "target": "breakout_frontrun",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi"
+      ]
+    },
+    {
+      "source": "bb_squeeze",
+      "target": "dual_vpin_cdf",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "bollinger_bands"
+      ]
+    },
+    {
+      "source": "bb_squeeze",
+      "target": "dual_vpin",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi"
+      ]
+    },
+    {
+      "source": "bb_squeeze",
+      "target": "dual_vpin_rsi",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi"
+      ]
+    },
+    {
+      "source": "bb_squeeze",
+      "target": "fast_vpin_scalping",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi"
+      ]
+    },
+    {
+      "source": "bb_squeeze",
+      "target": "footprint_pseudoobi",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "sma"
+      ]
+    },
+    {
+      "source": "bb_squeeze",
+      "target": "funding_divergence",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "sma"
+      ]
+    },
+    {
+      "source": "bb_squeeze",
+      "target": "gap_retracement",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi"
+      ]
+    },
+    {
+      "source": "bb_squeeze",
+      "target": "iceberg_breakout",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi"
+      ]
+    },
+    {
+      "source": "bb_squeeze",
+      "target": "ofi_momentum",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi"
+      ]
+    },
+    {
+      "source": "bb_squeeze",
+      "target": "ofi_vpin_explosion",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "sma"
+      ]
+    },
+    {
+      "source": "bb_squeeze",
+      "target": "stacked_imbalance",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi"
+      ]
+    },
+    {
+      "source": "bb_squeeze",
+      "target": "td9",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi"
+      ]
+    },
+    {
+      "source": "bb_squeeze",
+      "target": "volume_climax",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "sma"
+      ]
+    },
+    {
+      "source": "bb_squeeze",
+      "target": "vpin_breakout_filter",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "sma"
+      ]
+    },
+    {
+      "source": "bb_squeeze",
+      "target": "vpin_breakout_filter",
+      "type": "similar_to",
+      "similarity_score": 0.4,
+      "shared_concepts": [
+        "ofi",
+        "sma",
+        "volatility_breakout"
+      ]
+    },
+    {
+      "source": "bb_squeeze",
+      "target": "vpin_contrarian",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "sma"
+      ]
+    },
+    {
+      "source": "bb_squeeze",
+      "target": "vpin_ofi_scalping",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi"
+      ]
+    },
+    {
+      "source": "bb_squeeze",
+      "target": "vpin_rsi_mean_reversion",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "bollinger_bands",
+        "sma"
+      ]
+    },
+    {
+      "source": "bb_squeeze",
+      "target": "vwap_reversion",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "sma"
+      ]
+    },
+    {
+      "source": "breakout_frontrun",
+      "target": "dual_vpin_cdf",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "vpin"
+      ]
+    },
+    {
+      "source": "breakout_frontrun",
+      "target": "dual_vpin",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "vpin"
+      ]
+    },
+    {
+      "source": "breakout_frontrun",
+      "target": "dual_vpin_rsi",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "vpin"
+      ]
+    },
+    {
+      "source": "breakout_frontrun",
+      "target": "fast_vpin_scalping",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "vpin"
+      ]
+    },
+    {
+      "source": "breakout_frontrun",
+      "target": "fast_vpin_scalping",
+      "type": "similar_to",
+      "similarity_score": 0.5,
+      "shared_concepts": [
+        "ofi",
+        "vpin",
+        "volatility_breakout"
+      ]
+    },
+    {
+      "source": "breakout_frontrun",
+      "target": "footprint_pseudoobi",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi"
+      ]
+    },
+    {
+      "source": "breakout_frontrun",
+      "target": "funding_divergence",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi"
+      ]
+    },
+    {
+      "source": "breakout_frontrun",
+      "target": "gap_retracement",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi"
+      ]
+    },
+    {
+      "source": "breakout_frontrun",
+      "target": "iceberg_breakout",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi"
+      ]
+    },
+    {
+      "source": "breakout_frontrun",
+      "target": "ofi_momentum",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi"
+      ]
+    },
+    {
+      "source": "breakout_frontrun",
+      "target": "ofi_vpin_explosion",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "vpin"
+      ]
+    },
+    {
+      "source": "breakout_frontrun",
+      "target": "stacked_imbalance",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi"
+      ]
+    },
+    {
+      "source": "breakout_frontrun",
+      "target": "td9",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi"
+      ]
+    },
+    {
+      "source": "breakout_frontrun",
+      "target": "volume_climax",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi"
+      ]
+    },
+    {
+      "source": "breakout_frontrun",
+      "target": "vpin_breakout_filter",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "vpin"
+      ]
+    },
+    {
+      "source": "breakout_frontrun",
+      "target": "vpin_breakout_filter",
+      "type": "similar_to",
+      "similarity_score": 0.4,
+      "shared_concepts": [
+        "ofi",
+        "vpin",
+        "volatility_breakout"
+      ]
+    },
+    {
+      "source": "breakout_frontrun",
+      "target": "vpin_contrarian",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "vpin"
+      ]
+    },
+    {
+      "source": "breakout_frontrun",
+      "target": "vpin_ofi_scalping",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "vpin"
+      ]
+    },
+    {
+      "source": "breakout_frontrun",
+      "target": "vpin_rsi_mean_reversion",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "vpin"
+      ]
+    },
+    {
+      "source": "breakout_frontrun",
+      "target": "vwap_reversion",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "vpin"
+      ]
+    },
+    {
+      "source": "dual_vpin_cdf",
+      "target": "dual_vpin",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "vpin"
+      ]
+    },
+    {
+      "source": "dual_vpin_cdf",
+      "target": "dual_vpin",
+      "type": "similar_to",
+      "similarity_score": 0.3333333333333333,
+      "shared_concepts": [
+        "ofi",
+        "vpin",
+        "market_making"
+      ]
+    },
+    {
+      "source": "dual_vpin_cdf",
+      "target": "dual_vpin_rsi",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "vpin",
+        "rsi",
+        "volume_imbalance"
+      ]
+    },
+    {
+      "source": "dual_vpin_cdf",
+      "target": "dual_vpin_rsi",
+      "type": "similar_to",
+      "similarity_score": 0.6666666666666666,
+      "shared_concepts": [
+        "ofi",
+        "vpin",
+        "rsi",
+        "volume_imbalance",
+        "market_making"
+      ]
+    },
+    {
+      "source": "dual_vpin_cdf",
+      "target": "fast_vpin_scalping",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "vpin",
+        "rsi",
+        "volume_imbalance"
+      ]
+    },
+    {
+      "source": "dual_vpin_cdf",
+      "target": "footprint_pseudoobi",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "volume_imbalance",
+        "rsi"
+      ]
+    },
+    {
+      "source": "dual_vpin_cdf",
+      "target": "funding_divergence",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "rsi"
+      ]
+    },
+    {
+      "source": "dual_vpin_cdf",
+      "target": "gap_retracement",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "ema"
+      ]
+    },
+    {
+      "source": "dual_vpin_cdf",
+      "target": "iceberg_breakout",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "rsi"
+      ]
+    },
+    {
+      "source": "dual_vpin_cdf",
+      "target": "ofi_momentum",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "ema",
+        "rsi"
+      ]
+    },
+    {
+      "source": "dual_vpin_cdf",
+      "target": "ofi_vpin_explosion",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "rsi",
+        "volume_imbalance",
+        "vpin"
+      ]
+    },
+    {
+      "source": "dual_vpin_cdf",
+      "target": "stacked_imbalance",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "volume_imbalance"
+      ]
+    },
+    {
+      "source": "dual_vpin_cdf",
+      "target": "td9",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "volume_imbalance",
+        "rsi"
+      ]
+    },
+    {
+      "source": "dual_vpin_cdf",
+      "target": "volume_climax",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "rsi"
+      ]
+    },
+    {
+      "source": "dual_vpin_cdf",
+      "target": "vpin_breakout_filter",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "rsi",
+        "volume_imbalance",
+        "vpin"
+      ]
+    },
+    {
+      "source": "dual_vpin_cdf",
+      "target": "vpin_contrarian",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "rsi",
+        "volume_imbalance",
+        "vpin"
+      ]
+    },
+    {
+      "source": "dual_vpin_cdf",
+      "target": "vpin_ofi_scalping",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "vpin",
+        "rsi"
+      ]
+    },
+    {
+      "source": "dual_vpin_cdf",
+      "target": "vpin_ofi_scalping",
+      "type": "similar_to",
+      "similarity_score": 0.5,
+      "shared_concepts": [
+        "ofi",
+        "vpin",
+        "rsi",
+        "market_making"
+      ]
+    },
+    {
+      "source": "dual_vpin_cdf",
+      "target": "vpin_rsi_mean_reversion",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "bollinger_bands",
+        "vpin",
+        "rsi"
+      ]
+    },
+    {
+      "source": "dual_vpin_cdf",
+      "target": "vwap_reversion",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "vpin",
+        "rsi"
+      ]
+    },
+    {
+      "source": "dual_vpin",
+      "target": "dual_vpin_rsi",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "vpin"
+      ]
+    },
+    {
+      "source": "dual_vpin",
+      "target": "dual_vpin_rsi",
+      "type": "similar_to",
+      "similarity_score": 0.5,
+      "shared_concepts": [
+        "ofi",
+        "vpin",
+        "market_making"
+      ]
+    },
+    {
+      "source": "dual_vpin",
+      "target": "fast_vpin_scalping",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "vpin"
+      ]
+    },
+    {
+      "source": "dual_vpin",
+      "target": "footprint_pseudoobi",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi"
+      ]
+    },
+    {
+      "source": "dual_vpin",
+      "target": "funding_divergence",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi"
+      ]
+    },
+    {
+      "source": "dual_vpin",
+      "target": "gap_retracement",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi"
+      ]
+    },
+    {
+      "source": "dual_vpin",
+      "target": "iceberg_breakout",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi"
+      ]
+    },
+    {
+      "source": "dual_vpin",
+      "target": "ofi_momentum",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi"
+      ]
+    },
+    {
+      "source": "dual_vpin",
+      "target": "ofi_vpin_explosion",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "vpin"
+      ]
+    },
+    {
+      "source": "dual_vpin",
+      "target": "stacked_imbalance",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi"
+      ]
+    },
+    {
+      "source": "dual_vpin",
+      "target": "td9",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi"
+      ]
+    },
+    {
+      "source": "dual_vpin",
+      "target": "volume_climax",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi"
+      ]
+    },
+    {
+      "source": "dual_vpin",
+      "target": "vpin_breakout_filter",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "vpin"
+      ]
+    },
+    {
+      "source": "dual_vpin",
+      "target": "vpin_contrarian",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "vpin"
+      ]
+    },
+    {
+      "source": "dual_vpin",
+      "target": "vpin_ofi_scalping",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "vpin"
+      ]
+    },
+    {
+      "source": "dual_vpin",
+      "target": "vpin_ofi_scalping",
+      "type": "similar_to",
+      "similarity_score": 0.6666666666666666,
+      "shared_concepts": [
+        "ofi",
+        "vpin",
+        "market_making"
+      ]
+    },
+    {
+      "source": "dual_vpin",
+      "target": "vpin_rsi_mean_reversion",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "vpin"
+      ]
+    },
+    {
+      "source": "dual_vpin",
+      "target": "vwap_reversion",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "vpin"
+      ]
+    },
+    {
+      "source": "dual_vpin_rsi",
+      "target": "fast_vpin_scalping",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "vpin",
+        "rsi",
+        "volume_imbalance"
+      ]
+    },
+    {
+      "source": "dual_vpin_rsi",
+      "target": "footprint_pseudoobi",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "volume_imbalance",
+        "rsi"
+      ]
+    },
+    {
+      "source": "dual_vpin_rsi",
+      "target": "funding_divergence",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "rsi"
+      ]
+    },
+    {
+      "source": "dual_vpin_rsi",
+      "target": "gap_retracement",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi"
+      ]
+    },
+    {
+      "source": "dual_vpin_rsi",
+      "target": "iceberg_breakout",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "rsi"
+      ]
+    },
+    {
+      "source": "dual_vpin_rsi",
+      "target": "ofi_momentum",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "rsi"
+      ]
+    },
+    {
+      "source": "dual_vpin_rsi",
+      "target": "ofi_vpin_explosion",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "vpin",
+        "rsi",
+        "volume_imbalance"
+      ]
+    },
+    {
+      "source": "dual_vpin_rsi",
+      "target": "stacked_imbalance",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "volume_imbalance"
+      ]
+    },
+    {
+      "source": "dual_vpin_rsi",
+      "target": "td9",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "volume_imbalance",
+        "rsi"
+      ]
+    },
+    {
+      "source": "dual_vpin_rsi",
+      "target": "volume_climax",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "rsi"
+      ]
+    },
+    {
+      "source": "dual_vpin_rsi",
+      "target": "vpin_breakout_filter",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "vpin",
+        "rsi",
+        "volume_imbalance"
+      ]
+    },
+    {
+      "source": "dual_vpin_rsi",
+      "target": "vpin_contrarian",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "vpin",
+        "rsi",
+        "volume_imbalance"
+      ]
+    },
+    {
+      "source": "dual_vpin_rsi",
+      "target": "vpin_ofi_scalping",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "vpin",
+        "rsi"
+      ]
+    },
+    {
+      "source": "dual_vpin_rsi",
+      "target": "vpin_ofi_scalping",
+      "type": "similar_to",
+      "similarity_score": 0.75,
+      "shared_concepts": [
+        "ofi",
+        "vpin",
+        "rsi",
+        "market_making"
+      ]
+    },
+    {
+      "source": "dual_vpin_rsi",
+      "target": "vpin_rsi_mean_reversion",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "vpin",
+        "rsi"
+      ]
+    },
+    {
+      "source": "dual_vpin_rsi",
+      "target": "vwap_reversion",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "vpin",
+        "rsi"
+      ]
+    },
+    {
+      "source": "fast_vpin_scalping",
+      "target": "footprint_pseudoobi",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "volume_imbalance",
+        "rsi"
+      ]
+    },
+    {
+      "source": "fast_vpin_scalping",
+      "target": "funding_divergence",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "rsi"
+      ]
+    },
+    {
+      "source": "fast_vpin_scalping",
+      "target": "gap_retracement",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi"
+      ]
+    },
+    {
+      "source": "fast_vpin_scalping",
+      "target": "iceberg_breakout",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "rsi"
+      ]
+    },
+    {
+      "source": "fast_vpin_scalping",
+      "target": "iceberg_breakout",
+      "type": "similar_to",
+      "similarity_score": 0.5,
+      "shared_concepts": [
+        "ofi",
+        "rsi",
+        "volatility_breakout"
+      ]
+    },
+    {
+      "source": "fast_vpin_scalping",
+      "target": "ofi_momentum",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "rsi"
+      ]
+    },
+    {
+      "source": "fast_vpin_scalping",
+      "target": "ofi_vpin_explosion",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "vpin",
+        "rsi",
+        "volume_imbalance"
+      ]
+    },
+    {
+      "source": "fast_vpin_scalping",
+      "target": "stacked_imbalance",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "volume_imbalance"
+      ]
+    },
+    {
+      "source": "fast_vpin_scalping",
+      "target": "td9",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "volume_imbalance",
+        "rsi"
+      ]
+    },
+    {
+      "source": "fast_vpin_scalping",
+      "target": "volume_climax",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "rsi"
+      ]
+    },
+    {
+      "source": "fast_vpin_scalping",
+      "target": "vpin_breakout_filter",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "vpin",
+        "rsi",
+        "volume_imbalance"
+      ]
+    },
+    {
+      "source": "fast_vpin_scalping",
+      "target": "vpin_breakout_filter",
+      "type": "similar_to",
+      "similarity_score": 0.8,
+      "shared_concepts": [
+        "ofi",
+        "vpin",
+        "rsi",
+        "volume_imbalance",
+        "volatility_breakout"
+      ]
+    },
+    {
+      "source": "fast_vpin_scalping",
+      "target": "vpin_contrarian",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "vpin",
+        "rsi",
+        "volume_imbalance"
+      ]
+    },
+    {
+      "source": "fast_vpin_scalping",
+      "target": "vpin_ofi_scalping",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "vpin",
+        "rsi"
+      ]
+    },
+    {
+      "source": "fast_vpin_scalping",
+      "target": "vpin_rsi_mean_reversion",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "vpin",
+        "rsi"
+      ]
+    },
+    {
+      "source": "fast_vpin_scalping",
+      "target": "vwap_reversion",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "vpin",
+        "rsi"
+      ]
+    },
+    {
+      "source": "footprint_pseudoobi",
+      "target": "funding_divergence",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "rsi",
+        "sma"
+      ]
+    },
+    {
+      "source": "footprint_pseudoobi",
+      "target": "gap_retracement",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi"
+      ]
+    },
+    {
+      "source": "footprint_pseudoobi",
+      "target": "iceberg_breakout",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "rsi"
+      ]
+    },
+    {
+      "source": "footprint_pseudoobi",
+      "target": "ofi_momentum",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "rsi"
+      ]
+    },
+    {
+      "source": "footprint_pseudoobi",
+      "target": "ofi_vpin_explosion",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "rsi",
+        "volume_imbalance",
+        "sma"
+      ]
+    },
+    {
+      "source": "footprint_pseudoobi",
+      "target": "ofi_vpin_explosion",
+      "type": "similar_to",
+      "similarity_score": 0.6666666666666666,
+      "shared_concepts": [
+        "ofi",
+        "rsi",
+        "volume_imbalance",
+        "sma",
+        "uncategorized"
+      ]
+    },
+    {
+      "source": "footprint_pseudoobi",
+      "target": "stacked_imbalance",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "volume_imbalance"
+      ]
+    },
+    {
+      "source": "footprint_pseudoobi",
+      "target": "td9",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "volume_imbalance",
+        "rsi"
+      ]
+    },
+    {
+      "source": "footprint_pseudoobi",
+      "target": "td9",
+      "type": "similar_to",
+      "similarity_score": 0.5,
+      "shared_concepts": [
+        "ofi",
+        "volume_imbalance",
+        "rsi",
+        "uncategorized"
+      ]
+    },
+    {
+      "source": "footprint_pseudoobi",
+      "target": "volume_climax",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "rsi",
+        "sma"
+      ]
+    },
+    {
+      "source": "footprint_pseudoobi",
+      "target": "volume_climax",
+      "type": "similar_to",
+      "similarity_score": 0.5,
+      "shared_concepts": [
+        "ofi",
+        "rsi",
+        "sma",
+        "uncategorized"
+      ]
+    },
+    {
+      "source": "footprint_pseudoobi",
+      "target": "vpin_breakout_filter",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "rsi",
+        "volume_imbalance",
+        "sma"
+      ]
+    },
+    {
+      "source": "footprint_pseudoobi",
+      "target": "vpin_contrarian",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "rsi",
+        "volume_imbalance",
+        "sma"
+      ]
+    },
+    {
+      "source": "footprint_pseudoobi",
+      "target": "vpin_ofi_scalping",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "rsi"
+      ]
+    },
+    {
+      "source": "footprint_pseudoobi",
+      "target": "vpin_rsi_mean_reversion",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "rsi",
+        "sma"
+      ]
+    },
+    {
+      "source": "footprint_pseudoobi",
+      "target": "vwap_reversion",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "rsi",
+        "sma"
+      ]
+    },
+    {
+      "source": "funding_divergence",
+      "target": "gap_retracement",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi"
+      ]
+    },
+    {
+      "source": "funding_divergence",
+      "target": "iceberg_breakout",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "rsi"
+      ]
+    },
+    {
+      "source": "funding_divergence",
+      "target": "ofi_momentum",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "rsi"
+      ]
+    },
+    {
+      "source": "funding_divergence",
+      "target": "ofi_vpin_explosion",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "rsi",
+        "sma"
+      ]
+    },
+    {
+      "source": "funding_divergence",
+      "target": "stacked_imbalance",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi"
+      ]
+    },
+    {
+      "source": "funding_divergence",
+      "target": "td9",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "rsi"
+      ]
+    },
+    {
+      "source": "funding_divergence",
+      "target": "volume_climax",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "rsi",
+        "sma"
+      ]
+    },
+    {
+      "source": "funding_divergence",
+      "target": "vpin_breakout_filter",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "rsi",
+        "sma"
+      ]
+    },
+    {
+      "source": "funding_divergence",
+      "target": "vpin_contrarian",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "rsi",
+        "sma"
+      ]
+    },
+    {
+      "source": "funding_divergence",
+      "target": "vpin_contrarian",
+      "type": "similar_to",
+      "similarity_score": 0.6,
+      "shared_concepts": [
+        "ofi",
+        "rsi",
+        "sma",
+        "mean_reversion"
+      ]
+    },
+    {
+      "source": "funding_divergence",
+      "target": "vpin_ofi_scalping",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "rsi"
+      ]
+    },
+    {
+      "source": "funding_divergence",
+      "target": "vpin_rsi_mean_reversion",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "rsi",
+        "sma"
+      ]
+    },
+    {
+      "source": "funding_divergence",
+      "target": "vpin_rsi_mean_reversion",
+      "type": "similar_to",
+      "similarity_score": 0.6,
+      "shared_concepts": [
+        "ofi",
+        "rsi",
+        "sma",
+        "mean_reversion"
+      ]
+    },
+    {
+      "source": "funding_divergence",
+      "target": "vwap_reversion",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "rsi",
+        "sma"
+      ]
+    },
+    {
+      "source": "funding_divergence",
+      "target": "vwap_reversion",
+      "type": "similar_to",
+      "similarity_score": 0.6,
+      "shared_concepts": [
+        "ofi",
+        "rsi",
+        "sma",
+        "mean_reversion"
+      ]
+    },
+    {
+      "source": "gap_retracement",
+      "target": "iceberg_breakout",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi"
+      ]
+    },
+    {
+      "source": "gap_retracement",
+      "target": "ofi_momentum",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "ema"
+      ]
+    },
+    {
+      "source": "gap_retracement",
+      "target": "ofi_vpin_explosion",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi"
+      ]
+    },
+    {
+      "source": "gap_retracement",
+      "target": "stacked_imbalance",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi"
+      ]
+    },
+    {
+      "source": "gap_retracement",
+      "target": "td9",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi"
+      ]
+    },
+    {
+      "source": "gap_retracement",
+      "target": "volume_climax",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi"
+      ]
+    },
+    {
+      "source": "gap_retracement",
+      "target": "vpin_breakout_filter",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi"
+      ]
+    },
+    {
+      "source": "gap_retracement",
+      "target": "vpin_contrarian",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi"
+      ]
+    },
+    {
+      "source": "gap_retracement",
+      "target": "vpin_ofi_scalping",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi"
+      ]
+    },
+    {
+      "source": "gap_retracement",
+      "target": "vpin_rsi_mean_reversion",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi"
+      ]
+    },
+    {
+      "source": "gap_retracement",
+      "target": "vwap_reversion",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi"
+      ]
+    },
+    {
+      "source": "iceberg_breakout",
+      "target": "ofi_momentum",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "rsi"
+      ]
+    },
+    {
+      "source": "iceberg_breakout",
+      "target": "ofi_vpin_explosion",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "rsi"
+      ]
+    },
+    {
+      "source": "iceberg_breakout",
+      "target": "stacked_imbalance",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi"
+      ]
+    },
+    {
+      "source": "iceberg_breakout",
+      "target": "td9",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "rsi"
+      ]
+    },
+    {
+      "source": "iceberg_breakout",
+      "target": "volume_climax",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "rsi"
+      ]
+    },
+    {
+      "source": "iceberg_breakout",
+      "target": "vpin_breakout_filter",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "rsi"
+      ]
+    },
+    {
+      "source": "iceberg_breakout",
+      "target": "vpin_breakout_filter",
+      "type": "similar_to",
+      "similarity_score": 0.4,
+      "shared_concepts": [
+        "ofi",
+        "rsi",
+        "volatility_breakout"
+      ]
+    },
+    {
+      "source": "iceberg_breakout",
+      "target": "vpin_contrarian",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "rsi"
+      ]
+    },
+    {
+      "source": "iceberg_breakout",
+      "target": "vpin_ofi_scalping",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "rsi"
+      ]
+    },
+    {
+      "source": "iceberg_breakout",
+      "target": "vpin_rsi_mean_reversion",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "rsi"
+      ]
+    },
+    {
+      "source": "iceberg_breakout",
+      "target": "vwap_reversion",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "rsi"
+      ]
+    },
+    {
+      "source": "ofi_momentum",
+      "target": "ofi_vpin_explosion",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "rsi"
+      ]
+    },
+    {
+      "source": "ofi_momentum",
+      "target": "stacked_imbalance",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi"
+      ]
+    },
+    {
+      "source": "ofi_momentum",
+      "target": "td9",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "rsi"
+      ]
+    },
+    {
+      "source": "ofi_momentum",
+      "target": "volume_climax",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "rsi"
+      ]
+    },
+    {
+      "source": "ofi_momentum",
+      "target": "vpin_breakout_filter",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "rsi"
+      ]
+    },
+    {
+      "source": "ofi_momentum",
+      "target": "vpin_contrarian",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "rsi"
+      ]
+    },
+    {
+      "source": "ofi_momentum",
+      "target": "vpin_ofi_scalping",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "rsi"
+      ]
+    },
+    {
+      "source": "ofi_momentum",
+      "target": "vpin_rsi_mean_reversion",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "rsi"
+      ]
+    },
+    {
+      "source": "ofi_momentum",
+      "target": "vwap_reversion",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "rsi"
+      ]
+    },
+    {
+      "source": "ofi_vpin_explosion",
+      "target": "stacked_imbalance",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "volume_imbalance"
+      ]
+    },
+    {
+      "source": "ofi_vpin_explosion",
+      "target": "td9",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "volume_imbalance",
+        "rsi"
+      ]
+    },
+    {
+      "source": "ofi_vpin_explosion",
+      "target": "td9",
+      "type": "similar_to",
+      "similarity_score": 0.6,
+      "shared_concepts": [
+        "ofi",
+        "volume_imbalance",
+        "rsi",
+        "uncategorized"
+      ]
+    },
+    {
+      "source": "ofi_vpin_explosion",
+      "target": "volume_climax",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "rsi",
+        "sma"
+      ]
+    },
+    {
+      "source": "ofi_vpin_explosion",
+      "target": "volume_climax",
+      "type": "similar_to",
+      "similarity_score": 0.6,
+      "shared_concepts": [
+        "ofi",
+        "rsi",
+        "sma",
+        "uncategorized"
+      ]
+    },
+    {
+      "source": "ofi_vpin_explosion",
+      "target": "vpin_breakout_filter",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "volume_imbalance",
+        "sma",
+        "vpin",
+        "rsi"
+      ]
+    },
+    {
+      "source": "ofi_vpin_explosion",
+      "target": "vpin_contrarian",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "volume_imbalance",
+        "sma",
+        "vpin",
+        "rsi"
+      ]
+    },
+    {
+      "source": "ofi_vpin_explosion",
+      "target": "vpin_ofi_scalping",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "vpin",
+        "rsi"
+      ]
+    },
+    {
+      "source": "ofi_vpin_explosion",
+      "target": "vpin_rsi_mean_reversion",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "rsi",
+        "vpin",
+        "sma"
+      ]
+    },
+    {
+      "source": "ofi_vpin_explosion",
+      "target": "vwap_reversion",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "rsi",
+        "vpin",
+        "sma"
+      ]
+    },
+    {
+      "source": "stacked_imbalance",
+      "target": "td9",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "volume_imbalance"
+      ]
+    },
+    {
+      "source": "stacked_imbalance",
+      "target": "volume_climax",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi"
+      ]
+    },
+    {
+      "source": "stacked_imbalance",
+      "target": "vpin_breakout_filter",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "volume_imbalance"
+      ]
+    },
+    {
+      "source": "stacked_imbalance",
+      "target": "vpin_contrarian",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "volume_imbalance"
+      ]
+    },
+    {
+      "source": "stacked_imbalance",
+      "target": "vpin_ofi_scalping",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi"
+      ]
+    },
+    {
+      "source": "stacked_imbalance",
+      "target": "vpin_rsi_mean_reversion",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi"
+      ]
+    },
+    {
+      "source": "stacked_imbalance",
+      "target": "vwap_reversion",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi"
+      ]
+    },
+    {
+      "source": "td9",
+      "target": "volume_climax",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "rsi"
+      ]
+    },
+    {
+      "source": "td9",
+      "target": "volume_climax",
+      "type": "similar_to",
+      "similarity_score": 0.5,
+      "shared_concepts": [
+        "ofi",
+        "rsi",
+        "uncategorized"
+      ]
+    },
+    {
+      "source": "td9",
+      "target": "vpin_breakout_filter",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "volume_imbalance",
+        "rsi"
+      ]
+    },
+    {
+      "source": "td9",
+      "target": "vpin_contrarian",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "volume_imbalance",
+        "rsi"
+      ]
+    },
+    {
+      "source": "td9",
+      "target": "vpin_ofi_scalping",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "rsi"
+      ]
+    },
+    {
+      "source": "td9",
+      "target": "vpin_rsi_mean_reversion",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "rsi"
+      ]
+    },
+    {
+      "source": "td9",
+      "target": "vwap_reversion",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "rsi"
+      ]
+    },
+    {
+      "source": "volume_climax",
+      "target": "vpin_breakout_filter",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "rsi",
+        "sma"
+      ]
+    },
+    {
+      "source": "volume_climax",
+      "target": "vpin_contrarian",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "rsi",
+        "sma"
+      ]
+    },
+    {
+      "source": "volume_climax",
+      "target": "vpin_ofi_scalping",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "rsi"
+      ]
+    },
+    {
+      "source": "volume_climax",
+      "target": "vpin_rsi_mean_reversion",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "rsi",
+        "sma"
+      ]
+    },
+    {
+      "source": "volume_climax",
+      "target": "vwap_reversion",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "rsi",
+        "sma"
+      ]
+    },
+    {
+      "source": "vpin_breakout_filter",
+      "target": "vpin_contrarian",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "volume_imbalance",
+        "sma",
+        "vpin",
+        "rsi"
+      ]
+    },
+    {
+      "source": "vpin_breakout_filter",
+      "target": "vpin_ofi_scalping",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "vpin",
+        "rsi"
+      ]
+    },
+    {
+      "source": "vpin_breakout_filter",
+      "target": "vpin_rsi_mean_reversion",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "rsi",
+        "vpin",
+        "sma"
+      ]
+    },
+    {
+      "source": "vpin_breakout_filter",
+      "target": "vwap_reversion",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "rsi",
+        "vpin",
+        "sma"
+      ]
+    },
+    {
+      "source": "vpin_contrarian",
+      "target": "vpin_ofi_scalping",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "vpin",
+        "rsi"
+      ]
+    },
+    {
+      "source": "vpin_contrarian",
+      "target": "vpin_rsi_mean_reversion",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "rsi",
+        "vpin",
+        "sma"
+      ]
+    },
+    {
+      "source": "vpin_contrarian",
+      "target": "vpin_rsi_mean_reversion",
+      "type": "similar_to",
+      "similarity_score": 0.8,
+      "shared_concepts": [
+        "ofi",
+        "rsi",
+        "vpin",
+        "sma",
+        "mean_reversion"
+      ]
+    },
+    {
+      "source": "vpin_contrarian",
+      "target": "vwap_reversion",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "rsi",
+        "vpin",
+        "sma"
+      ]
+    },
+    {
+      "source": "vpin_contrarian",
+      "target": "vwap_reversion",
+      "type": "similar_to",
+      "similarity_score": 0.8,
+      "shared_concepts": [
+        "ofi",
+        "rsi",
+        "vpin",
+        "sma",
+        "mean_reversion"
+      ]
+    },
+    {
+      "source": "vpin_ofi_scalping",
+      "target": "vpin_rsi_mean_reversion",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "vpin",
+        "rsi"
+      ]
+    },
+    {
+      "source": "vpin_ofi_scalping",
+      "target": "vwap_reversion",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "vpin",
+        "rsi"
+      ]
+    },
+    {
+      "source": "vpin_rsi_mean_reversion",
+      "target": "vwap_reversion",
+      "type": "shares_indicator",
+      "shared_indicators": [
+        "ofi",
+        "rsi",
+        "vpin",
+        "sma"
+      ]
+    },
+    {
+      "source": "vpin_rsi_mean_reversion",
+      "target": "vwap_reversion",
+      "type": "similar_to",
+      "similarity_score": 0.8,
+      "shared_concepts": [
+        "ofi",
+        "rsi",
+        "vpin",
+        "sma",
+        "mean_reversion"
+      ]
+    }
+  ],
+  "indicator_taxonomy": {
+    "ofi": {
+      "description": "",
+      "strategies": [
+        "absorption",
+        "bb_squeeze",
+        "breakout_frontrun",
+        "dual_vpin_cdf",
+        "dual_vpin",
+        "dual_vpin_rsi",
+        "fast_vpin_scalping",
+        "footprint_pseudoobi",
+        "funding_divergence",
+        "gap_retracement",
+        "iceberg_breakout",
+        "ofi_momentum",
+        "ofi_vpin_explosion",
+        "stacked_imbalance",
+        "td9",
+        "volume_climax",
+        "vpin_breakout_filter",
+        "vpin_contrarian",
+        "vpin_ofi_scalping",
+        "vpin_rsi_mean_reversion",
+        "vwap_reversion"
+      ],
+      "best_practices": []
+    },
+    "ema": {
+      "description": "",
+      "strategies": [
+        "absorption",
+        "dual_vpin_cdf",
+        "gap_retracement",
+        "ofi_momentum"
+      ],
+      "best_practices": []
+    },
+    "volume_imbalance": {
+      "description": "",
+      "strategies": [
+        "absorption",
+        "dual_vpin_cdf",
+        "dual_vpin_rsi",
+        "fast_vpin_scalping",
+        "footprint_pseudoobi",
+        "ofi_vpin_explosion",
+        "stacked_imbalance",
+        "td9",
+        "vpin_breakout_filter",
+        "vpin_contrarian"
+      ],
+      "best_practices": []
+    },
+    "sma": {
+      "description": "",
+      "strategies": [
+        "absorption",
+        "bb_squeeze",
+        "footprint_pseudoobi",
+        "funding_divergence",
+        "ofi_vpin_explosion",
+        "volume_climax",
+        "vpin_breakout_filter",
+        "vpin_contrarian",
+        "vpin_rsi_mean_reversion",
+        "vwap_reversion"
+      ],
+      "best_practices": []
+    },
+    "squeeze": {
+      "description": "",
+      "strategies": [
+        "bb_squeeze"
+      ],
+      "best_practices": []
+    },
+    "bollinger_bands": {
+      "description": "",
+      "strategies": [
+        "bb_squeeze",
+        "dual_vpin_cdf",
+        "vpin_rsi_mean_reversion"
+      ],
+      "best_practices": []
+    },
+    "vpin": {
+      "description": "",
+      "strategies": [
+        "breakout_frontrun",
+        "dual_vpin_cdf",
+        "dual_vpin",
+        "dual_vpin_rsi",
+        "fast_vpin_scalping",
+        "ofi_vpin_explosion",
+        "vpin_breakout_filter",
+        "vpin_contrarian",
+        "vpin_ofi_scalping",
+        "vpin_rsi_mean_reversion",
+        "vwap_reversion"
+      ],
+      "best_practices": []
+    },
+    "rsi": {
+      "description": "",
+      "strategies": [
+        "dual_vpin_cdf",
+        "dual_vpin_rsi",
+        "fast_vpin_scalping",
+        "footprint_pseudoobi",
+        "funding_divergence",
+        "iceberg_breakout",
+        "ofi_momentum",
+        "ofi_vpin_explosion",
+        "td9",
+        "volume_climax",
+        "vpin_breakout_filter",
+        "vpin_contrarian",
+        "vpin_ofi_scalping",
+        "vpin_rsi_mean_reversion",
+        "vwap_reversion"
+      ],
+      "best_practices": []
+    },
+    "footprint": {
+      "description": "",
+      "strategies": [
+        "footprint_pseudoobi"
+      ],
+      "best_practices": []
+    },
+    "atr": {
+      "description": "",
+      "strategies": [
+        "footprint_pseudoobi"
+      ],
+      "best_practices": []
+    },
+    "iceberg": {
+      "description": "",
+      "strategies": [
+        "iceberg_breakout"
+      ],
+      "best_practices": []
+    },
+    "stacked_imbalance": {
+      "description": "",
+      "strategies": [
+        "stacked_imbalance"
+      ],
+      "best_practices": []
+    },
+    "td9": {
+      "description": "",
+      "strategies": [
+        "td9"
+      ],
+      "best_practices": []
+    },
+    "vwap": {
+      "description": "",
+      "strategies": [
+        "vwap_reversion"
+      ],
+      "best_practices": []
+    }
+  },
+  "lessons_learned": [
+    {
+      "id": "L001",
+      "source_strategy": "absorption",
+      "title": "1. EDA tested: \"next bar return after absorption bar\" (immediate)",
+      "content": "1. EDA tested: \"next bar return after absorption bar\" (immediate)\n2. Implementation tests: \"return after breakout confirmation\" (delayed)\n3. By requiring breakout, we're entering AFTER the move already started = chasing\n\n**Next**: Return to Researcher for algorithm redesign\n- Consider removing confirmation bar requirement\n- Or change confirmation logic to be less strict\n- Or re-evaluate the entire absorption detection methodology",
+      "severity": "info",
+      "affected_indicators": [
+        "ofi",
+        "ema",
+        "volume_imbalance",
+        "sma"
+      ],
+      "tags": []
+    },
+    {
+      "id": "L002",
+      "source_strategy": "bb_squeeze",
+      "title": "The issue is NOT the signal quality (PF 3.57 is excellent) but the position sizing.",
+      "content": "The issue is NOT the signal quality (PF 3.57 is excellent) but the position sizing.\n- 82 trades with $36.92 profit = $0.45 avg profit per trade\n- Expected: (56.1% * $2.23) - (43.9% * $0.80) = $0.90 per trade\n- Actual is half of expected, suggesting position sizing is extremely small\n\n**Next Steps** (for Developer/Researcher):\n1. **Investigate Position Sizing**: Why is position size so small? Is the 2% rule being applied correctly?\n2. **Consider Increasing Position Risk**: 2% rule with 0.3% SL = ",
+      "severity": "high",
+      "affected_indicators": [
+        "squeeze",
+        "ofi",
+        "bollinger_bands",
+        "sma"
+      ],
+      "tags": []
+    },
+    {
+      "id": "L003",
+      "source_strategy": "dual_vpin_cdf",
+      "title": "1. **Regime change exits too aggressive**: Slow VPIN CDF threshold 60 (trend) and 40 (range) may tri",
+      "content": "1. **Regime change exits too aggressive**: Slow VPIN CDF threshold 60 (trend) and 40 (range) may trigger exits before price targets\n2. **Take profit targets not being reached**: Avg win ($0.95) << expected TP ($40+ for 1% on trend, $20+ for 0.5% on range)\n3. **VPIN regime classification may be unstable**: Frequent regime flips causing exits\n\n**Next**: Route to Developer for parameter tuning:\n- Relax regime change exit thresholds (trend: 60 -> 50, range: 40 -> 50)\n- OR increase take profit target",
+      "severity": "info",
+      "affected_indicators": [
+        "ofi",
+        "volume_imbalance",
+        "vpin",
+        "rsi",
+        "bollinger_bands",
+        "ema"
+      ],
+      "tags": []
+    },
+    {
+      "id": "L004",
+      "source_strategy": "dual_vpin_cdf",
+      "title": "Possible explanations:",
+      "content": "Possible explanations:\n1. **Implementation bug**: min_profit_for_indicator_exit parameters not properly connected to exit logic\n2. **Unit mismatch**: Calculation may be in raw values vs percentages\n3. **Flash Crash exits**: Still firing early and overriding the profit gate\n4. **Fundamental issue**: The MA/BB indicators simply do not predict profitable exits\n\n**Pattern Analysis (3 iterations)**:\n| Change Attempted | Result | Conclusion |\n|------------------|--------|------------|\n| Remove regime ",
+      "severity": "high",
+      "affected_indicators": [
+        "ofi",
+        "volume_imbalance",
+        "vpin",
+        "rsi",
+        "bollinger_bands",
+        "ema"
+      ],
+      "tags": []
+    },
+    {
+      "id": "L005",
+      "source_strategy": "dual_vpin_cdf",
+      "title": "The VPIN CDF regime classification (Slow VPIN CDF >= 70 for trending, < 30 for ranging) combined wit",
+      "content": "The VPIN CDF regime classification (Slow VPIN CDF >= 70 for trending, < 30 for ranging) combined with MA crossover / Bollinger Band entries does NOT provide entry edge. Trades enter at essentially random points relative to future price movement.\n\n**Evidence Across 4 Iterations**:\n| Exit Logic Change | Avg Win Change | Conclusion |\n|-------------------|----------------|------------|\n| Remove regime change exits | $0.95 -> $0.96 | No effect |\n| Add min profit gate | $0.96 -> $1.04 | No effect |\n| ",
+      "severity": "info",
+      "affected_indicators": [
+        "ofi",
+        "volume_imbalance",
+        "vpin",
+        "rsi",
+        "bollinger_bands",
+        "ema"
+      ],
+      "tags": []
+    },
+    {
+      "id": "L006",
+      "source_strategy": "dual_vpin",
+      "title": "1. Entry signal may be entering in wrong direction (buying when should sell)",
+      "content": "1. Entry signal may be entering in wrong direction (buying when should sell)\n2. Exit conditions may fire immediately after entry (min_hold not enforced)\n3. Take profit/stop loss calculation may have bugs\n\n**Next**:\n- Developer must review entry/exit logic implementation\n- Check if min_hold_bars is actually enforced\n- Verify signal direction matches momentum (long when price > SMA, short when price < SMA)\n- Consider flipping signal direction if consistently wrong",
+      "severity": "info",
+      "affected_indicators": [
+        "ofi",
+        "vpin"
+      ],
+      "tags": []
+    },
+    {
+      "id": "L007",
+      "source_strategy": "fast_vpin_scalping",
+      "title": "- SL (0.2%) triggers more often than TP (0.25%)",
+      "content": "- SL (0.2%) triggers more often than TP (0.25%)\n- Price movement is noisy, not directional\n- FADE hypothesis has weak edge that cannot overcome transaction costs and noise\n\n## PROGRESSIVE IMPROVEMENT SUMMARY (FINAL)\n\n| Iteration | Win Rate | Sharpe | Avg Win | Avg Loss | Key Change | Outcome |\n|-----------|----------|--------|---------|----------|------------|---------|\n| 1 | 3.4% | -2.20 | - | $0.79 | Momentum entry | Signal inverted |\n| 2 | 0.0% | -2.35 | $0.00 | $1.00 | FADE entry | Exits kil",
+      "severity": "info",
+      "affected_indicators": [
+        "ofi",
+        "vpin",
+        "rsi",
+        "volume_imbalance"
+      ],
+      "tags": []
+    },
+    {
+      "id": "L008",
+      "source_strategy": "funding_divergence",
+      "title": "- max_hold_bars=10 is forcing exits BEFORE stop-loss triggers",
+      "content": "- max_hold_bars=10 is forcing exits BEFORE stop-loss triggers\n- Price doesn't hit 0.20% SL within 10 bars\n- When max_hold forces exit, it's at ~1.19% loss (6x the designed SL)",
+      "severity": "info",
+      "affected_indicators": [
+        "ofi",
+        "rsi",
+        "sma"
+      ],
+      "tags": []
+    },
+    {
+      "id": "L009",
+      "source_strategy": "gap_retracement",
+      "title": "1. EDA was done on Jan 2024 data, IS period is Feb 2024 - possible regime change",
+      "content": "1. EDA was done on Jan 2024 data, IS period is Feb 2024 - possible regime change\n2. The 2.0x threshold may be too loose - generating too many false signals\n3. Stop-loss at impulse candle open may be too tight for volatile periods\n\n**Next**:\n- Recommend returning to **Researcher** for algorithm redesign\n- Consider: (a) tighter threshold (2.5x or 3.0x), (b) wider stop-loss, (c) different exit logic",
+      "severity": "info",
+      "affected_indicators": [
+        "ofi",
+        "ema"
+      ],
+      "tags": []
+    },
+    {
+      "id": "L010",
+      "source_strategy": "iceberg_breakout",
+      "title": "```json",
+      "content": "```json\n{\n  \"detection_window\": 4,\n  \"volume_lookback\": 20,\n  \"volume_multiplier\": 1.5,\n  \"range_threshold\": 0.0015,\n  \"confirmation_threshold\": 0.0002,\n  \"min_hold_bars\": 3,\n  \"max_hold_bars\": 10,\n  \"stop_loss_pct\": 0.3,\n  \"take_profit_pct\": 0.5,\n  \"trail_activation_pct\": 0.3,\n  \"trail_lock_pct\": 0.15,\n  \"cooldown_bars\": 5,\n  \"use_short\": true\n}\n```\n\n**Results**:\n| Metric | Value | Target | Status |\n|--------|-------|--------|--------|\n| Total Return | -0.67% | >= 5% | **FAIL** |\n| Profit Facto",
+      "severity": "high",
+      "affected_indicators": [
+        "iceberg",
+        "ofi",
+        "rsi"
+      ],
+      "tags": []
+    },
+    {
+      "id": "L011",
+      "source_strategy": "iceberg_breakout",
+      "title": "1. **V2 fixed R:R**: Avg Win > Avg Loss now (1.23 ratio)",
+      "content": "1. **V2 fixed R:R**: Avg Win > Avg Loss now (1.23 ratio)\n2. **V2 improved win rate**: 35% vs 29%\n3. **BUT still losing money**: PF=0.64 < 1.0\n4. **Breakouts don't follow through**: False breakouts are common\n5. **Required WR for PF=1.0**: 45% (current: 35%)\n\n**Decision**: NEED_IMPROVEMENT -> Researcher Redesign\n**Target**: **Researcher** (fundamental edge hypothesis failed)",
+      "severity": "high",
+      "affected_indicators": [
+        "iceberg",
+        "ofi",
+        "rsi"
+      ],
+      "tags": []
+    },
+    {
+      "id": "L012",
+      "source_strategy": "ofi_momentum",
+      "title": "The user's original thesis \"Order Flow precedes Price\" is CORRECT, but the operationalization was wr",
+      "content": "The user's original thesis \"Order Flow precedes Price\" is CORRECT, but the operationalization was wrong.\n- P90 = too frequent = noise\n- P97 = highly selective = true signal\n- MOMENTUM works at P97 (not contrarian)\n- Longer hold (30 bars) captures the move",
+      "severity": "info",
+      "affected_indicators": [
+        "ofi",
+        "ema",
+        "rsi"
+      ],
+      "tags": []
+    },
+    {
+      "id": "L013",
+      "source_strategy": "ofi_vpin_explosion",
+      "title": "1. Price consolidation < 0.1% is almost always true for 50 BTC bars",
+      "content": "1. Price consolidation < 0.1% is almost always true for 50 BTC bars\n  2. OFI threshold of 20 BTC is too easily reached\n  3. VPIN slope > 0 provides no selectivity (~50% chance)\n- **Next**: Return to Researcher for algorithm redesign",
+      "severity": "info",
+      "affected_indicators": [
+        "ofi",
+        "volume_imbalance",
+        "sma",
+        "vpin",
+        "rsi"
+      ],
+      "tags": []
+    },
+    {
+      "id": "L014",
+      "source_strategy": "stacked_imbalance",
+      "title": "1. **EDA was severely overfitted** - 65.7% WR in 7-day EDA vs 20% in 30-day IS",
+      "content": "1. **EDA was severely overfitted** - 65.7% WR in 7-day EDA vs 20% in 30-day IS\n2. **Signal frequency collapsed** - 10 trades/month vs expected 140/month (-93%)\n3. **VPIN filter made it worse** - Win rate dropped from 23% (Iter 1) to 20%\n4. **Fundamental concept is broken** - Volume bar imbalance does not capture true stacked imbalance",
+      "severity": "info",
+      "affected_indicators": [
+        "ofi",
+        "volume_imbalance",
+        "stacked_imbalance"
+      ],
+      "tags": []
+    },
+    {
+      "id": "L015",
+      "source_strategy": "td9",
+      "title": "1. **TP/SL Asymmetry Wrong Direction**: TP=0.2%, SL=0.3% means risk/reward = 1.5:1 AGAINST us",
+      "content": "1. **TP/SL Asymmetry Wrong Direction**: TP=0.2%, SL=0.3% means risk/reward = 1.5:1 AGAINST us\n2. **Bar Size Too Small**: 4-min bars have ~0.1% volatility, TP target barely exceeds noise\n3. **No Confirmation Filter**: Raw TD9 catches many false exhaustion signals\n\n**Next**: Route to Researcher for algorithm redesign - parameter tuning alone cannot fix PF < 1.0",
+      "severity": "info",
+      "affected_indicators": [
+        "td9",
+        "ofi",
+        "volume_imbalance",
+        "rsi"
+      ],
+      "tags": []
+    },
+    {
+      "id": "L016",
+      "source_strategy": "td9",
+      "title": "1. **Filter Too Aggressive**: Imbalance <= 0 or >= 0 rejects neutral signals",
+      "content": "1. **Filter Too Aggressive**: Imbalance <= 0 or >= 0 rejects neutral signals\n2. **Break-even Counterproductive**: 0.2% trigger causes early exit on retracements\n3. **Win Rate Drop**: 46.9% with 1.13 W/L ratio = EV ~$0.001/trade (break-even)\n\n**Next**: Route to Researcher for V3 adjustments:\n- Priority 1: Remove break-even stop (let winners run)\n- Priority 2: Relax imbalance filter threshold (allow +/- 0.2)\n- Alternative: Try RSI filter instead of imbalance",
+      "severity": "info",
+      "affected_indicators": [
+        "td9",
+        "ofi",
+        "volume_imbalance",
+        "rsi"
+      ],
+      "tags": []
+    },
+    {
+      "id": "L017",
+      "source_strategy": "td9",
+      "title": "1. **Relaxed filter helped**: More trades, recovered win rate",
+      "content": "1. **Relaxed filter helped**: More trades, recovered win rate\n2. **Removing break-even HURT**: Win/Loss ratio dropped from 1.13 to 1.00\n3. **Net effect**: Marginal improvement (+0.07 PF) but not enough",
+      "severity": "info",
+      "affected_indicators": [
+        "td9",
+        "ofi",
+        "volume_imbalance",
+        "rsi"
+      ],
+      "tags": []
+    },
+    {
+      "id": "L018",
+      "source_strategy": "td9",
+      "title": "The break-even trigger (0.2%) is NEVER ACTIVATING because:",
+      "content": "The break-even trigger (0.2%) is NEVER ACTIVATING because:\n1. TP is 0.4% - positions hitting TP exit before break-even would matter\n2. Positions reaching 0.2%+ profit almost always continue to TP (0.4%)\n3. Positions that reverse from 0.2% profit to 0% would exit via break-even, but these are RARE\n4. Most losing trades never reach 0.2% profit at all - they go directly to SL\n\n**Why V2 showed different W/L ratio**:\nV2 had only 98 trades (strict filter). The trades that passed the strict filter may ",
+      "severity": "info",
+      "affected_indicators": [
+        "td9",
+        "ofi",
+        "volume_imbalance",
+        "rsi"
+      ],
+      "tags": []
+    },
+    {
+      "id": "L019",
+      "source_strategy": "td9",
+      "title": "1. **RSI filter overfitted to Feb 2024 market conditions**",
+      "content": "1. **RSI filter overfitted to Feb 2024 market conditions**\n   - Feb 2024: BTC rallied from $42K to $63K (strong trend)\n   - RSI extremes during this rally were predictive\n2. **Sept 2024 had different market dynamics**\n   - BTC ranged $53K-$66K with different volatility structure\n   - RSI > 70 / < 30 did NOT predict reversals\n3. **The 0.2% stop loss was insufficient in Sept 2024**\n   - Avg Loss of $3.73 vs expected $1.49 suggests SL being bypassed or exits happening at worse prices\n   - Gap risk ",
+      "severity": "info",
+      "affected_indicators": [
+        "td9",
+        "ofi",
+        "volume_imbalance",
+        "rsi"
+      ],
+      "tags": []
+    },
+    {
+      "id": "L020",
+      "source_strategy": "vpin_contrarian",
+      "title": "The strategy correctly identifies mean-reversion opportunities (58.8% win rate), but exits too early",
+      "content": "The strategy correctly identifies mean-reversion opportunities (58.8% win rate), but exits too early on winners. The take profit (0.8%) is rarely reached, while stop loss (0.4%) is hit on losses. This is a **parameter tuning issue**, not algorithm design.",
+      "severity": "high",
+      "affected_indicators": [
+        "ofi",
+        "volume_imbalance",
+        "sma",
+        "vpin",
+        "rsi"
+      ],
+      "tags": []
+    },
+    {
+      "id": "L021",
+      "source_strategy": "vpin_contrarian",
+      "title": "Two iterations of parameter tuning have failed to fix the core issue. The strategy exits via normali",
+      "content": "Two iterations of parameter tuning have failed to fix the core issue. The strategy exits via normalization conditions (RSI < 50, VPIN CDF < 0.5) before TP is reached. This is NOT a parameter issue - it requires algorithm modification to disable or make normalization exits optional.",
+      "severity": "high",
+      "affected_indicators": [
+        "ofi",
+        "volume_imbalance",
+        "sma",
+        "vpin",
+        "rsi"
+      ],
+      "tags": []
+    },
+    {
+      "id": "L022",
+      "source_strategy": "vpin_contrarian",
+      "title": "The hypothesis was WRONG. Normalization exits (RSI returning to neutral, VPIN normalizing) were NOT ",
+      "content": "The hypothesis was WRONG. Normalization exits (RSI returning to neutral, VPIN normalizing) were NOT just \"cutting winners short\" - they were also **saving losing trades** by exiting before stop loss was hit.",
+      "severity": "info",
+      "affected_indicators": [
+        "ofi",
+        "volume_imbalance",
+        "sma",
+        "vpin",
+        "rsi"
+      ],
+      "tags": []
+    },
+    {
+      "id": "L023",
+      "source_strategy": "vpin_contrarian",
+      "title": "**The RSI + VPIN combination is NOT predictive of price direction AT ALL.**",
+      "content": "**The RSI + VPIN combination is NOT predictive of price direction AT ALL.**\n\nThe signal identifies high-activity moments, but these moments are:\n- 38.9% favorable for contrarian\n- 29.4% favorable for momentum\n- **31.7% unfavorable for EITHER direction**\n\nThis is essentially random noise minus transaction costs.",
+      "severity": "info",
+      "affected_indicators": [
+        "ofi",
+        "volume_imbalance",
+        "sma",
+        "vpin",
+        "rsi"
+      ],
+      "tags": []
+    },
+    {
+      "id": "L024",
+      "source_strategy": "vpin_contrarian",
+      "title": "The VPINRegimeStrategy hypothesis was wrong:",
+      "content": "The VPINRegimeStrategy hypothesis was wrong:\n- Waiting for VPIN to normalize after a spike does NOT identify trend continuation opportunities\n- The \"storm resolution\" period is NOT predictable\n- Price vs SMA(20) is too slow a signal for the post-spike environment",
+      "severity": "info",
+      "affected_indicators": [
+        "ofi",
+        "volume_imbalance",
+        "sma",
+        "vpin",
+        "rsi"
+      ],
+      "tags": []
+    },
+    {
+      "id": "L025",
+      "source_strategy": "vpin_contrarian",
+      "title": "**The VPIN filter works correctly, but the SMA crossover base signal has no edge.**",
+      "content": "**The VPIN filter works correctly, but the SMA crossover base signal has no edge.**\n\n| Component | Status |\n|-----------|--------|\n| VPIN Filter | Working (removes high-toxicity periods) |\n| SMA Crossover Signal | **No edge** (40% WR with 0.96:1 R:R = negative expectancy) |\n\nMathematical Analysis:\n```\nEV = (0.404 * $1.47) - (0.596 * $1.53) = -$0.32 per trade\nWith 94 trades: Expected Loss = -$30.08\n```",
+      "severity": "info",
+      "affected_indicators": [
+        "ofi",
+        "volume_imbalance",
+        "sma",
+        "vpin",
+        "rsi"
+      ],
+      "tags": []
+    },
+    {
+      "id": "L026",
+      "source_strategy": "vpin_contrarian",
+      "title": "1. **Win Rate is GOOD (58.8%)**: Strategy entry logic is sound",
+      "content": "1. **Win Rate is GOOD (58.8%)**: Strategy entry logic is sound\n2. **Risk-Reward is INVERTED**: Avg Win ($1.04) < Avg Loss ($1.57)\n   - Current R:R = 0.66:1 (target was 2:1 based on 0.8% TP / 0.4% SL)\n   - Stops are hitting, but profits are not reaching take profit\n3. **Many trades not closed**: 35 total, only 17 closed\n   - Suggests max_hold_bars (20 bars = 80 min) may be exiting before TP/SL\n   - Or RSI/VPIN normalization exits are cutting winners short",
+      "severity": "info",
+      "affected_indicators": [
+        "ofi",
+        "volume_imbalance",
+        "sma",
+        "vpin",
+        "rsi"
+      ],
+      "tags": []
+    },
+    {
+      "id": "L027",
+      "source_strategy": "vpin_contrarian",
+      "title": "1. **Parameter tuning had marginal effect**: PF improved only 0.01 (0.94 -> 0.95)",
+      "content": "1. **Parameter tuning had marginal effect**: PF improved only 0.01 (0.94 -> 0.95)\n2. **R:R improved but still inverted**: Avg Win ($0.98) < Avg Loss ($1.29)\n3. **TP/SL not triggering exits**: Even with 0.4% TP / 0.5% SL (0.8:1 target), actual R:R is 0.76:1\n4. **Normalization exits are the problem**: RSI < 50 and VPIN < 0.5 exits are cutting winners short\n5. **Many unclosed trades**: 37 total, 18 closed (51% closure rate)",
+      "severity": "high",
+      "affected_indicators": [
+        "ofi",
+        "volume_imbalance",
+        "sma",
+        "vpin",
+        "rsi"
+      ],
+      "tags": []
+    },
+    {
+      "id": "L028",
+      "source_strategy": "vpin_contrarian",
+      "title": "**CRITICAL FINDING: The algorithm change BACKFIRED.**",
+      "content": "**CRITICAL FINDING: The algorithm change BACKFIRED.**\n\n1. **R:R Improved as Expected**: Avg Win ($1.82) > Avg Loss ($1.60) = 1.14:1 R:R\n   - This confirms normalization exits WERE cutting winners short\n   - Winners now run to TP instead of early exit\n\n2. **But Win Rate COLLAPSED**: 55.6% -> 38.9% (-16.7%)\n   - This is catastrophic and unexpected\n   - With normalization exits removed, MORE trades are hitting stop loss\n   - The normalization exits were actually PROTECTING some trades from becoming",
+      "severity": "critical",
+      "affected_indicators": [
+        "ofi",
+        "volume_imbalance",
+        "sma",
+        "vpin",
+        "rsi"
+      ],
+      "tags": []
+    },
+    {
+      "id": "L029",
+      "source_strategy": "vpin_contrarian",
+      "title": "**CRITICAL FINDING: Direction flip made performance SIGNIFICANTLY WORSE.**",
+      "content": "**CRITICAL FINDING: Direction flip made performance SIGNIFICANTLY WORSE.**\n\n1. **Expected vs Actual**:\n   - Expected Momentum WR: ~61% (inverse of 38.9% contrarian)\n   - Actual Momentum WR: **29.4%**\n   - This is WORSE than contrarian, not better\n\n2. **Why Inverse Did Not Occur**:\n   | Outcome | Contrarian | Momentum | Combined |\n   |---------|------------|----------|----------|\n   | Win Rate | 38.9% | 29.4% | 68.3% |\n   | Expected Combined | - | - | ~100% |\n   | Missing | - | - | **31.7%** |\n\n ",
+      "severity": "critical",
+      "affected_indicators": [
+        "ofi",
+        "volume_imbalance",
+        "sma",
+        "vpin",
+        "rsi"
+      ],
+      "tags": []
+    },
+    {
+      "id": "L030",
+      "source_strategy": "vpin_contrarian",
+      "title": "**CRITICAL FINDING: New strategy is CATASTROPHICALLY worse.**",
+      "content": "**CRITICAL FINDING: New strategy is CATASTROPHICALLY worse.**\n\n1. **Extremely Low Trade Count**: Only 10 trades in 7 days (target: 30)\n   - The \"VPIN was > 0.9, now < 0.5\" condition is too restrictive\n   - Waiting for VPIN to spike AND normalize reduces signal frequency by ~70%\n\n2. **Zero Win Rate**: All 5 closed trades were losers\n   - The post-spike normalization timing does NOT predict trend continuation\n   - Price vs SMA(20) direction signal is not aligned with post-VPIN-spike movements\n\n3. ",
+      "severity": "critical",
+      "affected_indicators": [
+        "ofi",
+        "volume_imbalance",
+        "sma",
+        "vpin",
+        "rsi"
+      ],
+      "tags": []
+    },
+    {
+      "id": "L031",
+      "source_strategy": "vpin_contrarian",
+      "title": "**The new paradigm shows MIXED results.**",
+      "content": "**The new paradigm shows MIXED results.**\n\nWhat IMPROVED:\n| Metric | Previous Best | Iter 6 | Assessment |\n|--------|---------------|--------|------------|\n| Trade Frequency | 37 (Iter 2-3) | 94 | **+154%** - Good signal generation |\n| Win Rate | ~40% realistic | 40.4% | Stable without artificial inflation |\n| Signal Generation | Often restrictive | Good | VPIN filter not overly restrictive |\n\nWhat did NOT improve:\n| Metric | Target | Iter 6 | Issue |\n|--------|--------|--------|-------|\n| Profi",
+      "severity": "high",
+      "affected_indicators": [
+        "ofi",
+        "volume_imbalance",
+        "sma",
+        "vpin",
+        "rsi"
+      ],
+      "tags": []
+    },
+    {
+      "id": "L032",
+      "source_strategy": "vpin_ofi_scalping",
+      "title": "1. **Signal Hypothesis is Weak**: VPIN + OFI combination lacks predictive power for scalping",
+      "content": "1. **Signal Hypothesis is Weak**: VPIN + OFI combination lacks predictive power for scalping\n2. **EDA Overfitting**: V3 EDA showed PF=2.65, but IS showed PF=0.79 - 70% regression\n3. **Filter Ineffective**: Volatility filter removes signals but doesn't improve quality\n4. **Exhaustive Testing Complete**: 3 different approaches, none profitable\n\n**Conclusion**:\nAfter 3 iterations testing different hypotheses:\n- V1: Momentum following - WRONG (PF 0.28)\n- V2: Reversal timing - INSUFFICIENT (PF 0.80)\n",
+      "severity": "info",
+      "affected_indicators": [
+        "ofi",
+        "vpin",
+        "rsi"
+      ],
+      "tags": []
+    },
+    {
+      "id": "L033",
+      "source_strategy": "vpin_rsi_mean_reversion",
+      "title": "- take_profit_pct: 0.5 -> 1.0 (better R:R)",
+      "content": "- take_profit_pct: 0.5 -> 1.0 (better R:R)\n- stop_loss_pct: 0.8 -> 0.6 (tighter stop)\n- rsi_oversold: 30 -> 35 (earlier entry)\n- rsi_overbought: 75 -> 70 (earlier entry)\n- safe_zone_threshold: 0.4 -> 0.5 (more signals)\n\n**Results by Month**:\n| Month | Return | PF | Trades | Win Rate | Avg Win | Avg Loss |\n|-------|--------|-----|--------|----------|---------|----------|\n| Feb 2024 | +0.02% | 1.29 | 38 | 52.6% | $0.85 | $0.73 |\n| Mar 2024 | -0.92% | 0.56 | 238 | 47.9% | $2.05 | $3.37 |\n| Apr 2024",
+      "severity": "info",
+      "affected_indicators": [
+        "ofi",
+        "sma",
+        "vpin",
+        "rsi",
+        "bollinger_bands"
+      ],
+      "tags": []
+    },
+    {
+      "id": "L034",
+      "source_strategy": "vpin_rsi_mean_reversion",
+      "title": "1. **ADX Filter Implementation Issue**:",
+      "content": "1. **ADX Filter Implementation Issue**:\n   - ADX threshold of 25 may be too high (allowing trending periods)\n   - OR: ADX calculation may have bugs\n   - OR: ADX is simply not appropriate for volume bars\n\n2. **Bollinger Band Entry is Inferior to RSI**:\n   - BB touch happens frequently even in trends (price stretches then continues)\n   - RSI provided better \"oversold/overbought\" signal quality\n   - BB is more appropriate for breakout strategies, not mean reversion\n\n3. **Stop Loss Too Tight**:\n   -",
+      "severity": "high",
+      "affected_indicators": [
+        "ofi",
+        "sma",
+        "vpin",
+        "rsi",
+        "bollinger_bands"
+      ],
+      "tags": []
+    },
+    {
+      "id": "L035",
+      "source_strategy": "vpin_strategy",
+      "title": "- Strategy is flip-flopping between positions rapidly",
+      "content": "- Strategy is flip-flopping between positions rapidly\n- VPIN threshold (0.4) triggers too frequently\n- Exit threshold (0.25) may be causing premature exits\n- Possible issue: VPIN may be staying above 0.4 most of the time, causing constant re-entries\n\n**Insight**:\nThe algorithm design has fundamental issues. This is NOT a parameter tuning problem - even aggressive parameter changes (e.g., raising threshold to 0.7) would not fix a 3.2% win rate. The entry/exit logic needs redesign.\n\n**Recommendati",
+      "severity": "high",
+      "affected_indicators": [],
+      "tags": []
+    },
+    {
+      "id": "L036",
+      "source_strategy": "vpin_strategy",
+      "title": "The v2 design is sound on paper, but the **implementation does not match the specification**:",
+      "content": "The v2 design is sound on paper, but the **implementation does not match the specification**:\n- State machine (WARMUP/IDLE/SPIKE_DETECTED/HOLDING/COOLDOWN) may not be implemented\n- bars_since_entry / bars_since_exit counters may not be incrementing\n- Rising edge detection may be firing on every bar above threshold\n\n**Insight**:\nThis is an **implementation bug**, not a design or parameter issue. The Developer needs to verify:\n1. State machine is correctly tracking states\n2. Counters are increment",
+      "severity": "high",
+      "affected_indicators": [],
+      "tags": []
+    },
+    {
+      "id": "L037",
+      "source_strategy": "vpin_strategy",
+      "title": "The bug fixes were either:",
+      "content": "The bug fixes were either:\n1. **Not implemented**: Code changes were not made\n2. **Not deployed**: Changed file not saved or wrong file edited\n3. **Not loaded**: Backtest running cached/old version of strategy\n\n**Evidence**:\n- Trade count unchanged: 795 = 795 (should be < 200)\n- Trade frequency unchanged: 1 trade every 5.8 bars (should be 30+ bars)\n- All metrics identical to 6 decimal places\n\n**Verification Required**:\nDeveloper must verify:\n1. File `src/intraday/strategies/tick/vpin_bvc.py` was",
+      "severity": "info",
+      "affected_indicators": [],
+      "tags": []
+    }
+  ],
+  "common_mistakes": {
+    "fee_dominated_loss": {
+      "pattern": "Win Rate > 50% but Total Return < 0",
+      "cause": "수수료가 평균 수익보다 높음",
+      "symptoms": [
+        "Win Rate > 50%",
+        "Total Return < 0%",
+        "Avg Win < fee"
+      ],
+      "prevention": "fee_ratio >= 1.5 검증",
+      "affected_count": 0
+    },
+    "rr_inversion": {
+      "pattern": "설계한 R:R와 실제 R:R 불일치",
+      "cause": "TP/SL 외 다른 exit 조건이 먼저 트리거",
+      "symptoms": [
+        "Avg Win / Avg Loss != TP / SL"
+      ],
+      "prevention": "exit 우선순위 명확화, 백테스트 후 실제 R:R 검증",
+      "affected_count": 0
+    },
+    "overfitting_to_period": {
+      "pattern": "IS 우수, OS 급락",
+      "cause": "특정 기간 패턴에 과적합",
+      "symptoms": [
+        "IS Return >> OS Return",
+        "IS Sharpe 방향 != OS Sharpe 방향"
+      ],
+      "prevention": "파라미터 수 최소화, 단순한 로직 선호",
+      "affected_count": 0
+    }
+  },
+  "category_taxonomy": {
+    "mean_reversion": [
+      "absorption",
+      "funding_divergence",
+      "vpin_contrarian",
+      "vpin_rsi_mean_reversion",
+      "vpin_rsi_meanreversion",
+      "vwap_reversion"
+    ],
+    "volatility_breakout": [
+      "bb_squeeze",
+      "breakout_frontrun",
+      "fast_vpin_scalping",
+      "iceberg_breakout",
+      "vpin_breakout_filter"
+    ],
+    "uncategorized": [
+      "btc_eth_catchup",
+      "footprint_pseudoobi",
+      "gap_retracement",
+      "ofi_vpin_explosion",
+      "orderbook_depth_support",
+      "td9",
+      "tip_exhaustion",
+      "volume_climax",
+      "vpin_strategy"
+    ],
+    "market_making": [
+      "dual_vpin_cdf",
+      "dual_vpin",
+      "dual_vpin_rsi",
+      "vpin_ofi_scalping"
+    ],
+    "momentum": [
+      "ofi_momentum",
+      "stacked_imbalance"
+    ]
+  },
+  "semantic_enrichment": {
+    "enriched_at": "2026-01-09T21:45:02.345201",
+    "enriched_count": 26,
+    "total_strategies": 26,
+    "method": "claude_code_direct_analysis",
+    "model": "claude-opus-4-5-20251101"
+  }
+}
