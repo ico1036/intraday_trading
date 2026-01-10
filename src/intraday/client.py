@@ -3,16 +3,30 @@ Binance WebSocket 클라이언트
 
 Binance의 실시간 Orderbook 데이터를 WebSocket으로 수신합니다.
 교육 목적으로 상세한 주석을 포함합니다.
+
+Auto-reconnection:
+    websockets 라이브러리의 표준 패턴을 사용합니다.
+    `async for websocket in connect(uri)` 패턴은 자동으로 무한 재연결합니다.
+
+    참고: https://websockets.readthedocs.io/en/stable/reference/asyncio/client.html
 """
 
 import asyncio
 import json
-import random
+import ssl
 from typing import Callable, Optional
 from dataclasses import dataclass
 from datetime import datetime
 
 import websockets
+from websockets.asyncio.client import connect
+from websockets.exceptions import (
+    ConnectionClosed,
+    ConnectionClosedOK,
+    ConnectionClosedError,
+    InvalidHandshake,
+    InvalidURI,
+)
 
 
 @dataclass
@@ -151,80 +165,110 @@ class BinanceWebSocketClient:
         self,
         on_orderbook: Callable[[OrderbookSnapshot], None],
         on_error: Optional[Callable[[Exception], None]] = None,
-        max_reconnect_attempts: int = 5
     ):
         """
-        WebSocket 연결 및 데이터 수신 시작
-        
+        WebSocket 연결 및 데이터 수신 시작 (무한 자동 재연결)
+
         Args:
             on_orderbook: Orderbook 데이터 수신 시 호출될 콜백 함수
             on_error: 에러 발생 시 호출될 콜백 함수 (선택)
-            max_reconnect_attempts: 최대 재연결 시도 횟수
-        
+
         교육 포인트:
-            - WebSocket은 지속 연결로, HTTP보다 오버헤드가 적습니다.
-            - 네트워크 불안정 시 자동 재연결 로직이 중요합니다.
-            - 프로덕션에서는 더 견고한 에러 처리가 필요합니다.
+            - websockets 표준 패턴: `async for ws in connect(uri)` 사용
+            - ConnectionClosed 발생 시 자동으로 재연결 (무한)
+            - 429 (Rate Limit) 에러는 즉시 중단 (더 이상 시도해도 무의미)
+            - SSL, Network 에러는 자동 재연결
         """
         self._running = True
-        reconnect_attempts = 0
-        
-        while self._running and reconnect_attempts < max_reconnect_attempts:
+
+        print(f"[Client] Connecting to {self.ws_url}...")
+
+        # websockets 표준 패턴: async for로 자동 재연결
+        async for ws in connect(self.ws_url):
+            if not self._running:
+                break
+
             try:
-                print(f"[Client] Connecting to {self.ws_url}...")
-                
-                async with websockets.connect(self.ws_url) as ws:
-                    self._ws = ws
-                    reconnect_attempts = 0  # 연결 성공 시 카운터 리셋
-                    print(f"[Client] Connected! Receiving {self.symbol.upper()} orderbook...")
-                    
-                    async for message in ws:
-                        if not self._running:
-                            break
-                        
-                        try:
-                            data = json.loads(message)
-                            snapshot = self._parse_orderbook(data)
-                            
-                            # 콜백이 코루틴인 경우와 일반 함수인 경우 모두 처리
-                            if asyncio.iscoroutinefunction(on_orderbook):
-                                await on_orderbook(snapshot)
-                            else:
-                                on_orderbook(snapshot)
-                                
-                        except json.JSONDecodeError as e:
-                            print(f"[Client] JSON 파싱 에러: {e}")
-                            if on_error:
-                                on_error(e)
-                                
-            except websockets.ConnectionClosed as e:
-                # HFT용 빠른 재연결: Base=0.1s, Cap=5s, Jitter=0~0.1s
-                # 공식: min(Cap, Base * 2^Attempt) + Jitter
+                self._ws = ws
+                print(f"[Client] Connected! Receiving {self.symbol.upper()} orderbook...")
+
+                async for message in ws:
+                    if not self._running:
+                        break
+
+                    try:
+                        data = json.loads(message)
+                        snapshot = self._parse_orderbook(data)
+
+                        if asyncio.iscoroutinefunction(on_orderbook):
+                            await on_orderbook(snapshot)
+                        else:
+                            on_orderbook(snapshot)
+
+                    except json.JSONDecodeError as e:
+                        print(f"[Client] JSON 파싱 에러: {e}")
+                        if on_error:
+                            on_error(e)
+
+            except ConnectionClosedOK:
+                # 정상 종료 (close frame 교환 완료)
+                print("[Client] Connection closed normally.")
+                if not self._running:
+                    break
+                print("[Client] Reconnecting...")
+                continue
+
+            except ConnectionClosedError as e:
+                # 비정상 종료 (에러로 인한 종료)
+                print(f"[Client] Connection closed with error: {e}")
+                if not self._running:
+                    break
+                print("[Client] Reconnecting...")
+                continue
+
+            except ConnectionClosed as e:
+                # 일반 연결 종료 (fallback)
                 print(f"[Client] Connection closed: {e}")
-                reconnect_attempts += 1
-                if self._running and reconnect_attempts < max_reconnect_attempts:
-                    base = 0.1  # 초기 재시도 간격 (HFT용)
-                    cap = 5.0   # 최대 대기 시간 (HFT는 5초 이상이면 알파 소멸)
-                    jitter = random.uniform(0, 0.1)  # 동기화 방지
-                    wait_time = min(cap, base * (2 ** reconnect_attempts)) + jitter
-                    print(f"[Client] Reconnecting in {wait_time:.3f}s... (attempt {reconnect_attempts})")
-                    await asyncio.sleep(wait_time)
-                    
-            except Exception as e:
-                # HFT용 빠른 재연결: 다른 에러도 빠르게 재시도
-                print(f"[Client] Error: {e}")
+                if not self._running:
+                    break
+                print("[Client] Reconnecting...")
+                continue
+
+            except InvalidHandshake as e:
+                # HTTP 핸드셰이크 실패 (4xx, 5xx 포함)
+                error_str = str(e)
+                if "429" in error_str:
+                    print(f"[Client] Rate limited (429). Stopping.")
+                    self._running = False
+                    if on_error:
+                        on_error(e)
+                    break
+                print(f"[Client] Handshake failed: {e}")
                 if on_error:
                     on_error(e)
-                reconnect_attempts += 1
-                if self._running and reconnect_attempts < max_reconnect_attempts:
-                    base = 0.1
-                    cap = 5.0
-                    jitter = random.uniform(0, 0.1)
-                    wait_time = min(cap, base * (2 ** reconnect_attempts)) + jitter
-                    await asyncio.sleep(wait_time)
-        
-        if reconnect_attempts >= max_reconnect_attempts:
-            print(f"[Client] Max reconnect attempts reached. Stopping.")
+                continue
+
+            except InvalidURI as e:
+                # 잘못된 URI - 재연결 의미 없음
+                print(f"[Client] Invalid URI: {e}")
+                self._running = False
+                if on_error:
+                    on_error(e)
+                break
+
+            except (ssl.SSLError, OSError, ConnectionResetError) as e:
+                print(f"[Client] Network error: {e}")
+                if on_error:
+                    on_error(e)
+                continue
+
+            except Exception as e:
+                print(f"[Client] Unexpected error: {e}")
+                if on_error:
+                    on_error(e)
+                continue
+
+        print("[Client] Connection loop ended.")
     
     async def disconnect(self):
         """WebSocket 연결 종료"""
@@ -372,85 +416,121 @@ class BinanceCombinedClient:
         on_orderbook: Callable[[OrderbookSnapshot], None],
         on_trade: Callable[[AggTrade], None],
         on_error: Optional[Callable[[Exception], None]] = None,
-        max_reconnect_attempts: int = 5
     ):
         """
-        WebSocket 연결 및 데이터 수신 시작
-        
+        WebSocket 연결 및 데이터 수신 시작 (무한 자동 재연결)
+
         Args:
             on_orderbook: Orderbook 데이터 수신 시 콜백
             on_trade: AggTrade 데이터 수신 시 콜백
             on_error: 에러 발생 시 콜백 (선택)
-            max_reconnect_attempts: 최대 재연결 시도 횟수
+
+        교육 포인트:
+            - websockets 표준 패턴: `async for ws in connect(uri)` 사용
+            - ConnectionClosed 발생 시 자동으로 재연결 (무한)
+            - 429 (Rate Limit) 에러는 즉시 중단 (더 이상 시도해도 무의미)
+            - SSL, Network 에러는 자동 재연결
         """
         self._running = True
-        reconnect_attempts = 0
-        
-        while self._running and reconnect_attempts < max_reconnect_attempts:
+
+        print(f"[CombinedClient] Connecting to {self.ws_url}...")
+
+        # websockets 표준 패턴: async for로 자동 재연결
+        async for ws in connect(self.ws_url):
+            if not self._running:
+                break
+
             try:
-                print(f"[CombinedClient] Connecting to {self.ws_url}...")
-                
-                async with websockets.connect(self.ws_url) as ws:
-                    self._ws = ws
-                    reconnect_attempts = 0
-                    print(f"[CombinedClient] Connected! Receiving {self.symbol.upper()} data...")
-                    
-                    async for message in ws:
-                        if not self._running:
-                            break
-                        
-                        try:
-                            raw = json.loads(message)
-                            stream = raw.get("stream", "")
-                            data = raw.get("data", {})
-                            
-                            if "depth" in stream:
-                                snapshot = self._parse_orderbook(data)
-                                if asyncio.iscoroutinefunction(on_orderbook):
-                                    await on_orderbook(snapshot)
-                                else:
-                                    on_orderbook(snapshot)
-                            
-                            elif "aggTrade" in stream:
-                                trade = self._parse_aggtrade(data)
-                                if asyncio.iscoroutinefunction(on_trade):
-                                    await on_trade(trade)
-                                else:
-                                    on_trade(trade)
-                                    
-                        except json.JSONDecodeError as e:
-                            print(f"[CombinedClient] JSON 파싱 에러: {e}")
-                            if on_error:
-                                on_error(e)
-                                
-            except websockets.ConnectionClosed as e:
-                # HFT용 빠른 재연결: Base=0.1s, Cap=5s, Jitter=0~0.1s
-                # 공식: min(Cap, Base * 2^Attempt) + Jitter
+                self._ws = ws
+                print(f"[CombinedClient] Connected! Receiving {self.symbol.upper()} data...")
+
+                async for message in ws:
+                    if not self._running:
+                        break
+
+                    try:
+                        raw = json.loads(message)
+                        stream = raw.get("stream", "")
+                        data = raw.get("data", {})
+
+                        if "depth" in stream:
+                            snapshot = self._parse_orderbook(data)
+                            if asyncio.iscoroutinefunction(on_orderbook):
+                                await on_orderbook(snapshot)
+                            else:
+                                on_orderbook(snapshot)
+
+                        elif "aggTrade" in stream:
+                            trade = self._parse_aggtrade(data)
+                            if asyncio.iscoroutinefunction(on_trade):
+                                await on_trade(trade)
+                            else:
+                                on_trade(trade)
+
+                    except json.JSONDecodeError as e:
+                        print(f"[CombinedClient] JSON 파싱 에러: {e}")
+                        if on_error:
+                            on_error(e)
+
+            except ConnectionClosedOK:
+                # 정상 종료 (close frame 교환 완료)
+                print("[CombinedClient] Connection closed normally.")
+                if not self._running:
+                    break
+                print("[CombinedClient] Reconnecting...")
+                continue
+
+            except ConnectionClosedError as e:
+                # 비정상 종료 (에러로 인한 종료)
+                print(f"[CombinedClient] Connection closed with error: {e}")
+                if not self._running:
+                    break
+                print("[CombinedClient] Reconnecting...")
+                continue
+
+            except ConnectionClosed as e:
+                # 일반 연결 종료 (fallback)
                 print(f"[CombinedClient] Connection closed: {e}")
-                reconnect_attempts += 1
-                if self._running and reconnect_attempts < max_reconnect_attempts:
-                    base = 0.1  # 초기 재시도 간격 (HFT용)
-                    cap = 5.0   # 최대 대기 시간 (HFT는 5초 이상이면 알파 소멸)
-                    jitter = random.uniform(0, 0.1)  # 동기화 방지
-                    wait_time = min(cap, base * (2 ** reconnect_attempts)) + jitter
-                    print(f"[CombinedClient] Reconnecting in {wait_time:.3f}s... (attempt {reconnect_attempts})")
-                    await asyncio.sleep(wait_time)
-                    
-            except Exception as e:
-                # HFT용 빠른 재연결: 다른 에러도 빠르게 재시도
-                print(f"[CombinedClient] Error: {e}")
+                if not self._running:
+                    break
+                print("[CombinedClient] Reconnecting...")
+                continue
+
+            except InvalidHandshake as e:
+                # HTTP 핸드셰이크 실패 (4xx, 5xx 포함)
+                error_str = str(e)
+                if "429" in error_str:
+                    print(f"[CombinedClient] Rate limited (429). Stopping.")
+                    self._running = False
+                    if on_error:
+                        on_error(e)
+                    break
+                print(f"[CombinedClient] Handshake failed: {e}")
                 if on_error:
                     on_error(e)
-                reconnect_attempts += 1
-                if self._running and reconnect_attempts < max_reconnect_attempts:
-                    base = 0.1
-                    cap = 5.0
-                    jitter = random.uniform(0, 0.1)
-                    wait_time = min(cap, base * (2 ** reconnect_attempts)) + jitter
-                    await asyncio.sleep(wait_time)
-        
-        if reconnect_attempts >= max_reconnect_attempts:
-            print(f"[CombinedClient] Max reconnect attempts reached. Stopping.")
+                continue
+
+            except InvalidURI as e:
+                # 잘못된 URI - 재연결 의미 없음
+                print(f"[CombinedClient] Invalid URI: {e}")
+                self._running = False
+                if on_error:
+                    on_error(e)
+                break
+
+            except (ssl.SSLError, OSError, ConnectionResetError) as e:
+                print(f"[CombinedClient] Network error: {e}")
+                if on_error:
+                    on_error(e)
+                continue
+
+            except Exception as e:
+                print(f"[CombinedClient] Unexpected error: {e}")
+                if on_error:
+                    on_error(e)
+                continue
+
+        print("[CombinedClient] Connection loop ended.")
     
     async def disconnect(self):
         """WebSocket 연결 종료"""
