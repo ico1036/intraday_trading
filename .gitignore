@@ -28,10 +28,17 @@ ENV/
 # uv
 .python-version
 
-# Environment variables
+# Environment variables / secrets
 .env
+.env.*
+*.env
 .env.local
 .env.*.local
+*.pem
+*.key
+*.p12
+*.pfx
+secrets/
 
 # IDE
 .idea/
@@ -64,16 +71,51 @@ Thumbs.db
 *.log
 logs/
 
-# Data files
+# Data files / large binaries
 *.parquet
+*.feather
+*.h5
+*.hdf5
+*.pkl
+*.pickle
+*.joblib
+*.onnx
+*.pt
+*.pth
+*.bin
+*.tar
+*.gz
+*.zip
+*.7z
+*.mp4
+*.mov
+*.mkv
+*.pdf
 data/
+datasets/
+checkpoints/
+models/
 
 # Backtest reports
 reports/
 
+# Runtime outputs / artifacts
+output/
+artifacts/
+state/
+cache/
+.tmp/
+*.csv
+*.jsonl
+*.tmp
+*.sqlite
+*.db
+
 # Local development
 *.local
 *.png
+!docs/assets/*.png
+!docs/site/assets/*.png
 *_dir
 src/intraday/strategies/tick/*.py
 tests/test_strategy_*.py
