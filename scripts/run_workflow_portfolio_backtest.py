@@ -9,14 +9,15 @@ import pandas as pd
 from intraday.backtest.multi_runner import PortfolioBacktestRunner
 
 
-def _load_panel(symbols: list[str], time_range: str):
+def _load_panel(symbols: list[str], time_range: str, timeframe: str = "5m"):
     start_s, end_s = [s.strip() for s in time_range.split(":", 1)]
     start_ts = pd.Timestamp(start_s)
     end_ts = pd.Timestamp(end_s)
     candle_root = Path('/Users/jwcorp/trading_data/futures/candles')
+    tf = (timeframe or "5m").strip().lower()
     panel = {}
     for sym in symbols:
-        path = candle_root / f"{sym}_5m.parquet"
+        path = candle_root / f"{sym}_{tf}.parquet"
         if not path.exists():
             continue
         df = pd.read_parquet(path)
@@ -59,6 +60,7 @@ def main():
     p.add_argument("--strategy", default="PortfolioMomentum")
     p.add_argument("--symbols", nargs="+", required=True)
     p.add_argument("--time-range", default="2025-03-01:2025-03-31")
+    p.add_argument("--timeframe", default="5m")
     p.add_argument("--lookback", type=int, default=60)
     p.add_argument("--top-n", type=int, default=1)
     p.add_argument("--bottom-n", type=int, default=1)
@@ -68,7 +70,7 @@ def main():
     p.add_argument("--artifact-dir", required=True)
     args = p.parse_args()
 
-    panel = _load_panel(args.symbols, args.time_range)
+    panel = _load_panel(args.symbols, args.time_range, args.timeframe)
     if len(panel) < 2:
         payload = {"status": "error", "error": "not_enough_symbols", "symbols": list(panel.keys()), "required": 2}
         Path(args.output_path).write_text(json.dumps(payload, ensure_ascii=False, indent=2))
@@ -115,6 +117,10 @@ def main():
     report = runner.run()
     base = _metrics_from_report(report)
 
+    artifact_dir = Path(args.artifact_dir)
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    saved_report_path = runner.save_report(artifact_dir)
+
     is_metrics = dict(base)
     os_metrics = dict(base)
     try:
@@ -137,17 +143,16 @@ def main():
     except Exception:
         pass
 
-    artifact_dir = Path(args.artifact_dir)
-    artifact_dir.mkdir(parents=True, exist_ok=True)
     payload = {
         "status": "ok",
         "strategy": args.strategy,
         "symbols": args.symbols,
         "time_range": args.time_range,
+        "timeframe": args.timeframe,
         **base,
         "is_metrics": is_metrics,
         "os_metrics": os_metrics,
-        "report_path": str(artifact_dir),
+        "report_path": str(saved_report_path),
     }
     Path(args.output_path).write_text(json.dumps(payload, ensure_ascii=False, indent=2))
     print(json.dumps(payload, ensure_ascii=False))
