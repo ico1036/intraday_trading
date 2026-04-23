@@ -1,0 +1,65 @@
+# Failure mode taxonomy for expression outcomes.
+#
+# Analyst must classify each failed expression into EXACTLY ONE mode from this enum.
+# thesis_gate.py reads seen_failure_modes.jsonl and aggregates by this enum.
+#
+# Editing rules:
+#   - Never rename an existing key (breaks historical logs).
+#   - To deprecate, set `deprecated: true` and keep the key.
+#   - New modes require bumping `version` and a migration note.
+
+version: 1
+
+modes:
+  SIGNAL_SPARSE:
+    description: "Signal triggers too rarely to be statistically meaningful."
+    symptoms: ["total_trades < min_required", "signal_hit_rate near zero"]
+    implication: expression
+    hint: "Relax threshold, widen condition, or use more sensitive feature."
+
+  SIGNAL_NOISY:
+    description: "Signal triggers enough but win rate is near 50% — no predictive power."
+    symptoms: ["win_rate ~ 50%", "profit_factor ~ 1.0", "pnl resembles random walk"]
+    implication: thesis
+    hint: "If repeats across orthogonal expressions, thesis is likely wrong."
+
+  LATE_ENTRY:
+    description: "Signal fires after the move has largely completed."
+    symptoms: ["positive but small avg_win", "negative pnl after entry slippage"]
+    implication: expression
+    hint: "Use faster bar type, earlier precursor, or pullback entry."
+
+  EDGE_DECAY:
+    description: "Edge exists briefly but decays faster than holding period."
+    symptoms: ["good PnL at T+1 bar, negative by exit", "exit always worse than entry"]
+    implication: expression
+    hint: "Shorten holding period, add time-stop, switch to signal-reversal exit."
+
+  REGIME_DEPENDENT:
+    description: "Works in one regime, fails or reverses in another."
+    symptoms: ["PnL concentrated in specific months/sessions/vol buckets"]
+    implication: scope
+    hint: "Add regime filter; does NOT refute thesis — narrows its scope."
+
+  FEE_DOMINATED:
+    description: "Strategy is gross profitable but net negative after fees/slippage."
+    symptoms: ["gross_pnl > 0", "net_pnl < 0", "high turnover"]
+    implication: expression
+    hint: "Larger bar size, LIMIT (maker), fewer trades, stronger filter."
+
+  OVERFIT_SYMBOL:
+    description: "Works on one symbol, fails on others with same setup."
+    symptoms: ["BTC OK, ETH/SOL fail", "IS/OS gap on non-primary symbol"]
+    implication: scope
+    hint: "Restrict universe or find feature that generalizes."
+
+  THESIS_INVERTED:
+    description: "Systematic loss — inverted signal would be profitable."
+    symptoms: ["win_rate < 40% AND consistent across expressions"]
+    implication: thesis
+    hint: "Either flip direction (new thesis) or refute original."
+
+  OTHER:
+    description: "Does not fit any taxonomy entry above — flag for human review."
+    implication: unknown
+    hint: "If this grows, add a new mode with version bump."

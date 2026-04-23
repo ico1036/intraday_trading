@@ -120,6 +120,11 @@ cache/
 src/intraday/strategies/tick/*.py
 tests/test_strategy_*.py
 
+# v2 harness: run artifacts are per-run; wiki is rebuildable but committed
+# so cross-run belief is reviewable in PRs.
+archive/*
+!archive/.gitkeep
+
 
 
 
