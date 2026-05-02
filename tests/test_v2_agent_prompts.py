@@ -128,6 +128,15 @@ def test_developer_identity_forbids_mcp_and_core_files():
     assert "base.py" in text
 
 
+def test_developer_identity_uses_unified_portfolio_template():
+    text = developer.identity_prompt()
+    assert "src/intraday/strategies/multi/_alpha_template.py" in text
+    assert "src/intraday/strategies/multi/<name>.py" in text
+    assert "symbols=[\"BTCUSDT\"]" in text
+    assert "PortfolioOrder" in text
+    assert "Order(weight=...)" in text
+
+
 def test_developer_task_includes_paths():
     text = developer.task_prompt(
         algorithm_prompt_path="/work/algorithm_prompt.txt",
@@ -135,6 +144,9 @@ def test_developer_task_includes_paths():
     )
     assert "/work/algorithm_prompt.txt" in text
     assert "/work" in text
+    assert "src/intraday/strategies/multi/_alpha_template.py" in text
+    assert "symbols: list[str]" in text
+    assert "PortfolioOrder" in text
 
 
 # ---------------------------------------------------------------------------

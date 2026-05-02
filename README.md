@@ -79,8 +79,12 @@ uv run python scripts/run_portfolio_forward_test.py --strategy momentum --symbol
 | 단계 | 역할 | 결과물 |
 |------|------|--------|
 | Research | 가설 설계, 리스크 분석 | `algorithm_prompt.txt` |
-| Develop | 전략 코드 구현 | `{name}.py`, 테스트 |
+| Develop | `strategies/multi/_alpha_template.py` 기반 전략 코드 구현 | `{name}.py`, 테스트 |
 | Analyze | 백테스트 실행, weight/metrics 저장 | `weights.parquet`, `metrics.json`, `backtest_report.md` |
+
+생성 전략은 단일/멀티 코인을 나누지 않습니다. `symbols=["BTCUSDT"]`이면 단일 코인,
+`symbols=[...]`이면 멀티 코인인 같은 포트폴리오 알파이며, 결과는 `PortfolioOrder`
+target weight로 저장되어 합성 전략이 `weights.parquet`만 빠르게 읽을 수 있어야 합니다.
 
 ## 핵심 설정
 
@@ -98,8 +102,9 @@ uv run python scripts/run_portfolio_forward_test.py --strategy momentum --symbol
 ```
 src/intraday/
 ├── strategies/           # 전략 구현
-│   ├── tick/            # Tick 기반 전략
-│   └── orderbook/       # Orderbook 기반 전략
+│   ├── multi/           # AI 생성 포트폴리오 알파 템플릿/전략
+│   ├── tick/            # 레거시 Tick 기반 전략
+│   └── orderbook/       # 레거시 Orderbook 기반 전략
 ├── backtest/            # 백테스터
 └── data/                # 데이터 다운로드/로딩
 
@@ -107,7 +112,7 @@ scripts/
 ├── run_tick_backtest.py         # 백테스트 실행
 ├── run_portfolio_forward_test.py   # 유니버스 공통 실시간 테스트
 └── agent/                      # AI Agent 시스템
-    └── run.py           # Agent 진입점
+    └── run_v2.py        # 단일 Agent 진입점
 ```
 
 </details>

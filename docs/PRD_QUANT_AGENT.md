@@ -1,5 +1,10 @@
 # PRD: Intraday Quant Research Agent
 
+> Superseded by the v2 single-agent design in `AGENTS.md`,
+> `scripts/agent/run_v2.py`, and `docs/ALPHA_ARTIFACT_CONTRACT.md`.
+> Keep this document as historical context only; do not implement new
+> multi-agent `AgentDefinition` flows from it.
+
 ## Overview
 
 Claude Agent SDK 기반 퀀트 연구 자동화 시스템.
@@ -82,7 +87,7 @@ Claude Agent SDK 기반 퀀트 연구 자동화 시스템.
 
 **Tools**: `Task`, `Bash`, `Read`, `Write`
 
-### 2. Researcher (Sub-agent)
+### 2. Researcher Phase
 
 **역할**: 아이디어 분석 및 가설 생성
 
@@ -98,23 +103,23 @@ Claude Agent SDK 기반 퀀트 연구 자동화 시스템.
 - `strategies/{name}/algorithm_prompt.txt`
 - `strategies/{name}/research_report.md`
 
-### 3. Developer (Sub-agent)
+### 3. Developer Phase
 
 **역할**: 전략 코드 구현
 
 **책임**:
-- 템플릿 기반 전략 구현 (`_template.py` 복사)
-- `should_buy()`, `should_sell()` 구현
+- 통합 포트폴리오 알파 템플릿 구현 (`strategies/multi/_alpha_template.py` 복사)
+- `symbols: list[str]` 기반 `PortfolioOrder` target weight 생성
 - 테스트 코드 작성
 - 린트/타입 검사 통과
 
 **Tools**: `Read`, `Write`, `Edit`, `Bash` (pytest)
 
 **출력**:
-- `src/intraday/strategies/tick/{name}.py`
-- `tests/test_strategy_{name}.py`
+- `src/intraday/strategies/multi/{name}.py`
+- `tests/strategies/test_{name}.py`
 
-### 4. Analyst (Sub-agent)
+### 4. Analyst Phase
 
 **역할**: 백테스트 실행 및 성과 분석
 
@@ -306,8 +311,8 @@ intraday_trading/
 - [ ] `scripts/agent/agents/analyst.py`
 
 ### Step 3: Orchestrator 구현
-- [ ] `scripts/agent/run.py` 확장
-- [ ] AgentDefinition 등록
+- [x] `scripts/agent/run_v2.py` 단일 에이전트 실행 경로
+- [x] AgentDefinition 미사용
 - [ ] 피드백 루프 구현
 
 ### Step 4: 통합 테스트

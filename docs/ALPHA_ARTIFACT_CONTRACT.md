@@ -92,3 +92,17 @@ so ranking many alphas is cheap.
 
 This keeps AI iteration fast: expensive signal generation happens once per
 alpha, while portfolio smoothing can be searched cheaply over saved weights.
+
+## Strategy Template Contract
+
+Generated alphas use one implementation surface:
+
+- Copy `src/intraday/strategies/multi/_alpha_template.py`.
+- Keep `symbols: list[str]` in the constructor.
+- Treat `symbols` length 1 as the single-coin case.
+- Return `PortfolioOrder` target weights from `generate_order`.
+- Leave artifact writing to the runner; strategy code only decides target
+  exposure.
+
+There should be no separate single-coin template. The reusable product is the
+saved target-weight ledger, not a special strategy subclass.

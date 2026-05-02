@@ -12,9 +12,9 @@ Three CLI modes:
     # Kick off the agent loop (requires PLAN.md to be edited first).
     uv run python scripts/agent/run_v2.py my_run --run
 
-Phase 1-5 status: SDK invoke is a pragmatic prototype — each agent call
-spins up a short-lived ``ClaudeSDKClient``. Later phases can refactor to a
-single long-lived session.
+Runtime model: one SDK-backed execution agent receives staged phase prompts.
+The Python orchestrator controls Research -> Develop -> Analyze sequencing;
+the agent must not delegate to Task subagents.
 """
 from __future__ import annotations
 
@@ -37,8 +37,6 @@ from scripts.agent.v2.deterministic import oos_clamp  # noqa: E402
 from scripts.agent.v2.deterministic import plan as plan_mod  # noqa: E402
 from scripts.agent.v2.scaffold import (  # noqa: E402
     RunScaffoldError,
-    is_done,
-    run_path,
     scaffold_run,
 )
 
