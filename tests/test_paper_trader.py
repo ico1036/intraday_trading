@@ -73,10 +73,10 @@ class TestPaperTraderInit:
         trader = PaperTrader(initial_capital=10000.0)
 
         assert trader.initial_capital == 10000.0
-        # 기본값: taker fee rate (0.05%)
-        assert trader.fee_rate == 0.0005
-        assert trader.maker_fee_rate == 0.0002  # 0.02%
-        assert trader.taker_fee_rate == 0.0005  # 0.05%
+        # 기본값: taker fee rate (0.20% = 5bp 수수료 + 15bp spread/slippage)
+        assert trader.fee_rate == 0.0020
+        assert trader.maker_fee_rate == 0.0017  # 0.17% (2bp + 15bp)
+        assert trader.taker_fee_rate == 0.0020  # 0.20% (5bp + 15bp)
         assert trader.capital == 10000.0
         assert trader.position.side is None
         assert trader.realized_pnl == 0.0

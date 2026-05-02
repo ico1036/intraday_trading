@@ -1,10 +1,10 @@
 """
 PaperTrader Maker/Taker 수수료 테스트
 
-Maker (Limit Order): 0.02%
-Taker (Market Order): 0.05%
+Maker (Limit Order): 0.17% (0.02% 수수료 + 0.15% spread/slippage)
+Taker (Market Order): 0.20% (0.05% 수수료 + 0.15% spread/slippage)
 
-Binance 선물 기준: https://www.binance.com/en/fee/schedule
+Binance 선물 기준 + Market Microstructure 보정
 """
 
 from datetime import datetime
@@ -19,11 +19,11 @@ class TestMakerTakerFeeRates:
     """Maker/Taker 수수료율 설정 테스트"""
 
     def test_default_maker_taker_rates(self):
-        """기본 maker/taker 수수료율 확인"""
+        """기본 maker/taker 수수료율 확인 (spread/slippage 포함)"""
         trader = PaperTrader(initial_capital=10000.0)
 
-        assert trader.maker_fee_rate == 0.0002  # 0.02%
-        assert trader.taker_fee_rate == 0.0005  # 0.05%
+        assert trader.maker_fee_rate == 0.0017  # 0.17% (2bp fee + 15bp spread/slippage)
+        assert trader.taker_fee_rate == 0.0020  # 0.20% (5bp fee + 15bp spread/slippage)
 
     def test_custom_maker_taker_rates(self):
         """커스텀 maker/taker 수수료율"""

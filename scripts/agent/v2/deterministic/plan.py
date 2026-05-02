@@ -125,6 +125,19 @@ def _parse_symbols(raw: str) -> list[str]:
     return parts
 
 
+def _strip_comments(body: str) -> str:
+    """Drop ``#``-prefixed comment lines from a free-form section body."""
+    out: list[str] = []
+    for line in body.splitlines():
+        if line.lstrip().startswith("#"):
+            continue
+        out.append(line)
+    return "\n".join(out).strip()
+
+
+PLACEHOLDER_MARKER = "<write here>"
+
+
 def _parse_date(s: str) -> date:
     try:
         return date.fromisoformat(s.strip())
@@ -206,8 +219,8 @@ def parse(text: str) -> PlanConfig:
             f"is_end={is_end} vs os_start={os_start}"
         )
 
-    strategy_request = sections.get("Strategy request", "").strip()
-    notes = sections.get("Notes", "").strip()
+    strategy_request = _strip_comments(sections.get("Strategy request", ""))
+    notes = _strip_comments(sections.get("Notes", ""))
 
     return PlanConfig(
         targets=targets,

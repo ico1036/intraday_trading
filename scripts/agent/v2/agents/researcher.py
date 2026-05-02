@@ -243,9 +243,47 @@ trigger_schema:
 
 ### 2. First expression at ``archive/{run_id}/theses/{thesis_id}/expressions/{next_expression_id}/algorithm_prompt.txt``
 
-Same shape as in the compose task. For a first expression, prefer the
-**simplest** values (``raw`` signal_form, ``absolute`` threshold, ``none``
-regime_filter). Start minimal; subsequent expressions can enrich.
+**Exact format — the file MUST begin with ``---`` on the very first line,
+contain the YAML block below, and end the frontmatter with a second ``---``
+line before any body prose.** A downstream parser fails hard on any
+deviation (missing ``---``, renamed keys, extra keys).
+
+```
+---
+thesis_id: {thesis_id}
+expression_id: {next_expression_id}
+expression_spec:
+  bar_domain: <VOLUME | TICK | TIME | DOLLAR>
+  bar_granularity: <fine | medium | coarse>
+  signal_form: <raw | z_score | rolling_rank | percentile>
+  threshold_type: <absolute | adaptive_quantile | regime_conditional>
+  aggregation: <instantaneous | ema | cumulative_bucket>
+  regime_filter: <none | vol_regime | session | funding_sign | trend_state>
+  exit_rule: <time_stop | sl_tp | trailing | signal_reversal>
+  sizing: <fixed | vol_targeted | kelly>
+  universe: <single_symbol | basket_topk | pair>
+features_used: [<subset of feature_vocab.yaml>]
+---
+
+# Strategy: <Name>
+
+## Hypothesis
+<one paragraph>
+
+## Entry Conditions
+- ...
+
+## Exit Conditions
+- ...
+
+## Parameters
+- <name>: <value>
+```
+
+For a first expression, prefer the **simplest** axis values (``raw``
+signal_form, ``absolute`` threshold, ``none`` regime_filter). Do NOT
+include an ``addresses`` field — only second-and-later expressions carry
+that.
 
 Do not run tests. Do not call MCP tools. Do not write verdict.md.
 """

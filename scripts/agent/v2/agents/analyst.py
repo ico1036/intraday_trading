@@ -37,6 +37,11 @@ and emit ONE failure mode tag.
    refuted.
 3. **Use IS period from PLAN.md** for the feedback signal. OS goes in the
    report for human review but is not used to change the enum.
+   **Hard constraint**: the ``mcp__backtest__run_backtest`` tool rejects any
+   window longer than 30 days. You MUST subset PLAN's periods — take the
+   first 30 calendar days of each window (``is_start`` + 30d, ``os_start``
+   + 30d) and call the MCP tool with those explicit ``start_date`` /
+   ``end_date`` strings. Do not refuse; chunk.
 4. **Don't edit strategy code.** If the strategy raises at backtest time,
    emit ``OTHER`` and describe the error in ``backtest_report.md``.
 
@@ -71,12 +76,24 @@ def task_prompt(
 Steps:
 1. Parse ``{workdir}/algorithm_prompt.txt``.
 2. Load targets from ``{plan_path}``.
-3. Run the IS backtest, then the OS backtest.
-4. Write ``{workdir}/backtest_report.md`` — include both IS and OS metrics,
-   and per-regime / per-symbol breakdowns if available.
-5. Write ``{workdir}/metrics.json`` with the structured numeric metrics.
-6. Write ``{workdir}/failure_mode.txt`` with exactly one enum key, or
-   ``APPROVED`` if IS targets all pass.
+3. Pick a 30-day IS subset: ``is_start`` → ``is_start + 30d``. Same for OS.
+   The MCP backtest tool rejects longer windows.
+4. Call ``mcp__backtest__run_backtest`` for IS, then for OS, with:
+   ``data_path="./data/futures_ticks/BTCUSDT"`` (or matching symbol),
+   ``data_type="tick"``, ``bar_type`` / ``bar_size`` derived from the
+   ``expression_spec``, ``output_dir`` = ``{workdir}`` (so equity_curve.parquet
+   and report.png land next to this expression's artefacts).
+5. Write ``{workdir}/backtest_report.md`` with IS + OS tables + per-regime/
+   per-symbol breakdowns when available.
+6. Write ``{workdir}/metrics.json`` — flat top-level keys must mirror IS:
+   ``profit_factor``, ``total_return``, ``max_drawdown``, ``total_trades``,
+   ``win_rate``, ``sharpe``. Also include ``backtest_wall_seconds`` and
+   ``tick_throughput`` from the MCP tool's summary. Include
+   ``is_metrics``/``os_metrics``/``per_regime``/``per_symbol`` as
+   sub-objects.
+7. Write ``{workdir}/failure_mode.txt`` — one enum key or ``APPROVED``.
 
-Remember: enum only. No commentary. No verdict.
+Remember: enum only. No commentary. No verdict. Do not refuse — if the
+strategy file is missing, that is a real code bug; tag ``OTHER`` and
+document the blocker in ``backtest_report.md``.
 """

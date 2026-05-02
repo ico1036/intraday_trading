@@ -20,6 +20,7 @@ Data flow per iteration:
 """
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping, Protocol
@@ -238,6 +239,7 @@ def run(
     run_id = run_dir.name
 
     for iter_idx in range(max_iterations):
+        iter_start = time.perf_counter()
         active_thesis = _pick_active_thesis(run_dir, plan)
 
         # ----- 1. Researcher: new_thesis or compose_expression --------------
@@ -322,6 +324,7 @@ def run(
         )
 
         # ----- 6. Append to run log -----------------------------------------
+        iter_duration_s = round(time.perf_counter() - iter_start, 3)
         entry = elog.ExpressionLogEntry(
             run_id=run_id,
             thesis_id=thesis_id,
@@ -333,6 +336,7 @@ def run(
             artifact_path=str(exp_dir.relative_to(run_dir.parent.parent)),
             result=dict(analyst_resp.metrics),
             addresses=parsed.addresses,
+            iter_duration_s=iter_duration_s,
         )
         elog.append(run_dir, entry)
 

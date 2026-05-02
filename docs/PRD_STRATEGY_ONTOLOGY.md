@@ -318,7 +318,7 @@ OFI(Order Flow Imbalance) 사용 전략:
 |----------|------|-------------|------|
 | **Command** (`.claude/commands/`) | 사용자가 `/command` 호출 | 명시적 슬래시 커맨드 | ✅ KB 조회용 |
 | **Skill** (`.claude/skills/`) | 맥락 기반 자동 활성화 | 프롬프트에 트리거 문구 | ✅ 자동 참조용 |
-| **Agent** (`.claude/agents/`) | 복잡한 멀티스텝 작업 | Task tool로 spawn | ❌ 과도함 |
+| **Agent** (`.claude/agents/`) | 복잡한 다단계 작업 | Task tool로 spawn | ❌ 과도함 |
 
 **결론**: Command + Skill 조합 사용
 - **Command**: `/strategy-kb` - 사용자/에이전트가 명시적으로 호출
@@ -911,7 +911,7 @@ uv run python scripts/build_ontology.py --semantic
 - "이 가설에는 X 전략 접근법이 적합"
 - "Y 지표와 Z 지표 조합은 피하세요"
 
-### 9.4 Multi-Asset Extension
+### 9.4 Cross-Asset Extension
 - ETH, SOL 등 다른 자산 전략 추가
 - Cross-asset 관계 (BTC 선행 지표로 ETH 예측)
 
@@ -1131,7 +1131,7 @@ Generated strategies_ontology.json with 26 strategies
 |-----------|----------|---------|----------|
 | **Command** | `.claude/commands/*.md` | `/command-name` | 명시적 사용자 호출 |
 | **Skill** | `.claude/skills/*/SKILL.md` | 프롬프트 키워드 매칭 | 맥락 기반 자동 활성화 |
-| **Agent** | `.claude/agents/*.md` | Task tool spawn | 복잡한 멀티스텝 작업 |
+| **Agent** | `.claude/agents/*.md` | Task tool spawn | 복잡한 다단계 작업 |
 
 ### Command File Format
 

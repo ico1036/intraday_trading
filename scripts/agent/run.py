@@ -40,7 +40,7 @@ from claude_agent_sdk import (
     create_sdk_mcp_server,
 )
 
-from scripts.agent.tools.backtest_tool import run_backtest, get_available_strategies
+from scripts.agent.tools.backtest_tool import run_backtest, run_portfolio_backtest, get_available_strategies
 from scripts.agent.hooks.logging_hook import log_tool_result
 from scripts.agent.agents import (
     researcher_prompt,
@@ -53,8 +53,12 @@ from scripts.agent.agents import (
 
 
 # Configuration
-MAX_ITERATIONS = 5
+# Ralph-loop hard cap (user requirement): must allow up to 200 iterations.
+MAX_ITERATIONS = 200
 MAX_RESEARCH_ATTEMPTS = 3
+
+# Runtime mode split (dev/prod)
+WORKFLOW_MODE = ("production" if __name__ == "__main__" else "development")
 
 # Signal file names (agents create these to signal completion)
 APPROVED_SIGNAL = "APPROVED.signal"
@@ -148,7 +152,7 @@ Coordinate 3 specialized agents to develop trading strategies from user ideas.
 
 ## Your Team
 
-1. **researcher**: Analyzes ideas, performs EDA, generates algorithm designs
+1. **researcher**: Analyzes ideas, generates algorithm designs from domain knowledge
 2. **developer**: Implements strategies using templates, writes tests
 3. **analyst**: Runs backtests, analyzes performance, provides feedback
 
@@ -377,7 +381,7 @@ async def main(initial_query: str | None = None):
     backtest_server = create_sdk_mcp_server(
         name="backtest",
         version="1.0.0",
-        tools=[run_backtest, get_available_strategies]
+        tools=[run_backtest, run_portfolio_backtest, get_available_strategies]
     )
 
     # Configure agent options with AgentDefinitions
@@ -394,7 +398,7 @@ async def main(initial_query: str | None = None):
         # Sub-agent definitions
         agents={
             "researcher": AgentDefinition(
-                description="Analyzes ideas, performs EDA, generates algorithm designs",
+                description="Analyzes ideas, generates algorithm designs from domain knowledge",
                 prompt=researcher_prompt(),
                 tools=researcher_tools()
             ),

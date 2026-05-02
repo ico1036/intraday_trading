@@ -8,11 +8,10 @@ RegimeStrategy 백테스트 예제 스크립트
     # 기본 실행
     python scripts/run_regime_backtest.py
 
-    # 리포트 저장
-    python scripts/run_regime_backtest.py --save-report
+    # 리포트는 기본 저장
 
     # 짧은 테스트 (1시간)
-    python scripts/run_regime_backtest.py --hours 1 --save-report
+    python scripts/run_regime_backtest.py --hours 1
 """
 
 import argparse
@@ -42,11 +41,6 @@ def main():
         type=float,
         default=None,
         help="테스트 기간 (시간). 미지정 시 전체 데이터",
-    )
-    parser.add_argument(
-        "--save-report",
-        action="store_true",
-        help="리포트 저장 (Parquet + PNG)",
     )
     parser.add_argument(
         "--report-dir",
@@ -142,16 +136,15 @@ def main():
         print(f"추세 강도: {strategy.current_regime.trend_score:.2f}")
         print(f"변동성: {strategy.current_regime.volatility_score:.2f}")
 
-    # === 5. 리포트 저장 (옵션) ===
-    if args.save_report:
-        print("\n[Step 5] 리포트 저장...")
+    # === 5. 리포트 저장 ===
+    print("\n[Step 5] 리포트 저장...")
 
-        report_dir = runner.save_report(args.report_dir)
-        print(f"\n리포트 저장됨: {report_dir}")
-        print("  - equity_curve.parquet: 누적 수익률 시계열")
-        print("  - trades.parquet: 거래 내역")
-        print("  - summary.parquet: 요약 지표")
-        print("  - report.png: 시각화 리포트")
+    report_dir = runner.save_report(args.report_dir)
+    print(f"\n리포트 저장됨: {report_dir}")
+    print("  - equity_curve.parquet: 누적 수익률 시계열")
+    print("  - trades.parquet: 거래 내역")
+    print("  - summary.parquet: 요약 지표")
+    print("  - report.png: 시각화 리포트")
 
     # Equity curve 통계
     print(f"\n[Equity Curve 통계]")

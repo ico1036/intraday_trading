@@ -87,6 +87,26 @@ def test_append_also_writes_to_seen_failure_modes(tmp_path):
     assert r["expression_spec"]["bar_domain"] == "VOLUME"
 
 
+def test_append_records_iter_duration_when_provided(tmp_path):
+    entry = _good_entry()
+    entry.iter_duration_s = 12.345
+    elog.append(tmp_path, entry)
+    record = json.loads(
+        (tmp_path / "expression_log.jsonl").read_text().splitlines()[0]
+    )
+    assert record["iter_duration_s"] == 12.345
+
+
+def test_append_omits_iter_duration_when_none(tmp_path):
+    entry = _good_entry()
+    entry.iter_duration_s = None
+    elog.append(tmp_path, entry)
+    record = json.loads(
+        (tmp_path / "expression_log.jsonl").read_text().splitlines()[0]
+    )
+    assert "iter_duration_s" not in record
+
+
 def test_append_writes_timestamp_even_if_caller_omits(tmp_path):
     entry = _good_entry()
     assert entry.ts  # dataclass default supplies it

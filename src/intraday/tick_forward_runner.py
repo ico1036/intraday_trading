@@ -27,7 +27,7 @@ import asyncio
 from datetime import datetime
 from typing import Optional, List
 
-from .client import BinanceCombinedClient, OrderbookSnapshot, AggTrade
+from .client import BinanceAggTradeClient, AggTrade
 from .candle_builder import CandleBuilder, CandleType, Candle
 from .klines_client import BinanceKlinesClient
 from .paper_trader import PaperTrader
@@ -64,7 +64,7 @@ class TickForwardRunner:
         candle_type: CandleType = CandleType.TIME,
         candle_size: float = 240.0,
         initial_capital: float = 10000.0,
-        fee_rate: float = 0.001,
+        fee_rate: float = 0.0020,  # 5bp 수수료 + 15bp spread/slippage
         leverage: int = 1,
         warmup_bars: int = 0,
     ):
@@ -79,7 +79,7 @@ class TickForwardRunner:
                 - TICK: 틱 수 (예: 100)
                 - DOLLAR: USD (예: 1000000 = 100만 달러)
             initial_capital: 초기 자본금 (USD)
-            fee_rate: 수수료율 (기본 0.1%)
+            fee_rate: 수수료율 (기본 0.20% = 5bp + 15bp spread/slippage)
             leverage: 레버리지 (1=현물, 2+=선물)
             warmup_bars: 웜업 캔들 수 (0이면 웜업 안함, REST API 사용)
         """
@@ -93,7 +93,7 @@ class TickForwardRunner:
         self.warmup_bars = warmup_bars
 
         # 내부 컴포넌트
-        self._client = BinanceCombinedClient(symbol)
+        self._client = BinanceAggTradeClient(symbol)
         self._candle_builder = CandleBuilder(candle_type, candle_size)
         self._trader = PaperTrader(initial_capital, fee_rate, leverage=leverage)
         self._klines_client = BinanceKlinesClient()
@@ -159,9 +159,8 @@ class TickForwardRunner:
         if duration_seconds:
             asyncio.create_task(self._stop_after(duration_seconds))
 
-        # WebSocket 연결 및 데이터 수신
+        # WebSocket 연결 및 데이터 수신 (aggTrade만)
         await self._client.connect(
-            on_orderbook=self._on_orderbook,
             on_trade=self._on_trade,
             on_error=self._on_error,
         )
@@ -254,16 +253,6 @@ class TickForwardRunner:
         self._running = False
         self._end_time = datetime.now()
         await self._client.disconnect()
-
-    def _on_orderbook(self, snapshot: OrderbookSnapshot) -> None:
-        """
-        Orderbook 업데이트 처리
-
-        틱 기반 러너에서는 Orderbook을 직접 사용하지 않지만,
-        체결 판단을 위해 best bid/ask 정보를 유지합니다.
-        """
-        # 체결 판단용 호가 정보만 저장
-        pass
 
     def _on_trade(self, trade: AggTrade) -> None:
         """

@@ -11,16 +11,12 @@
 
 from .orderbook_runner import OrderbookBacktestRunner
 from .tick_runner import TickBacktestRunner, BarType
+from .multi_tick_runner import PortfolioTickBacktestRunner, PortfolioTickResult
 
 __all__ = [
     "OrderbookBacktestRunner",
     "TickBacktestRunner",
     "BarType",
+    "PortfolioTickBacktestRunner",
+    "PortfolioTickResult",
 ]
-
-
-
-
-
-
-

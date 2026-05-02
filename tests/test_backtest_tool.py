@@ -54,7 +54,7 @@ class TestDiscoverStrategies:
         for name, info in all_strategies.items():
             assert "class" in info
             assert "data_type" in info
-            assert info["data_type"] in ["tick", "orderbook"]
+            assert info["data_type"] in ["tick", "orderbook", "multi"]
 
 
 class TestGetAvailableStrategies:
@@ -121,6 +121,125 @@ class TestRunBacktest:
 
         assert result.get("is_error") is True
         assert "orderbook strategy" in result["content"][0]["text"]
+
+    @pytest.mark.asyncio
+    async def test_portfolio_strategy_allowed_with_tick_data_type(self, tmp_path, monkeypatch):
+        """Should allow portfolio data_type strategy when symbols are provided."""
+        from backtest_tool import _run_backtest_impl
+
+        class DummyStrategy:
+            def __init__(self, **kwargs):
+                pass
+
+        # Use fake strategy registry and tick runner so test is deterministic.
+        calls = {"portfolio": 0}
+
+        class DummyRunner:
+            def save_report(self, _output_dir):
+                return "./dummy.md"
+
+        class DummyReport:
+            total_return = 1.23
+
+        def fake_strategies():
+            return {
+                "DummyPortfolio": {
+                    "class": DummyStrategy,
+                    "data_type": "tick",
+                }
+            }
+
+        def fake_portfolio(*_args, **_kwargs):
+            calls["portfolio"] += 1
+            return DummyReport(), DummyRunner()
+
+        def fake_format(*_args, **_kwargs):
+            return "# Portfolio Backtest Results\n\n- mocked"
+
+        monkeypatch.setattr("backtest_tool._get_all_strategies", fake_strategies)
+        monkeypatch.setattr("backtest_tool._run_portfolio_like_tick_backtest", fake_portfolio)
+        monkeypatch.setattr("backtest_tool._format_portfolio_report", fake_format)
+
+        result = await _run_backtest_impl({
+            "strategy": "DummyPortfolio",
+            "data_type": "tick",
+            "data_path": str(tmp_path),
+            "symbols": ["BTCUSDT", "ETHUSDT"],
+            "bar_type": "VOLUME",
+            "bar_size": 10,
+        })
+
+        assert result.get("is_error") is not True
+        assert calls["portfolio"] == 1
+        assert "Portfolio Backtest Results" in result["content"][0]["text"]
+
+    @pytest.mark.asyncio
+    async def test_portfolio_inferred_from_data_path(self, tmp_path, monkeypatch):
+        """Should auto-detect portfolio-universe from data path directories when symbols omitted."""
+        from backtest_tool import _run_backtest_impl
+
+        (tmp_path / "BTCUSDT").mkdir()
+        (tmp_path / "ETHUSDT").mkdir()
+
+        class DummyStrategy:
+            def __init__(self, **kwargs):
+                pass
+
+        calls = {"portfolio": 0}
+        single_calls = {"tick": 0}
+
+        def fake_strategies():
+            return {
+                "Dummy": {
+                    "class": DummyStrategy,
+                    "data_type": "tick",
+                }
+            }
+
+        def fake_portfolio(*_args, **_kwargs):
+            calls["portfolio"] += 1
+            class DummyReport:
+                initial_capital = 10000.0
+                final_capital = 11000.0
+                total_return = 0.1
+                sharpe_ratio = 0.0
+                max_drawdown = 0.0
+                total_trades = 0
+                win_rate = 0.0
+                profit_factor = 0.0
+                def get_symbol_breakdown(self):
+                    return {}
+            class DummyRunner:
+                def save_report(self, *_args, **_kwargs):
+                    return "./dummy.md"
+            return DummyReport(), DummyRunner()
+
+        def fake_tick(*_args, **_kwargs):
+            single_calls["tick"] += 1
+            class DummyReport:
+                pass
+            class DummyRunner:
+                def save_report(self, *_args, **_kwargs):
+                    return "./dummy.md"
+            return DummyReport(), DummyRunner()
+
+        monkeypatch.setattr("backtest_tool._get_all_strategies", fake_strategies)
+        monkeypatch.setattr("backtest_tool._run_portfolio_like_tick_backtest", fake_portfolio)
+        monkeypatch.setattr("backtest_tool._run_tick_backtest", fake_tick)
+        monkeypatch.setattr("backtest_tool._format_portfolio_report", lambda *_args, **_kwargs: "# Portfolio Backtest Results\n\n- mocked")
+
+        result = await _run_backtest_impl({
+            "strategy": "Dummy",
+            "data_type": "tick",
+            "data_path": str(tmp_path),
+            "bar_type": "VOLUME",
+            "bar_size": 10,
+        })
+
+        assert result.get("is_error") is not True
+        assert calls["portfolio"] == 1
+        assert single_calls["tick"] == 0
+        assert "Portfolio Backtest Results" in result["content"][0]["text"]
 
     @pytest.mark.asyncio
     async def test_invalid_bar_type(self):

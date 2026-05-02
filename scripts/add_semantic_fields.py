@@ -570,7 +570,7 @@ SEMANTIC_ANALYSIS = {
         "failure_nuance": "CONCEPT_INVALID - 프레임워크 제약으로 구현 불가. ETH 데이터 없음, 단일 심볼 프레임워크.",
         "similar_patterns": ["cross_asset_momentum", "lead_lag", "btc_dominance"],
         "hidden_risks": [
-            "Multi-symbol 데이터 필요",
+            "Cross-asset 데이터 필요",
             "Cross-asset 상태 동기화 복잡",
             "Lead-lag 관계가 일정하지 않음"
         ],

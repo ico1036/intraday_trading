@@ -227,5 +227,5 @@ class TestDiscoverStrategiesIntegration:
         for name, info in all_strategies.items():
             assert "class" in info, f"{name} should have 'class' in metadata"
             assert "data_type" in info, f"{name} should have 'data_type' in metadata"
-            assert info["data_type"] in ["tick", "orderbook"], \
+            assert info["data_type"] in ["tick", "orderbook", "multi"], \
                 f"{name} should have valid data_type"

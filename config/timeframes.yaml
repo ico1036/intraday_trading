@@ -1,0 +1,53 @@
+# Timeframe 설정
+# EDA/IS/OS 기간을 월별로 자유롭게 설정
+
+symbols:
+  - BTCUSDT
+  - ETHUSDT
+  - SOLUSDT
+  - BNBUSDT
+  - XRPUSDT
+  - DOGEUSDT
+  - ADAUSDT
+
+data_dir: ${INTRADAY_DATA_DIR}
+
+timeframes:
+  tf1:
+    name: "2025-2026 기본"
+    description: "최신 데이터, 표준 분할"
+    eda:
+      start: "2025-01"
+      end: "2025-02"
+    is:
+      start: "2025-03"
+      end: "2025-09"
+    os:
+      start: "2025-10"
+      end: "2026-01"
+
+  tf2:
+    name: "2025 상반기 집중"
+    description: "짧은 기간 빠른 검증용"
+    eda:
+      start: "2025-01"
+      end: "2025-01"
+    is:
+      start: "2025-02"
+      end: "2025-04"
+    os:
+      start: "2025-05"
+      end: "2025-06"
+
+  tf3:
+    name: "2025 전체"
+    description: "2025년 단일년도 검증"
+    eda:
+      start: "2025-01"
+      end: "2025-01"
+    is:
+      start: "2025-02"
+      end: "2025-08"
+    os:
+      start: "2025-09"
+      end: "2025-12"

@@ -124,16 +124,16 @@ class PaperTrader:
         initial_capital: float,
         fee_rate: float | None = None,
         leverage: int = 1,
-        maker_fee_rate: float = 0.0002,
-        taker_fee_rate: float = 0.0005,
+        maker_fee_rate: float = 0.0017,  # 2bp 수수료 + 15bp spread/slippage
+        taker_fee_rate: float = 0.0020,  # 5bp 수수료 + 15bp spread/slippage
     ):
         """
         Args:
             initial_capital: 초기 자본금 (USD)
             fee_rate: 수수료율 (deprecated, 하위 호환용)
             leverage: 레버리지 배율 (1=현물, 2+=선물)
-            maker_fee_rate: 메이커 수수료율 (기본 0.02% = 0.0002)
-            taker_fee_rate: 테이커 수수료율 (기본 0.05% = 0.0005)
+            maker_fee_rate: 메이커 수수료율 (기본 0.17% = 0.0017, spread/slippage 포함)
+            taker_fee_rate: 테이커 수수료율 (기본 0.20% = 0.0020, spread/slippage 포함)
 
         교육 포인트:
             - Binance 선물 수수료: maker 0.02%, taker 0.05%

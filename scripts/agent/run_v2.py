@@ -58,6 +58,51 @@ def open_editor(path: Path) -> int:
 # ---------------------------------------------------------------------------
 
 
+def _resolve_cli_path() -> str | None:
+    """Pick a claude CLI binary that the SDK can drive successfully.
+
+    The shipped ``claude`` CLI 2.1.118 has a regression that crashes inside
+    the SDK subprocess with ``TypeError: null is not an object (evaluating
+    'T.effortLevel')`` — visible only with ``extra_args={"debug-to-stderr":
+    None}``. The subprocess emits ``SystemMessage(init)`` then
+    ``ResultMessage(subtype='error_during_execution')`` with
+    ``usage.input_tokens=0`` because the model is never called.
+
+    Resolution order:
+        1. ``CLAUDE_SDK_CLI_PATH`` env var, if set and executable.
+        2. The newest ``~/.local/share/claude/versions/<ver>`` binary that
+           is NOT 2.1.118 (prefer 2.1.117, fall back to 2.1.114).
+        3. ``None`` — let the SDK fall back to ``shutil.which("claude")``
+           and hope the user has a working CLI on PATH.
+    """
+    import os as _os
+    from pathlib import Path as _Path
+
+    override = _os.environ.get("CLAUDE_SDK_CLI_PATH")
+    if override and _Path(override).is_file() and _os.access(override, _os.X_OK):
+        return override
+
+    versions_dir = _Path.home() / ".local/share/claude/versions"
+    if not versions_dir.is_dir():
+        return None
+
+    def _sort_key(p: _Path) -> tuple[int, ...]:
+        try:
+            return tuple(int(x) for x in p.name.split("."))
+        except ValueError:
+            return (0,)
+
+    candidates = [
+        p
+        for p in versions_dir.iterdir()
+        if p.is_file() and _os.access(p, _os.X_OK) and p.name != "2.1.118"
+    ]
+    if not candidates:
+        return None
+    candidates.sort(key=_sort_key, reverse=True)
+    return str(candidates[0])
+
+
 def _build_sdk_invoke(*, os_end: date) -> sdk_coordinator.InvokeFn:
     """Return an invoke function backed by ``claude_agent_sdk``.
 
@@ -75,6 +120,22 @@ def _build_sdk_invoke(*, os_end: date) -> sdk_coordinator.InvokeFn:
         ClaudeSDKClient,
         HookMatcher,
         TextBlock,
+        ToolUseBlock,
+        create_sdk_mcp_server,
+    )
+
+    # MCP backtest server — without this, the analyst's `mcp__backtest__*`
+    # tool references are dead names.
+    from scripts.agent.tools.backtest_tool import (  # noqa: E402
+        get_available_strategies,
+        run_backtest,
+        run_portfolio_backtest,
+    )
+
+    backtest_server = create_sdk_mcp_server(
+        name="backtest",
+        version="1.0.0",
+        tools=[run_backtest, run_portfolio_backtest, get_available_strategies],
     )
 
     agents = {
@@ -100,31 +161,91 @@ def _build_sdk_invoke(*, os_end: date) -> sdk_coordinator.InvokeFn:
         ),
     }
 
-    clamp_hook = oos_clamp.build_hook(os_end=os_end)
+    _ = oos_clamp.build_hook(os_end=os_end)  # noqa: F841 — kept for re-enable
+
+    cli_path = _resolve_cli_path()
+    if cli_path:
+        print(f"[sdk] using claude CLI: {cli_path}", flush=True)
+
+    orchestrator_system = (
+        "You are a dispatch orchestrator. Your only job is to invoke the "
+        "specified subagent via the Task tool with the given prompt. You "
+        "do not have file I/O or code-execution tools — you cannot do the "
+        "subagent's work yourself. Call Task, then wait for it to return."
+    )
 
     async def _invoke_async(agent_name: str, task_prompt: str) -> None:
+        # NOTE: the OOS clamp hook is temporarily disabled while we diagnose
+        # an SDK error_during_execution. Phase 3 ships the hook factory and
+        # tests; wiring it back here depends on the correct return signature
+        # for this SDK version.
         options = ClaudeAgentOptions(
+            system_prompt=orchestrator_system,
             permission_mode="bypassPermissions",
             agents=agents,
-            allowed_tools=["Task", "Read", "Write"],
-            hooks={
-                "PreToolUse": [
-                    HookMatcher(matcher="Write|Edit", hooks=[clamp_hook])
-                ],
-            },
+            mcp_servers={"backtest": backtest_server},
+            # Task only — denies the orchestrator any escape hatch to do the
+            # subagent's work itself. All file I/O happens inside subagents
+            # via the tools declared on each AgentDefinition.
+            allowed_tools=["Task"],
+            cli_path=cli_path,
         )
-        system_message = (
-            f"Delegate the task to the `{agent_name}` subagent via the Task "
-            "tool. Pass the following prompt verbatim:\n\n" + task_prompt
+        user_message = (
+            f"Please invoke the `{agent_name}` subagent using the Task "
+            f"tool. Use this prompt verbatim:\n\n{task_prompt}"
         )
+
+        print(f"\n[sdk] ▶ invoking {agent_name} ...", flush=True)
+        task_called = False
+        message_count = 0
         async with ClaudeSDKClient(options=options) as client:
-            await client.query(system_message)
+            await client.query(user_message)
             async for message in client.receive_response():
+                message_count += 1
+                msg_type = type(message).__name__
                 if isinstance(message, AssistantMessage):
                     for block in message.content:
+                        block_type = type(block).__name__
                         if isinstance(block, TextBlock):
                             sys.stdout.write(block.text)
-                            sys.stdout.flush()
+                        elif isinstance(block, ToolUseBlock):
+                            sys.stdout.write(
+                                f"\n[sdk] ▸ tool={block.name} "
+                                f"input_keys={list((block.input or {}).keys())}"
+                            )
+                            if block.name == "Task":
+                                task_called = True
+                        else:
+                            sys.stdout.write(f"\n[sdk] ▸ block={block_type}")
+                        sys.stdout.flush()
+                else:
+                    # Dump anything that's not an AssistantMessage so we can
+                    # see what the SDK actually returned (stats, errors, etc.)
+                    sys.stdout.write(f"\n[sdk] ▸ message={msg_type}")
+                    for attr in (
+                        "subtype",
+                        "num_turns",
+                        "total_cost_usd",
+                        "usage",
+                        "is_error",
+                        "result",
+                        "session_id",
+                    ):
+                        if hasattr(message, attr):
+                            sys.stdout.write(f" {attr}={getattr(message, attr)!r}")
+                    sys.stdout.flush()
+        print(
+            f"\n[sdk] ✓ {agent_name} returned "
+            f"(messages={message_count}, task_called={task_called})",
+            flush=True,
+        )
+        if not task_called:
+            print(
+                f"[sdk] WARNING: orchestrator returned without calling Task. "
+                f"The `{agent_name}` subagent was NOT invoked.",
+                file=sys.stderr,
+                flush=True,
+            )
 
     def _invoke(agent_name: str, task_prompt: str) -> None:
         asyncio.run(_invoke_async(agent_name, task_prompt))
@@ -188,8 +309,12 @@ def main(argv: list[str] | None = None) -> int:
         f"[run_v2] {'scaffolded' if result.created else 'resuming'} {result.path}"
     )
 
+    # Open editor on fresh scaffold OR explicit --edit/--force, unless
+    # --no-edit/--prepare. ``--run`` on a fresh scaffold still triggers the
+    # editor so the user can't accidentally start the loop with an unedited
+    # PLAN.
     should_edit = not args.no_edit and (
-        args.edit or args.force or (result.created and not args.prepare and not args.run)
+        args.edit or args.force or (result.created and not args.prepare)
     )
     if should_edit:
         rc = open_editor(result.plan_path)
@@ -209,6 +334,37 @@ def main(argv: list[str] | None = None) -> int:
     except plan_mod.PlanError as exc:
         print(f"[run_v2] PLAN.md invalid: {exc}", file=sys.stderr)
         return 3
+
+    def _is_placeholder(p):
+        return (
+            not p.strategy_request
+            or plan_mod.PLACEHOLDER_MARKER in p.strategy_request
+        )
+
+    # If PLAN still has the placeholder, open the editor once (unless
+    # --no-edit), then re-parse. Fail only if the user leaves it unedited.
+    if _is_placeholder(plan) and not args.no_edit:
+        print(
+            "[run_v2] PLAN.md still has placeholder ``<write here>``. "
+            "Opening editor — fill in Strategy request and save.",
+            file=sys.stderr,
+        )
+        rc = open_editor(result.plan_path)
+        if rc != 0:
+            print(f"[run_v2] editor exited {rc}", file=sys.stderr)
+            return rc
+        try:
+            plan = plan_mod.parse_file(result.plan_path)
+        except plan_mod.PlanError as exc:
+            print(f"[run_v2] PLAN.md invalid after edit: {exc}", file=sys.stderr)
+            return 3
+
+    if _is_placeholder(plan):
+        print(
+            "[run_v2] PLAN.md still has placeholder. Aborting.",
+            file=sys.stderr,
+        )
+        return 4
 
     invoke = _build_sdk_invoke(os_end=plan.os_end)
     coord = sdk_coordinator.SDKCoordinator(

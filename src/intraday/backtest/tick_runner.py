@@ -12,8 +12,10 @@ Tick 기반 백테스트 러너
     - 달러바: 일정 거래대금마다 캔들 생성
 """
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
+import logging
+import time
 
 from ..client import AggTrade
 from ..candle_builder import CandleBuilder, CandleType, Candle
@@ -73,8 +75,8 @@ class TickBacktestRunner:
         latency_ms: float = 50.0,
         leverage: int = 1,
         funding_loader: Optional[FundingRateLoader] = None,
-        maker_fee_rate: float = 0.0002,
-        taker_fee_rate: float = 0.0005,
+        maker_fee_rate: float = 0.0017,  # 2bp 수수료 + 15bp spread/slippage
+        taker_fee_rate: float = 0.0020,  # 5bp 수수료 + 15bp spread/slippage
     ):
         """
         Args:
@@ -92,8 +94,8 @@ class TickBacktestRunner:
                       선물 모드에서는 청산가 계산 및 강제 청산이 활성화됨.
             funding_loader: Funding Rate 데이터 로더 (선물 모드에서 사용)
                             None이면 Funding 정산 없이 실행.
-            maker_fee_rate: 메이커 수수료율 (기본 0.02% = 0.0002)
-            taker_fee_rate: 테이커 수수료율 (기본 0.05% = 0.0005)
+            maker_fee_rate: 메이커 수수료율 (기본 0.17% = 0.0017, spread/slippage 포함)
+            taker_fee_rate: 테이커 수수료율 (기본 0.20% = 0.0020, spread/slippage 포함)
 
         교육 포인트:
             - VOLUME 바: bar_size = 1.0 → 1 BTC 거래마다 바 생성
@@ -153,6 +155,10 @@ class TickBacktestRunner:
         self._bar_count = 0
         self._order_count = 0
         self._trade_count = 0
+        self._total_ticks_target: int | None = None
+        self._wall_start_ts: float = 0.0
+
+        self._logger = logging.getLogger(__name__)
 
         # Equity curve 추적
         self._equity_curve: list[EquityPoint] = []
@@ -175,20 +181,39 @@ class TickBacktestRunner:
         Returns:
             성과 리포트
         """
-        print(f"[Backtest] Starting tick backtest...")
-        print(f"[Backtest] Strategy: {self.strategy.__class__.__name__}")
-        print(f"[Backtest] Bar Type: {self.bar_type.value}, Size: {self.bar_size}")
-        print(f"[Backtest] Initial Capital: ${self.initial_capital:,.2f}")
-        print(f"[Backtest] Latency: {self.latency_ms:.1f}ms")
+        self._logger = logging.getLogger(__name__)
+        if not self._logger.handlers:
+            logging.basicConfig(
+                level=logging.INFO,
+                format="%(asctime)s | %(levelname)s | %(message)s",
+            )
+
+        self._logger.info("[Backtest] Starting tick backtest...")
+        self._logger.info("[Backtest] Strategy: %s", self.strategy.__class__.__name__)
+        self._logger.info("[Backtest] Bar Type: %s, Size: %s", self.bar_type.value, self.bar_size)
+        self._logger.info("[Backtest] Initial Capital: $%s", f"{self.initial_capital:,.2f}")
+        self._logger.info("[Backtest] Latency: %.1fms", self.latency_ms)
         if start_time and end_time:
-            print(f"[Backtest] Period: {start_time.strftime('%Y-%m-%d')} ~ {end_time.strftime('%Y-%m-%d')}")
+            self._logger.info(
+                "[Backtest] Period: %s ~ %s",
+                start_time.strftime('%Y-%m-%d'),
+                end_time.strftime('%Y-%m-%d'),
+            )
         elif start_time:
-            print(f"[Backtest] Period: {start_time.strftime('%Y-%m-%d')} ~ (end of data)")
+            self._logger.info(
+                "[Backtest] Period: %s ~ (end of data)",
+                start_time.strftime('%Y-%m-%d'),
+            )
         elif end_time:
-            print(f"[Backtest] Period: (start of data) ~ {end_time.strftime('%Y-%m-%d')}")
+            self._logger.info(
+                "[Backtest] Period: (start of data) ~ %s",
+                end_time.strftime('%Y-%m-%d'),
+            )
         
         # 상태 초기화
         self._candle_builder._reset()
+        self._wall_start_ts = time.perf_counter()
+        self._total_ticks_target = self.data_loader.estimate_total_rows(start_time, end_time)
         self._tick_count = 0
         self._bar_count = 0
         self._order_count = 0
@@ -209,9 +234,19 @@ class TickBacktestRunner:
             if self._tick_count % progress_interval == 0:
                 self._print_progress()
         
-        print(f"\n[Backtest] Completed!")
-        print(f"[Backtest] Ticks: {self._tick_count:,}, Bars: {self._bar_count:,}")
-        print(f"[Backtest] Orders: {self._order_count}, Trades: {self._trade_count}")
+        duration = time.perf_counter() - self._wall_start_ts
+        self._logger.info("[Backtest] Completed!")
+        self._logger.info(
+            "[Backtest] Ticks: %s, Bars: %s",
+            f"{self._tick_count:,}",
+            f"{self._bar_count:,}",
+        )
+        self._logger.info(
+            "[Backtest] Orders: %s | Trades: %s | Elapsed: %.2fs",
+            self._order_count,
+            self._trade_count,
+            duration,
+        )
         
         return self.get_performance_report()
     
@@ -309,11 +344,39 @@ class TickBacktestRunner:
         if position.side:
             position_str = f"{position.side.value} {position.quantity:.4f}"
         
-        print(
-            f"[Backtest] Progress: {self._tick_count:,} ticks, {self._bar_count:,} bars | "
-            f"Orders: {self._order_count} | Trades: {self._trade_count} | "
-            f"Position: {position_str} | PnL: ${self._trader.total_pnl:+.2f}"
-        )
+        elapsed = time.perf_counter() - self._wall_start_ts
+        speed = self._tick_count / elapsed if elapsed > 0 else 0.0
+        total_ticks = self._total_ticks_target
+
+        if total_ticks:
+            pct = min(100.0, self._tick_count / total_ticks * 100)
+            remaining = total_ticks - self._tick_count
+            eta_sec = remaining / speed if speed > 0 else 0.0
+            self._logger.info(
+                "[Backtest] Progress: %.2f%% (%s/%s ticks), bars=%s, orders=%s, trades=%s, "%
+                "position=%s, pnl=%+.2f, speed=%,.0f ticks/s, eta=%s",
+                pct,
+                f"{self._tick_count:,}",
+                f"{total_ticks:,}",
+                f"{self._bar_count:,}",
+                self._order_count,
+                self._trade_count,
+                position_str,
+                self._trader.total_pnl,
+                speed,
+                str(timedelta(seconds=int(eta_sec))),
+            )
+        else:
+            self._logger.info(
+                "[Backtest] Progress: %s ticks, %s bars | orders=%s, trades=%s, position=%s, pnl=%+.2f, speed=%,.0f ticks/s",
+                f"{self._tick_count:,}",
+                f"{self._bar_count:,}",
+                self._order_count,
+                self._trade_count,
+                position_str,
+                self._trader.total_pnl,
+                speed,
+            )
     
     def get_performance_report(self) -> PerformanceReport:
         """성과 리포트 반환"""

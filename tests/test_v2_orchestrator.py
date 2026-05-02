@@ -291,6 +291,22 @@ def test_switches_thesis_when_per_thesis_cap_reached(run_dir, plan):
 # ---------------------------------------------------------------------------
 
 
+def test_iter_duration_is_recorded(run_dir, plan):
+    coord = ScriptedCoordinator(
+        analyses=[
+            ("APPROVED", {"profit_factor": 1.8, "total_trades": 120}),
+        ],
+        expression_specs=[(_spec(), ["vpin"])],
+    )
+    orch.run(run_dir=run_dir, plan=plan, coord=coord)
+    lines = (run_dir / "expression_log.jsonl").read_text().splitlines()
+    assert len(lines) == 1
+    entry = json.loads(lines[0])
+    assert "iter_duration_s" in entry
+    assert isinstance(entry["iter_duration_s"], (int, float))
+    assert entry["iter_duration_s"] >= 0.0
+
+
 def test_all_artifacts_written(run_dir, plan):
     coord = ScriptedCoordinator(
         analyses=[

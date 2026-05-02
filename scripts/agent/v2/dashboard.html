@@ -1,0 +1,761 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>v2 — Strategy Console</title>
+<style>
+  :root {
+    --bg: #0a0a0a;
+    --panel: #111;
+    --panel-2: #151515;
+    --line: #1d1d1d;
+    --line-2: #262626;
+    --fg: #e6e6e6;
+    --fg-dim: #8a8a8a;
+    --fg-dimmer: #5a5a5a;
+    --accent: #3b82f6;
+    --green: #22c55e;
+    --red: #ef4444;
+    --amber: #f59e0b;
+    --cyan: #06b6d4;
+    --magenta: #d946ef;
+    --mono: "JetBrains Mono", "IBM Plex Mono", "SF Mono", ui-monospace, Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--fg); }
+  body { font-family: var(--mono); font-size: 13px; line-height: 1.45; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  /* Layout */
+  .shell { display: grid; grid-template-rows: 44px 1fr; min-height: 100vh; }
+  .topbar {
+    display: flex; align-items: center; gap: 20px;
+    padding: 0 20px; border-bottom: 1px solid var(--line);
+    background: linear-gradient(180deg, #0c0c0c, #090909);
+  }
+  .topbar .brand { font-weight: 700; letter-spacing: 0.02em; }
+  .topbar .brand .v { color: var(--fg-dim); font-weight: 400; margin-left: 6px; }
+  .topbar nav { display: flex; gap: 4px; }
+  .topbar nav a {
+    padding: 6px 12px; color: var(--fg-dim); border: 1px solid transparent;
+    border-radius: 2px;
+  }
+  .topbar nav a.active { color: var(--fg); border-color: var(--line-2); background: var(--panel); }
+  .topbar .spacer { flex: 1; }
+  .topbar .rt { color: var(--fg-dim); font-size: 11px; }
+
+  main { padding: 18px 20px; }
+  .grid { display: grid; gap: 14px; }
+
+  /* Panel */
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 2px;
+  }
+  .panel-h {
+    display: flex; align-items: baseline; justify-content: space-between;
+    padding: 8px 12px; border-bottom: 1px solid var(--line);
+    color: var(--fg-dim); font-size: 11px;
+    letter-spacing: 0.06em; text-transform: uppercase;
+  }
+  .panel-b { padding: 10px 12px; }
+  .panel-b.compact { padding: 2px; }
+
+  /* Tables */
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--line); }
+  th {
+    font-weight: 500; color: var(--fg-dim); font-size: 11px;
+    text-transform: uppercase; letter-spacing: 0.04em; background: var(--panel-2);
+    position: sticky; top: 0;
+  }
+  tr:hover td { background: #141414; }
+  .num { text-align: right; font-variant-numeric: tabular-nums; }
+  .clickable { cursor: pointer; }
+
+  /* Chips */
+  .chip {
+    display: inline-block; padding: 1px 6px; border: 1px solid var(--line-2);
+    border-radius: 2px; font-size: 11px; color: var(--fg-dim);
+  }
+  .chip.green  { color: var(--green);  border-color: #14532d; background: #0a1f13; }
+  .chip.red    { color: var(--red);    border-color: #7f1d1d; background: #1f0a0a; }
+  .chip.amber  { color: var(--amber);  border-color: #713f12; background: #1d1308; }
+  .chip.cyan   { color: var(--cyan);   border-color: #155e75; background: #06141b; }
+  .chip.blue   { color: var(--accent); border-color: #1e3a8a; background: #0a1530; }
+
+  .dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-right: 6px; vertical-align: middle; }
+  .dot.green  { background: var(--green); box-shadow: 0 0 6px var(--green); }
+  .dot.red    { background: var(--red); }
+  .dot.amber  { background: var(--amber); }
+  .dot.dim    { background: var(--fg-dimmer); }
+
+  .kv { display: grid; grid-template-columns: 140px 1fr; gap: 4px 10px; }
+  .kv .k { color: var(--fg-dim); }
+  .kv .v { font-variant-numeric: tabular-nums; }
+
+  /* Progress */
+  .bar { height: 6px; background: #141414; border-radius: 1px; overflow: hidden; }
+  .bar > span { display: block; height: 100%; background: var(--accent); }
+
+  /* Step indicator */
+  .steps { display: flex; gap: 6px; flex-wrap: wrap; }
+  .step {
+    padding: 4px 10px; border: 1px solid var(--line-2); border-radius: 2px;
+    color: var(--fg-dimmer); font-size: 11px;
+  }
+  .step.active { color: var(--fg); border-color: var(--accent); background: #0a1530; }
+  .step.done   { color: var(--fg-dim); border-color: #14532d; background: #081a0f; }
+
+  /* SVG chart */
+  svg.chart { width: 100%; height: 280px; display: block; }
+  svg.chart .axis { stroke: var(--line-2); }
+  svg.chart .grid { stroke: var(--line); stroke-dasharray: 2 3; }
+  svg.chart .curve { fill: none; stroke: var(--green); stroke-width: 1.3; }
+  svg.chart .curve.neg { stroke: var(--red); }
+  svg.chart .label { fill: var(--fg-dim); font-size: 10px; font-family: var(--mono); }
+
+  /* Inline code */
+  pre.code {
+    margin: 0; padding: 10px 12px; background: var(--panel-2);
+    border: 1px solid var(--line); border-radius: 2px;
+    font-size: 12px; white-space: pre-wrap; word-break: break-word;
+    max-height: 360px; overflow: auto;
+  }
+
+  .muted { color: var(--fg-dim); }
+  .x-muted { color: var(--fg-dimmer); }
+  .ok { color: var(--green); }
+  .bad { color: var(--red); }
+  .warn { color: var(--amber); }
+
+  /* Utility */
+  .hide { display: none; }
+  .row { display: flex; gap: 14px; align-items: flex-start; }
+  .row > * { flex: 1; }
+
+  button {
+    background: var(--panel-2); color: var(--fg); border: 1px solid var(--line-2);
+    border-radius: 2px; padding: 5px 10px; font-family: var(--mono);
+    font-size: 12px; cursor: pointer;
+  }
+  button:hover { border-color: var(--accent); }
+</style>
+</head>
+<body>
+
+<div id="root"></div>
+
+<script type="module">
+import React, { useState, useEffect, useMemo, useCallback } from "https://esm.sh/react@18.3.1";
+import { createRoot } from "https://esm.sh/react-dom@18.3.1/client";
+
+const h = React.createElement;
+
+/* ============================================================================
+   Routing (hash-based, no deps)
+============================================================================ */
+
+function parseHash() {
+  const raw = (window.location.hash || "#/").replace(/^#/, "");
+  const parts = raw.split("/").filter(Boolean);
+  // "/"                       -> strategies
+  // "/run/<id>"               -> run
+  // "/s/<run>/<th>/<exp>"     -> strategy detail
+  if (parts[0] === "run" && parts[1]) return { page: "run", runId: parts[1] };
+  if (parts[0] === "s" && parts[1] && parts[2] && parts[3])
+    return { page: "strategy", runId: parts[1], thesisId: parts[2], expressionId: parts[3] };
+  return { page: "strategies" };
+}
+function nav(path) { window.location.hash = path; }
+
+/* ============================================================================
+   Helpers
+============================================================================ */
+
+function fmtNum(v, digits = 2) {
+  if (v === null || v === undefined || Number.isNaN(Number(v))) return "—";
+  const n = Number(v);
+  if (!Number.isFinite(n)) return "—";
+  return n.toFixed(digits);
+}
+function fmtPct(v) {
+  if (v === null || v === undefined) return "—";
+  const n = Number(v);
+  if (!Number.isFinite(n)) return "—";
+  return `${(n * 100).toFixed(2)}%`;
+}
+function fmtMode(mode) {
+  if (!mode) return "—";
+  if (mode === "APPROVED") return "green";
+  if (["SIGNAL_NOISY", "THESIS_INVERTED"].includes(mode)) return "red";
+  if (["SIGNAL_SPARSE", "FEE_DOMINATED", "LATE_ENTRY", "EDGE_DECAY"].includes(mode)) return "amber";
+  if (["REGIME_DEPENDENT", "OVERFIT_SYMBOL"].includes(mode)) return "cyan";
+  return "";
+}
+function fmtVerdict(v) {
+  if (v === "APPROVED") return "green";
+  if (v === "REFUTED") return "red";
+  if (v === "EXHAUSTED") return "amber";
+  if (v === "SCOPE_RESTRICTED") return "cyan";
+  return "blue";
+}
+
+async function getJSON(url) {
+  const r = await fetch(url, { cache: "no-store" });
+  if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+  return r.json();
+}
+
+/* ============================================================================
+   Topbar
+============================================================================ */
+
+function Topbar({ route, clock }) {
+  return h("header", { className: "topbar" },
+    h("div", { className: "brand" }, "Strategy Console", h("span", { className: "v" }, "v2")),
+    h("nav", null,
+      h("a", {
+        href: "#/",
+        className: route.page === "strategies" ? "active" : "",
+      }, "Catalogue"),
+      route.page === "run" && h("a", {
+        href: `#/run/${route.runId}`, className: "active"
+      }, `Run · ${route.runId}`),
+      route.page === "strategy" && h("a", {
+        href: `#/s/${route.runId}/${route.thesisId}/${route.expressionId}`, className: "active"
+      }, `${route.expressionId}`)
+    ),
+    h("div", { className: "spacer" }),
+    h("div", { className: "rt" }, clock)
+  );
+}
+
+/* ============================================================================
+   Strategy catalogue (landing page)
+============================================================================ */
+
+function Catalogue() {
+  const [strategies, setStrategies] = useState([]);
+  const [runs, setRuns] = useState([]);
+  const [q, setQ] = useState("");
+  const [loading, setLoading] = useState(true);
+
+  const refresh = useCallback(async () => {
+    try {
+      setLoading(true);
+      const [s, r] = await Promise.all([getJSON("/api/strategies"), getJSON("/api/runs")]);
+      setStrategies(s);
+      setRuns(r);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { refresh(); }, [refresh]);
+
+  const filtered = useMemo(() => {
+    if (!q) return strategies;
+    const needle = q.toLowerCase();
+    return strategies.filter(s =>
+      (s.run_id || "").toLowerCase().includes(needle) ||
+      (s.thesis_id || "").toLowerCase().includes(needle) ||
+      (s.expression_id || "").toLowerCase().includes(needle) ||
+      (s.features_used || []).join(",").toLowerCase().includes(needle) ||
+      (s.failure_mode || "").toLowerCase().includes(needle)
+    );
+  }, [q, strategies]);
+
+  return h("div", { className: "grid" },
+    // Runs row
+    h("section", { className: "panel" },
+      h("div", { className: "panel-h" },
+        h("span", null, "Runs"),
+        h("button", { onClick: refresh }, "↻ refresh")
+      ),
+      h("div", { className: "panel-b compact" },
+        h("table", null,
+          h("thead", null, h("tr", null,
+            h("th", null, "Run"),
+            h("th", { className: "num" }, "theses"),
+            h("th", { className: "num" }, "expressions"),
+            h("th", { className: "num" }, "approved"),
+            h("th", null, "status"),
+            h("th", null, "")
+          )),
+          h("tbody", null,
+            runs.length === 0 && h("tr", null,
+              h("td", { colSpan: 6, className: "muted" }, "no runs in archive/")
+            ),
+            runs.map(r => h("tr", { key: r.run_id, className: "clickable",
+              onClick: () => nav(`/run/${r.run_id}`) },
+              h("td", null, r.run_id),
+              h("td", { className: "num" }, r.theses),
+              h("td", { className: "num" }, r.expressions),
+              h("td", { className: "num" }, h("span",
+                { className: r.approved ? "ok" : "x-muted" }, r.approved)),
+              h("td", null, r.done
+                ? h("span", { className: "chip green" }, "DONE")
+                : h("span", null, h("span", { className: "dot green" }), "live")),
+              h("td", null, h("a", { href: `#/run/${r.run_id}` }, "open →"))
+            ))
+          )
+        )
+      )
+    ),
+
+    // Strategies row
+    h("section", { className: "panel" },
+      h("div", { className: "panel-h" },
+        h("span", null, `Strategies (${filtered.length})`),
+        h("input", {
+          value: q,
+          onChange: e => setQ(e.target.value),
+          placeholder: "filter by run/thesis/feature/mode…",
+          style: {
+            background: "#0d0d0d", color: "var(--fg)", border: "1px solid var(--line-2)",
+            padding: "4px 8px", fontFamily: "var(--mono)", fontSize: "12px",
+            borderRadius: "2px", width: "340px",
+          },
+        })
+      ),
+      h("div", { className: "panel-b compact" },
+        h("table", null,
+          h("thead", null, h("tr", null,
+            h("th", null, "run / thesis / expression"),
+            h("th", null, "features"),
+            h("th", null, "mode"),
+            h("th", null, "verdict"),
+            h("th", { className: "num" }, "PF"),
+            h("th", { className: "num" }, "return"),
+            h("th", { className: "num" }, "DD"),
+            h("th", { className: "num" }, "trades"),
+            h("th", { className: "num" }, "WR"),
+            h("th", { className: "num" }, "iter·s"),
+            h("th", { className: "num" }, "bt·s"),
+            h("th", null, "")
+          )),
+          h("tbody", null,
+            loading && filtered.length === 0 && h("tr", null,
+              h("td", { colSpan: 10, className: "muted" }, "loading…")
+            ),
+            !loading && filtered.length === 0 && h("tr", null,
+              h("td", { colSpan: 10, className: "muted" }, "no strategies yet")
+            ),
+            filtered.map((s, i) => h("tr", {
+              key: `${s.run_id}/${s.thesis_id}/${s.expression_id}/${i}`,
+              className: "clickable",
+              onClick: () => nav(`/s/${s.run_id}/${s.thesis_id}/${s.expression_id}`),
+            },
+              h("td", null,
+                h("span", { className: "muted" }, s.run_id + " / "),
+                s.thesis_id + " / ",
+                h("b", null, s.expression_id)
+              ),
+              h("td", null, (s.features_used || []).join(", ") || "—"),
+              h("td", null, h("span", { className: `chip ${fmtMode(s.failure_mode)}` },
+                s.failure_mode || "—")),
+              h("td", null, h("span", { className: `chip ${fmtVerdict(s.verdict_after)}` },
+                s.verdict_after || "—")),
+              h("td", { className: "num" }, fmtNum(s.profit_factor)),
+              h("td", { className: "num" }, fmtPct(s.total_return)),
+              h("td", { className: "num bad" }, fmtPct(s.max_drawdown)),
+              h("td", { className: "num" }, s.total_trades ?? "—"),
+              h("td", { className: "num" }, fmtPct(s.win_rate)),
+              h("td", { className: "num x-muted" }, fmtNum(s.iter_duration_s, 1)),
+              h("td", { className: "num x-muted" }, fmtNum(s.backtest_wall_seconds, 2)),
+              h("td", null, h("a", {
+                href: `#/s/${s.run_id}/${s.thesis_id}/${s.expression_id}`,
+              }, "open →"))
+            ))
+          )
+        )
+      )
+    )
+  );
+}
+
+/* ============================================================================
+   Run dashboard (live iteration step monitor)
+============================================================================ */
+
+const STEP_ORDER = [
+  { key: "researcher",   label: "② Researcher" },
+  { key: "developer",    label: "④ Developer" },
+  { key: "analyst_run",  label: "⑤ Analyst · backtest" },
+  { key: "analyst_tag",  label: "⑤ Analyst · tag" },
+  { key: "gate_log",     label: "⑥-⑧ Gate + log" },
+  { key: "idle",         label: "idle" },
+];
+
+function RunDashboard({ runId }) {
+  const [state, setState] = useState(null);
+  const [err, setErr] = useState(null);
+
+  useEffect(() => {
+    let alive = true;
+    const tick = async () => {
+      try {
+        const s = await getJSON(`/api/state?run_id=${encodeURIComponent(runId)}`);
+        if (alive) { setState(s); setErr(null); }
+      } catch (e) {
+        if (alive) setErr(String(e));
+      }
+    };
+    tick();
+    const id = setInterval(tick, 2000);
+    return () => { alive = false; clearInterval(id); };
+  }, [runId]);
+
+  if (err && !state) return h("div", { className: "panel" },
+    h("div", { className: "panel-b bad" }, `Error: ${err}`));
+  if (!state) return h("div", { className: "muted" }, "loading…");
+
+  const budget = state.budget || {};
+  const stepIndex = STEP_ORDER.findIndex(s => s.key === state.current_step);
+
+  return h("div", { className: "grid" },
+    // Overview panel
+    h("section", { className: "panel" },
+      h("div", { className: "panel-h" },
+        h("span", null, `Run · ${state.run_id}`),
+        h("span", null,
+          state.done
+            ? h("span", { className: "chip green" }, `DONE · ${state.done_reason || "?"}`)
+            : h("span", null,
+                h("span", { className: `dot ${state.process_alive ? "green" : "red"}` }),
+                state.process_alive ? "live" : "stopped")
+        )
+      ),
+      h("div", { className: "panel-b" },
+        h("div", { className: "row" },
+          h("div", { className: "kv" },
+            h("div", { className: "k" }, "latest thesis"),
+            h("div", { className: "v" }, state.latest_thesis || "—"),
+            h("div", { className: "k" }, "latest expression"),
+            h("div", { className: "v" }, state.latest_exp || "—"),
+            h("div", { className: "k" }, "process cpu"),
+            h("div", { className: "v" }, state.process_cpu ? `${state.process_cpu}%` : "—")
+          ),
+          h("div", { className: "kv" },
+            h("div", { className: "k" }, "expressions"),
+            h("div", { className: "v" },
+              `${state.total_expressions}`,
+              h("span", { className: "muted" }, ` / ${budget.max_trials || "?"}`)),
+            h("div", { className: "k" }, "theses"),
+            h("div", { className: "v" },
+              `${state.total_theses}`,
+              h("span", { className: "muted" }, ` / ${budget.max_theses_per_run || "?"}`))
+          )
+        )
+      )
+    ),
+
+    // Step pipeline
+    h("section", { className: "panel" },
+      h("div", { className: "panel-h" },
+        h("span", null, "Current step"),
+        h("span", { className: "muted" }, state.current_step_detail || "")
+      ),
+      h("div", { className: "panel-b" },
+        h("div", { className: "steps" },
+          STEP_ORDER.map((s, i) => {
+            const active = s.key === state.current_step;
+            const past = stepIndex > i && stepIndex !== -1;
+            return h("span", {
+              key: s.key,
+              className: `step ${active ? "active" : past ? "done" : ""}`,
+            }, s.label);
+          })
+        )
+      )
+    ),
+
+    // Budget bars
+    h("section", { className: "panel" },
+      h("div", { className: "panel-h" }, "Budget"),
+      h("div", { className: "panel-b", style: { display: "grid", gap: 10 } },
+        h(Bar, { label: "trials",
+          value: state.total_expressions, max: budget.max_trials || 0 }),
+        h(Bar, { label: "theses",
+          value: state.total_theses, max: budget.max_theses_per_run || 0 })
+      )
+    ),
+
+    // Mode distribution
+    h("section", { className: "panel" },
+      h("div", { className: "panel-h" }, "Failure-mode distribution"),
+      h("div", { className: "panel-b compact" },
+        h("table", null,
+          h("thead", null, h("tr", null,
+            h("th", null, "mode"), h("th", { className: "num" }, "count"))),
+          h("tbody", null,
+            Object.keys(state.mode_counter || {}).length === 0
+              ? h("tr", null, h("td", { colSpan: 2, className: "muted" }, "—"))
+              : Object.entries(state.mode_counter)
+                  .sort(([a], [b]) => a.localeCompare(b))
+                  .map(([m, n]) => h("tr", { key: m },
+                    h("td", null, h("span", { className: `chip ${fmtMode(m)}` }, m)),
+                    h("td", { className: "num" }, n))))
+        )
+      )
+    ),
+
+    // Recent expressions
+    h("section", { className: "panel" },
+      h("div", { className: "panel-h" }, "Recent expressions"),
+      h("div", { className: "panel-b compact" },
+        h("table", null,
+          h("thead", null, h("tr", null,
+            h("th", null, "thesis / expression"),
+            h("th", null, "mode"),
+            h("th", null, "verdict"),
+            h("th", { className: "num" }, "PF"),
+            h("th", null, ""))),
+          h("tbody", null,
+            (state.recent_entries || []).length === 0
+              ? h("tr", null, h("td", { colSpan: 5, className: "muted" }, "—"))
+              : state.recent_entries.map((e, i) => h("tr", {
+                  key: `${e.thesis_id}/${e.expression_id}/${i}`,
+                  className: "clickable",
+                  onClick: () => nav(
+                    `/s/${e.run_id}/${e.thesis_id}/${e.expression_id}`
+                  ),
+                },
+                  h("td", null,
+                    h("span", { className: "muted" }, e.thesis_id + " / "),
+                    h("b", null, e.expression_id)),
+                  h("td", null, h("span", { className: `chip ${fmtMode(e.failure_mode)}` },
+                    e.failure_mode || "—")),
+                  h("td", null, h("span", { className: `chip ${fmtVerdict(e.verdict_after)}` },
+                    e.verdict_after || "—")),
+                  h("td", { className: "num" },
+                    fmtNum((e.result || {}).profit_factor)),
+                  h("td", null, h("a", {
+                    href: `#/s/${e.run_id}/${e.thesis_id}/${e.expression_id}`,
+                  }, "open →")))))
+        )
+      )
+    )
+  );
+}
+
+function Bar({ label, value, max }) {
+  const pct = max > 0 ? Math.min(100, (value / max) * 100) : 0;
+  return h("div", null,
+    h("div", { style: { display: "flex", justifyContent: "space-between", marginBottom: 4 } },
+      h("span", { className: "muted" }, label),
+      h("span", { className: "num" }, `${value} / ${max || "?"}`)),
+    h("div", { className: "bar" }, h("span", { style: { width: `${pct}%` } })));
+}
+
+/* ============================================================================
+   Strategy detail (PnL + spec)
+============================================================================ */
+
+function StrategyDetail({ runId, thesisId, expressionId }) {
+  const [detail, setDetail] = useState(null);
+  const [equity, setEquity] = useState(null);
+  const [err, setErr] = useState(null);
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const d = await getJSON(`/api/strategy?run_id=${runId}&thesis_id=${thesisId}&expression_id=${expressionId}`);
+        if (!alive) return;
+        setDetail(d);
+        if (d.has_equity_curve) {
+          try {
+            const e = await getJSON(`/api/equity?run_id=${runId}&thesis_id=${thesisId}&expression_id=${expressionId}`);
+            if (alive) setEquity(e);
+          } catch (_) {}
+        }
+      } catch (e) {
+        if (alive) setErr(String(e));
+      }
+    })();
+    return () => { alive = false; };
+  }, [runId, thesisId, expressionId]);
+
+  if (err) return h("div", { className: "panel" },
+    h("div", { className: "panel-b bad" }, `Error: ${err}`));
+  if (!detail) return h("div", { className: "muted" }, "loading…");
+  if (detail.error) return h("div", { className: "panel" },
+    h("div", { className: "panel-b bad" }, detail.error));
+
+  const m = detail.metrics || {};
+
+  return h("div", { className: "grid" },
+    // Header card
+    h("section", { className: "panel" },
+      h("div", { className: "panel-h" },
+        h("span", null,
+          h("a", { href: "#/", className: "muted" }, "Catalogue"), " / ",
+          h("a", { href: `#/run/${runId}`, className: "muted" }, runId), " / ",
+          thesisId, " / ", h("b", null, expressionId)
+        ),
+        h("span", null,
+          detail.failure_mode && h("span", {
+            className: `chip ${fmtMode(detail.failure_mode)}`
+          }, detail.failure_mode)
+        )
+      ),
+      h("div", { className: "panel-b" },
+        h("div", { className: "row" },
+          h(MetricCard, { label: "Profit Factor", value: fmtNum(m.profit_factor), accent: (m.profit_factor >= 1.3) ? "ok" : "bad" }),
+          h(MetricCard, { label: "Total Return",  value: fmtPct(m.total_return),   accent: (m.total_return >= 0) ? "ok" : "bad" }),
+          h(MetricCard, { label: "Max Drawdown",  value: fmtPct(m.max_drawdown),   accent: "bad" }),
+          h(MetricCard, { label: "Win Rate",      value: fmtPct(m.win_rate) }),
+          h(MetricCard, { label: "Sharpe",        value: fmtNum(m.sharpe || m.sharpe_ratio) }),
+          h(MetricCard, { label: "Trades",        value: m.total_trades ?? "—" }),
+          h(MetricCard, { label: "Backtest wall", value: m.backtest_wall_seconds != null ? `${fmtNum(m.backtest_wall_seconds, 2)}s` : "—" }),
+          h(MetricCard, { label: "Ticks/sec",     value: m.tick_throughput != null ? Math.round(m.tick_throughput).toLocaleString() : "—" })
+        )
+      )
+    ),
+
+    // Equity curve
+    h("section", { className: "panel" },
+      h("div", { className: "panel-h" }, "Equity curve"),
+      h("div", { className: "panel-b" },
+        equity && equity.points && equity.points.length > 0
+          ? h(EquitySVG, { points: equity.points })
+          : h("div", { className: "muted" },
+              detail.has_equity_curve
+                ? "loading equity data…"
+                : "no equity_curve.parquet for this expression"))
+    ),
+
+    h("div", { className: "row" },
+      // Spec
+      h("section", { className: "panel" },
+        h("div", { className: "panel-h" }, "Algorithm prompt"),
+        h("div", { className: "panel-b" },
+          h("pre", { className: "code" }, detail.algorithm_prompt || "—"))
+      ),
+      // Backtest report
+      h("section", { className: "panel" },
+        h("div", { className: "panel-h" }, "Backtest report"),
+        h("div", { className: "panel-b" },
+          h("pre", { className: "code" }, detail.backtest_report || "—"))
+      )
+    ),
+
+    h("div", { className: "row" },
+      // Thesis
+      h("section", { className: "panel" },
+        h("div", { className: "panel-h" }, "Thesis"),
+        h("div", { className: "panel-b" },
+          h("pre", { className: "code" }, detail.thesis_md || "—"))
+      ),
+      // Verdict
+      h("section", { className: "panel" },
+        h("div", { className: "panel-h" }, "Verdict"),
+        h("div", { className: "panel-b" },
+          h("pre", { className: "code" }, detail.verdict_md || "(no verdict yet)"))
+      )
+    )
+  );
+}
+
+function MetricCard({ label, value, accent }) {
+  return h("div", {
+    className: "panel",
+    style: { background: "var(--panel-2)", border: "1px solid var(--line-2)" },
+  },
+    h("div", { style: { padding: "8px 12px" } },
+      h("div", { className: "muted", style: { fontSize: 10, letterSpacing: ".08em", textTransform: "uppercase" } }, label),
+      h("div", { className: accent || "", style: { fontSize: 18, marginTop: 2 } }, value))
+  );
+}
+
+function EquitySVG({ points }) {
+  const W = 1200, H = 280, PL = 48, PR = 12, PT = 12, PB = 28;
+  const w = W - PL - PR, hi = H - PT - PB;
+  const values = points.map(p => p.equity);
+  const minV = Math.min(...values), maxV = Math.max(...values);
+  const span = (maxV - minV) || 1;
+  const n = points.length;
+  const sx = i => PL + (i / Math.max(1, n - 1)) * w;
+  const sy = v => PT + hi - ((v - minV) / span) * hi;
+  const d = points.map((p, i) => `${i === 0 ? "M" : "L"}${sx(i).toFixed(1)},${sy(p.equity).toFixed(1)}`).join(" ");
+  const last = points[points.length - 1].equity;
+  const first = points[0].equity;
+  const neg = last < first;
+
+  const yTicks = 4;
+  const ticks = [];
+  for (let i = 0; i <= yTicks; i++) {
+    const v = minV + (i / yTicks) * span;
+    ticks.push({ v, y: sy(v) });
+  }
+
+  return h("svg", {
+    className: "chart", viewBox: `0 0 ${W} ${H}`, preserveAspectRatio: "none",
+  },
+    // grid
+    ticks.map((t, i) => h("line", {
+      key: `g${i}`, x1: PL, x2: W - PR, y1: t.y, y2: t.y, className: "grid"
+    })),
+    // axis
+    h("line", { x1: PL, x2: W - PR, y1: H - PB, y2: H - PB, className: "axis" }),
+    // y labels
+    ticks.map((t, i) => h("text", {
+      key: `y${i}`, x: 10, y: t.y + 3, className: "label"
+    }, t.v.toFixed(2))),
+    // curve
+    h("path", { d, className: `curve${neg ? " neg" : ""}` }),
+    // end-label
+    h("text", { x: W - PR - 4, y: sy(last) - 4, textAnchor: "end", className: "label" },
+      last.toFixed(2))
+  );
+}
+
+/* ============================================================================
+   App
+============================================================================ */
+
+function useHashRoute() {
+  const [route, setRoute] = useState(parseHash());
+  useEffect(() => {
+    const onHash = () => setRoute(parseHash());
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, []);
+  return route;
+}
+
+function useClock() {
+  const [now, setNow] = useState(() => new Date());
+  useEffect(() => {
+    const id = setInterval(() => setNow(new Date()), 1000);
+    return () => clearInterval(id);
+  }, []);
+  return now.toISOString().replace("T", " ").slice(0, 19) + " UTC";
+}
+
+function App() {
+  const route = useHashRoute();
+  const clock = useClock();
+  let body;
+  if (route.page === "run") body = h(RunDashboard, { runId: route.runId });
+  else if (route.page === "strategy") body = h(StrategyDetail, {
+    runId: route.runId, thesisId: route.thesisId, expressionId: route.expressionId,
+  });
+  else body = h(Catalogue);
+
+  return h("div", { className: "shell" },
+    h(Topbar, { route, clock }),
+    h("main", null, body)
+  );
+}
+
+createRoot(document.getElementById("root")).render(h(App));
+</script>
+
+</body>
+</html>

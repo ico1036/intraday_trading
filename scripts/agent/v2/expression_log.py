@@ -77,6 +77,7 @@ class ExpressionLogEntry:
     artifact_path: str
     result: dict[str, Any] | None = None
     addresses: str | None = None
+    iter_duration_s: float | None = None
     ts: str = field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat(timespec="seconds")
     )
@@ -84,7 +85,7 @@ class ExpressionLogEntry:
     def to_json_dict(self) -> dict[str, Any]:
         out = asdict(self)
         # Normalise: drop None-valued optional keys for leaner lines.
-        for optional in ("result", "addresses"):
+        for optional in ("result", "addresses", "iter_duration_s"):
             if out.get(optional) is None:
                 out.pop(optional)
         return out

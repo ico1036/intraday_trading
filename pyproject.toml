@@ -16,7 +16,9 @@ dependencies = [
     "pyarrow>=14.0.0",
     "requests>=2.31.0",
     "matplotlib>=3.8.0",
-    "claude-agent-sdk>=0.1.0",
+    "claude-agent-sdk>=0.1.65",
+    "PyYAML>=6.0",
+    "python-dotenv>=1.0.0",
 ]
 
 [project.optional-dependencies]
@@ -50,8 +52,27 @@ exclude = ["**/__pycache__", ".venv"]
 reportMissingImports = true
 reportMissingTypeStubs = false
 
-[dependency-groups]
-dev = [
-    "pytest-asyncio>=1.3.0",
+[tool.pytest.ini_options]
+addopts = [
+    "--disable-warnings",
+    "--maxfail=1",
+]
+asyncio_mode = "auto"
+pythonpath = ["src"]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+markers = [
+    "integration: marks tests as integration (requires network, real Binance data)",
+    "slow: marks tests as slow (use real data backtest)",
 ]
 
+[dependency-groups]
+dev = [
+    "ruff>=0.1.0",
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.21.0",
+    "pytest-cov>=4.1.0",
+    "pytest-mock>=3.12.0",
+]

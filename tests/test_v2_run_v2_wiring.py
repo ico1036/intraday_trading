@@ -68,6 +68,20 @@ def test_run_v2_rejects_invalid_plan_on_run(tmp_path, monkeypatch):
     assert rc == 3  # PLAN.md invalid exit code
 
 
+def test_run_v2_refuses_run_with_placeholder_strategy_request(tmp_path, monkeypatch):
+    from scripts.agent.v2 import scaffold
+
+    monkeypatch.setattr(scaffold, "ARCHIVE_ROOT", tmp_path)
+
+    # Scaffold with default PLAN.md — contains the <write here> placeholder.
+    rc = run_v2.main(["placeholder_smoke", "--prepare", "--no-edit"])
+    assert rc == 0
+
+    # --run with --no-edit: placeholder check should fire and bail out.
+    rc = run_v2.main(["placeholder_smoke", "--run", "--no-edit"])
+    assert rc == 4
+
+
 def test_run_v2_import_is_top_level_safe():
     """Module import must not require SDK; SDK loads lazily inside helper."""
     # Simulate a second import — should succeed without side effects.

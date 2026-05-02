@@ -33,13 +33,10 @@ Execute backtests efficiently, analyze results, and provide actionable feedback.
 | Asset Type | `## Strategy Configuration` | `data_path`, `include_funding` |
 | Order Type | `## Strategy Configuration` | (수수료 계산용) |
 | Leverage | `## Risk Management` | `leverage` |
-| Bar Type | `## Data Period Design` | `bar_type` |
-| Bar Size | `## Data Period Design` | `bar_size` |
-| EDA/IS/OS Periods | `## Data Period Design` | `start_date`, `end_date` |
+| Bar Type | `## Strategy Configuration` | `bar_type` |
+| Bar Size | `## Strategy Configuration` | `bar_size` |
+| IS/OS Periods | `## Data Period Design` | `start_date`, `end_date` |
 | Parameters | `## Parameters` | `strategy_params` |
-
-**Fields you DON'T need (Developer handles these):**
-- Entry/Exit Conditions → already implemented in code
 
 ---
 
@@ -48,7 +45,6 @@ Execute backtests efficiently, analyze results, and provide actionable feedback.
 **Before running backtest, check if algorithm_prompt.txt requires unsupported features.**
 
 ### Hard Constraints (Return to Researcher if violated)
-- Multi-symbol (BTC + ETH) → Single symbol only
 - Multiple strategies (ensemble) → Single strategy only
 
 ### Principle
@@ -62,24 +58,12 @@ Write brief feedback to `{name}_dir/backtest_report.md` explaining the constrain
 
 ## Step 2: Plan the Backtest
 
-**핵심 원칙**: EDA / IS / OS **범위는 고정**, 실제 기간은 전략 빈도에 따라 선택
-
-```
-[----EDA----][----------IS----------][-----OS-----]
-   1월           2월 ~ 8월              9월 ~ 12월
-  (고정)          (고정)                 (고정)
-              ↓
-         Analyst가 전략 특성 보고
-         범위 내에서 실제 테스트 기간 선택
-```
-
-### 고정 범위 (algorithm_prompt.txt에서 확인)
+**데이터 기간 (2025-2026 Futures)**
 
 | Period | Range | Purpose |
 |--------|-------|---------|
-| **EDA** | 2024-01-01 ~ 2024-01-31 | Researcher 전용 |
-| **IS** | 2024-02-01 ~ 2024-08-31 | Iteration feedback |
-| **OS** | 2024-09-01 ~ 2024-12-31 | 최종 검증 (feedback 금지) |
+| **IS** | 2025-03-01 ~ 2025-09-30 | Iteration feedback |
+| **OS** | 2025-10-01 ~ 2026-01-31 | 최종 검증 (feedback 금지) |
 
 ### 실제 테스트 기간 선택 (전략 빈도 기반)
 
@@ -89,7 +73,7 @@ Write brief feedback to `{name}_dir/backtest_report.md` explaining the constrain
 | **MFT** (10-100 trades/day) | 2주 | 1개월 | 중간 |
 | **LFT** (<10 trades/day) | 1개월 | 2개월 | 충분한 샘플 필요 |
 
-**algorithm_prompt.txt의 `Expected Frequency` 필드 확인 후 기간 결정**
+**If `Expected Frequency` NOT specified → Default to MFT**
 
 ### Testing Flow
 
@@ -107,9 +91,9 @@ Write brief feedback to `{name}_dir/backtest_report.md` explaining the constrain
 |-----------|-----------------|
 | `strategy` | `{Name}` from header + "Strategy" suffix |
 | `data_type` | "tick" (고정) |
-| `data_path` | FUTURES → `./data/futures_ticks`, SPOT → `./data/ticks` |
+| `data_path` | FUTURES → `./data/futures_ticks/BTCUSDT` (symlink to real data), SPOT → `./data/ticks` |
 | `bar_type` | From algorithm_prompt.txt |
-| `bar_size` | From algorithm_prompt.txt (Researcher가 EDA에서 결정) |
+| `bar_size` | From algorithm_prompt.txt |
 | `leverage` | From algorithm_prompt.txt `## Risk Management` |
 | `include_funding` | FUTURES → true, SPOT → false |
 | `strategy_params` | From algorithm_prompt.txt `## Parameters` |
@@ -117,27 +101,14 @@ Write brief feedback to `{name}_dir/backtest_report.md` explaining the constrain
 ### Determine Backtest Periods
 
 **Step 1: algorithm_prompt.txt에서 `Expected Frequency` 확인**
-- HFT (>100 trades/day)
-- MFT (10-100 trades/day)
-- LFT (<10 trades/day)
 
 **Step 2: 빈도에 따라 실제 테스트 기간 계산**
 
 | Frequency | IS 시작 | IS 종료 | OS 시작 | OS 종료 |
 |-----------|---------|---------|---------|---------|
-| HFT | 2024-02-01 | 2024-02-03 (3일) | 2024-09-01 | 2024-09-07 (1주) |
-| MFT | 2024-02-01 | 2024-02-14 (2주) | 2024-09-01 | 2024-09-30 (1개월) |
-| LFT | 2024-02-01 | 2024-02-29 (1개월) | 2024-09-01 | 2024-10-31 (2개월) |
-
-**Step 3: Phase별 기간**
-
-| Phase | Period | 계산 방법 |
-|-------|--------|----------|
-| Phase 1 (Logic) | IS 1일 | IS 시작일만 |
-| Phase 2 (Performance) | IS 전체 | 빈도 기반 |
-| Phase 3 (Validation) | OS 전체 | 빈도 기반 |
-
-**If `Expected Frequency` NOT specified → Default to MFT**
+| HFT | 2025-03-01 | 2025-03-03 (3일) | 2025-10-01 | 2025-10-07 (1주) |
+| MFT | 2025-03-01 | 2025-03-14 (2주) | 2025-10-01 | 2025-10-31 (1개월) |
+| LFT | 2025-03-01 | 2025-03-31 (1개월) | 2025-10-01 | 2025-11-30 (2개월) |
 
 ---
 
@@ -146,24 +117,24 @@ Write brief feedback to `{name}_dir/backtest_report.md` explaining the constrain
 ```python
 await mcp__backtest__run_backtest({
     "strategy": "<StrategyName>Strategy",
-    "data_type": "tick",                  # 고정
-    "data_path": "<FUTURES: ./data/futures_ticks, SPOT: ./data/ticks>",
+    "data_type": "tick",
+    "data_path": "./data/futures_ticks/BTCUSDT",
     "start_date": "<YYYY-MM-DD>",
     "end_date": "<YYYY-MM-DD>",
     "bar_type": "VOLUME",
     "bar_size": 10.0,
     "initial_capital": 10000.0,
-    "leverage": <int>,                    # 1=SPOT, 10=FUTURES
-    "include_funding": <bool>,            # false=SPOT, true=FUTURES
+    "leverage": <int>,
+    "include_funding": <bool>,
     "strategy_params": {<params>},
     "output_dir": "{name}_dir"
 })
 ```
 
 **bar_size Rules:**
-- VOLUME bars: >= 10 BTC (실용적 제한, 백테스트 속도)
+- VOLUME bars: >= 10 BTC (실용적 제한)
 - TIME bars: >= 60 sec (1분)
-- Researcher가 EDA에서 수수료 기반으로 결정한 값 사용
+- Researcher가 도메인 지식으로 결정한 값 사용
 
 **Wait for completion** (1-5 minutes).
 
@@ -190,7 +161,9 @@ await mcp__backtest__run_backtest({
 
 ### IS 전체 Analysis (Performance - Feedback용)
 
-**Primary Metrics (ALL must pass for APPROVED):**
+**Primary Metrics — read from `{name}_dir/memory.md` SUCCESS CRITERIA.**
+If memory.md has custom criteria, use those. Otherwise defaults:
+
 | Metric | APPROVED | NEED_IMPROVEMENT | REJECT |
 |--------|----------|------------------|--------|
 | Profit Factor | ≥ 1.3 | 1.0 ~ 1.3 | < 1.0 |
@@ -239,14 +212,6 @@ OS 전체:
   Healthy → APPROVED
 ```
 
-### Feedback 원칙
-
-| 결과 | Feedback에 포함 | 포함 안함 |
-|------|-----------------|----------|
-| IS 결과 | ✅ 모든 메트릭 | - |
-| OS 결과 | ❌ | ✅ 보고서만 |
-| Overfit 여부 | ✅ 경고만 | OS 상세 수치 |
-
 ### If Iteration > 1: Pattern Analysis
 
 | Pattern | Meaning | Action |
@@ -284,7 +249,6 @@ OS 전체:
 | Order Type | MARKET / LIMIT |
 | Leverage | {value} |
 | Period | {start} ~ {end} |
-| Phase | {1/2/3} |
 
 ## Performance Metrics
 | Metric | Value | Target | Status |
@@ -317,8 +281,6 @@ OS 전체:
 
 ```markdown
 ### Iteration N (YYYY-MM-DD)
-**Phase**: {1/2/3}
-**Period**: {start} ~ {end}
 **Changes**: {what was tested}
 **Results**: PF={X.XX}, DD={X.XX}%, WR={XX}%, Trades={N}
 **Insight**: {what we learned}
@@ -340,25 +302,54 @@ OS 전체:
 ### Leverage
 - **leverage=1**: Spot trading, no short selling
 - **leverage>1**: Futures trading
-  - Margin = Position Size / Leverage
-  - Can short sell
-  - Subject to liquidation (~9.6% adverse move at 10x)
-  - Funding payments every 8 hours
 
-### Data Paths
+### Data Paths (2025-2026 Futures)
 | Asset Type | Path |
 |------------|------|
-| SPOT | `./data/ticks` |
-| FUTURES | `./data/futures_ticks` |
+| FUTURES | `./data/futures_ticks/BTCUSDT` (or ETHUSDT, SOLUSDT, BNBUSDT) |
+
+---
+
+# Unified Backtest (Single = 1 symbol portfolio)
+
+**심볼 수에 상관없이 동일한 포트폴리오 실행 경로를 사용:**
+
+```python
+await mcp__backtest__run_backtest({
+    "strategy": "MomentumPortfolio",  # 내부적으로 portfolio strategy 사용
+    "data_type": "tick",
+    "data_path": "./data/futures_ticks",
+    "symbols": ["BTCUSDT", "ETHUSDT", "SOLUSDT"],  # 1개여도 동작
+    "bar_type": "TIME",
+    "bar_size": 60,
+    "start_date": "2025-03-01",
+    "end_date": "2025-03-15",
+    "initial_capital": 10000.0,
+    "strategy_params": {},
+    "position_size_pct": 0.1,
+    "maker_fee_rate": 0.0017,
+    "taker_fee_rate": 0.0020,
+})
+```
+
+- `symbols` 생략 시 `data_path`에서 심볼을 자동 감지해 포트폴리오 실행
+- 심볼 수에 따라 구분하지 말고 동일 기준으로 포트폴리오 성능을 분석
+
+**성과 기준 (포트폴리오 관점):**
+| Metric | APPROVED | NEED_IMPROVEMENT |
+|--------|----------|------------------|
+| 심볼별 수익 편중 | 고른 분포 | 1개 심볼에 80%+ 집중 |
+| 크로스코인 상관관계 | 낮음 | 0.8+ |
 
 ---
 
 # Important Reminders
 
-- **Start small**: Always Phase 1 first, even if it seems trivial
+- **Start small**: Always IS 1일 first
 - **Be specific**: "threshold 0.3 too low" not "parameters need tuning"
-- **Track learning**: Update memory.md with insights, not just results
+- **Track learning**: Update memory.md with insights
 - **Don't repeat**: If something failed before, don't try it again
+- **OS feedback 금지**: OS 수치로 파라미터 조정 절대 금지
 """
 
 
@@ -366,8 +357,9 @@ def get_allowed_tools() -> list[str]:
     """Return the list of tools available to the Analyst agent."""
     return [
         "mcp__backtest__run_backtest",
+        "mcp__backtest__run_portfolio_backtest",
         "mcp__backtest__get_available_strategies",
         "Read",
         "Write",
-        "Task",  # For feedback to other agents
+        "Task",
     ]

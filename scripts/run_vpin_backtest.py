@@ -12,8 +12,7 @@ VPIN(Volume-Synchronized Probability of Informed Trading) 기반 breakout 전략
     # 시각화 포함
     python scripts/run_vpin_backtest.py --visualize
 
-    # 리포트 저장
-    python scripts/run_vpin_backtest.py --save-report
+    # 리포트는 기본 저장
 
 교육 포인트:
     1. VPIN: Order flow toxicity 지표
@@ -56,11 +55,6 @@ def main():
         type=str,
         default=None,
         help="시각화 파일 저장 경로",
-    )
-    parser.add_argument(
-        "--save-report",
-        action="store_true",
-        help="리포트 저장 (Parquet + PNG)",
     )
     parser.add_argument(
         "--report-dir",
@@ -186,12 +180,11 @@ def main():
 
         print(f"\n시각화 파일 저장됨: {output_file}")
 
-    # === 7. 리포트 저장 (옵션) ===
-    if args.save_report:
-        print("\n[Step 7] 리포트 저장...")
+    # === 7. 리포트 저장 ===
+    print("\n[Step 7] 리포트 저장...")
 
-        report_dir = runner.save_report(args.report_dir)
-        print(f"\n리포트 저장됨: {report_dir}")
+    report_dir = runner.save_report(args.report_dir)
+    print(f"\n리포트 저장됨: {report_dir}")
 
 
 if __name__ == "__main__":

@@ -302,6 +302,50 @@ runner = TickBacktestRunner(strategy=strategy, leverage=10, funding_loader=loade
 
 # Reference: Framework Guardrails
 
+## Portfolio Strategy Implementation
+
+**기본적으로 모든 전략은 하나의 `Strategy` 인터페이스로 작성하고,
+실행은 포트폴리오 런처가 자동으로 처리한다.**
+심볼 수(1개/여러 개)와 무관하게 동일 포트폴리오 엔진(`run_backtest`)을 사용한다.
+
+```python
+# src/intraday/strategies/{tick|multi}/{name}.py
+from intraday.strategy import MarketState, Order, Side, OrderType, PortfolioOrder
+
+class {Name}Strategy:
+    \"\"\"Strategy returning Order or PortfolioOrder.\"\"\"
+
+    def generate_order(self, state: MarketState) -> PortfolioOrder | Order | None:
+        if state.panel is None:
+            return None
+
+        orders = {}
+        # Cross-sectional 분석 후 주문 결정
+        # - 1심볼: state.symbol 기준 1개 주문
+        # - 다중 심볼: symbols 루프 후 PortfolioOrder
+        return PortfolioOrder(orders=orders)
+```
+
+**MarketState 포트폴리오 확장 필드:**
+```python
+state.symbol     # 캔들이 완성된 심볼
+state.panel      # {symbol: {open, high, low, close, volume, vwap, volume_imbalance}}
+state.positions  # {symbol: {side, qty, entry_price}}
+```
+
+**테스트:**
+```python
+# tests/test_strategy_{name}.py
+state = MarketState(
+    ...,
+    symbol="BTCUSDT",
+    panel={"BTCUSDT": {"close": 50000, ...}, "ETHUSDT": {"close": 3000, ...}},
+    positions={"BTCUSDT": {"side": "LONG", "qty": 0.01, "entry_price": 49500}},
+)
+result = strategy.generate_order(state)
+assert isinstance(result, PortfolioOrder)
+```
+
 ## 수정 금지 (DO NOT MODIFY)
 | 파일 | 이유 |
 |-----|------|
