@@ -275,6 +275,34 @@ class TestPortfolioForwardRunner:
         assert not runner._running
         assert runner._start_time is not None
 
+    def test_run_stops_on_zero_duration(self):
+        """duration=0도 무한 실행이 아니라 즉시 종료로 처리"""
+        strategy = PortfolioMomentum(
+            symbols=["BTCUSDT", "ETHUSDT"],
+            lookback_minutes=60,
+            top_n=1,
+            bottom_n=1,
+        )
+
+        runner = PortfolioForwardRunner(
+            strategy=strategy,
+            symbols=["BTCUSDT", "ETHUSDT"],
+            candle_type=CandleType.TIME,
+            candle_size=300,
+            initial_capital=10000,
+            rebalance_minutes=10,
+        )
+
+        client = AsyncMock()
+        client.connect = AsyncMock()
+        client.disconnect = AsyncMock()
+
+        with patch("intraday.multi_forward_runner.BinanceAggTradeClient", return_value=client):
+            asyncio.run(runner.run(duration_seconds=0))
+
+        assert not runner._running
+        assert client.disconnect.await_count == 2
+
     def test_rebalance_updates_last_time_for_momentum(self):
         """momentum 파이프라인에서도 리밸런스 타임스탬프가 갱신되는지 확인"""
         strategy = PortfolioMomentum(

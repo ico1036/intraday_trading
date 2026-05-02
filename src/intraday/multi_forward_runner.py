@@ -742,7 +742,7 @@ class PortfolioForwardRunner:
         print(f"Capital:    ${self.initial_capital:,.2f}")
         print(f"Fee Rate:   {self.fee_rate * 100:.2f}%")
         print(f"Rebalance:  {self.rebalance_minutes} min")
-        print(f"Duration:   {duration_seconds}s" if duration_seconds else "∞ (Ctrl+C)")
+        print(f"Duration:   {duration_seconds}s" if duration_seconds is not None else "∞ (Ctrl+C)")
         print("=" * 60)
 
         client_tasks: list[asyncio.Task] = []
@@ -758,7 +758,11 @@ class PortfolioForwardRunner:
             client_tasks.append(asyncio.create_task(client.connect(on_trade=make_callback(symbol))))
 
         status_task = asyncio.create_task(self._status_printer())
-        timer_task = asyncio.create_task(self._stop_after(duration_seconds)) if duration_seconds else None
+        timer_task = (
+            asyncio.create_task(self._stop_after(duration_seconds))
+            if duration_seconds is not None
+            else None
+        )
         autosave_task = asyncio.create_task(self._auto_save_loop()) if self.auto_save_interval_seconds else None
 
         try:
@@ -822,7 +826,6 @@ class PortfolioForwardRunner:
 
     async def _stop_after(self, seconds: float) -> None:
         await asyncio.sleep(seconds)
-        await self.stop()
 
     async def stop(self) -> None:
         self._running = False
@@ -918,4 +921,3 @@ class PortfolioForwardRunner:
             "portfolio": nav_parquet,
             "summary_csv": summary_csv,
         }
-
