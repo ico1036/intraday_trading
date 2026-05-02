@@ -32,7 +32,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from datetime import date  # noqa: E402
 
 from scripts.agent.v2 import orchestrator, sdk_coordinator  # noqa: E402
-from scripts.agent.v2.agents import analyst, developer, researcher  # noqa: E402
+from scripts.agent.v2.agents import single  # noqa: E402
 from scripts.agent.v2.deterministic import oos_clamp  # noqa: E402
 from scripts.agent.v2.deterministic import plan as plan_mod  # noqa: E402
 from scripts.agent.v2.scaffold import (  # noqa: E402
@@ -106,19 +106,17 @@ def _resolve_cli_path() -> str | None:
 def _build_sdk_invoke(*, os_end: date) -> sdk_coordinator.InvokeFn:
     """Return an invoke function backed by ``claude_agent_sdk``.
 
-    The returned function spawns one ``ClaudeSDKClient`` per agent call with:
-        - the agent definitions produced by ``scripts.agent.v2.agents``
-        - a PreToolUse hook that clamps OOS dates to ``os_end``
+    The returned function uses one Claude SDK agent for every phase call.
+    The Python orchestrator still calls the phases in order, but there are no
+    Task subagents and no ``AgentDefinition`` objects.
 
     Imports happen at function build time so the tree stays importable even
     in environments where the SDK is not installed.
     """
     from claude_agent_sdk import (  # type: ignore
-        AgentDefinition,
         AssistantMessage,
         ClaudeAgentOptions,
         ClaudeSDKClient,
-        HookMatcher,
         TextBlock,
         ToolUseBlock,
         create_sdk_mcp_server,
@@ -138,65 +136,42 @@ def _build_sdk_invoke(*, os_end: date) -> sdk_coordinator.InvokeFn:
         tools=[run_backtest, run_portfolio_backtest, get_available_strategies],
     )
 
-    agents = {
-        "researcher": AgentDefinition(
-            description="Proposes a thesis or composes a new expression.",
-            prompt=researcher.identity_prompt(),
-            tools=["Read", "Write", "WebSearch"],
-        ),
-        "developer": AgentDefinition(
-            description="Implements a strategy and its tests.",
-            prompt=developer.identity_prompt(),
-            tools=["Read", "Write", "Edit", "Bash"],
-        ),
-        "analyst": AgentDefinition(
-            description="Runs backtests and tags failure modes.",
-            prompt=analyst.identity_prompt(),
-            tools=[
-                "Read",
-                "Write",
-                "mcp__backtest__run_backtest",
-                "mcp__backtest__run_portfolio_backtest",
-            ],
-        ),
-    }
-
     _ = oos_clamp.build_hook(os_end=os_end)  # noqa: F841 — kept for re-enable
 
     cli_path = _resolve_cli_path()
     if cli_path:
         print(f"[sdk] using claude CLI: {cli_path}", flush=True)
 
-    orchestrator_system = (
-        "You are a dispatch orchestrator. Your only job is to invoke the "
-        "specified subagent via the Task tool with the given prompt. You "
-        "do not have file I/O or code-execution tools — you cannot do the "
-        "subagent's work yourself. Call Task, then wait for it to return."
-    )
+    system_prompt = single.identity_prompt()
 
-    async def _invoke_async(agent_name: str, task_prompt: str) -> None:
+    async def _invoke_async(phase_name: str, task_prompt: str) -> None:
         # NOTE: the OOS clamp hook is temporarily disabled while we diagnose
         # an SDK error_during_execution. Phase 3 ships the hook factory and
         # tests; wiring it back here depends on the correct return signature
         # for this SDK version.
         options = ClaudeAgentOptions(
-            system_prompt=orchestrator_system,
+            system_prompt=system_prompt,
             permission_mode="bypassPermissions",
-            agents=agents,
             mcp_servers={"backtest": backtest_server},
-            # Task only — denies the orchestrator any escape hatch to do the
-            # subagent's work itself. All file I/O happens inside subagents
-            # via the tools declared on each AgentDefinition.
-            allowed_tools=["Task"],
+            allowed_tools=[
+                "Read",
+                "Write",
+                "Edit",
+                "Bash",
+                "WebSearch",
+                "mcp__backtest__run_backtest",
+                "mcp__backtest__run_portfolio_backtest",
+                "mcp__backtest__get_available_strategies",
+            ],
             cli_path=cli_path,
         )
         user_message = (
-            f"Please invoke the `{agent_name}` subagent using the Task "
-            f"tool. Use this prompt verbatim:\n\n{task_prompt}"
+            f"## Phase: {phase_name}\n\n"
+            "Execute this phase yourself. Do not delegate.\n\n"
+            f"{task_prompt}"
         )
 
-        print(f"\n[sdk] ▶ invoking {agent_name} ...", flush=True)
-        task_called = False
+        print(f"\n[sdk] ▶ running phase {phase_name} ...", flush=True)
         message_count = 0
         async with ClaudeSDKClient(options=options) as client:
             await client.query(user_message)
@@ -213,8 +188,6 @@ def _build_sdk_invoke(*, os_end: date) -> sdk_coordinator.InvokeFn:
                                 f"\n[sdk] ▸ tool={block.name} "
                                 f"input_keys={list((block.input or {}).keys())}"
                             )
-                            if block.name == "Task":
-                                task_called = True
                         else:
                             sys.stdout.write(f"\n[sdk] ▸ block={block_type}")
                         sys.stdout.flush()
@@ -235,20 +208,13 @@ def _build_sdk_invoke(*, os_end: date) -> sdk_coordinator.InvokeFn:
                             sys.stdout.write(f" {attr}={getattr(message, attr)!r}")
                     sys.stdout.flush()
         print(
-            f"\n[sdk] ✓ {agent_name} returned "
-            f"(messages={message_count}, task_called={task_called})",
+            f"\n[sdk] ✓ phase {phase_name} returned "
+            f"(messages={message_count})",
             flush=True,
         )
-        if not task_called:
-            print(
-                f"[sdk] WARNING: orchestrator returned without calling Task. "
-                f"The `{agent_name}` subagent was NOT invoked.",
-                file=sys.stderr,
-                flush=True,
-            )
 
-    def _invoke(agent_name: str, task_prompt: str) -> None:
-        asyncio.run(_invoke_async(agent_name, task_prompt))
+    def _invoke(phase_name: str, task_prompt: str) -> None:
+        asyncio.run(_invoke_async(phase_name, task_prompt))
 
     return _invoke
 

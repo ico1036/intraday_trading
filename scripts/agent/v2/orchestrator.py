@@ -7,11 +7,11 @@ implements the :class:`AgentCoordinator` protocol. Real wiring in
 Data flow per iteration:
 
     1. Pick active thesis (or mint a new one if all prior are terminal).
-    2. Call researcher (``new_thesis`` on first-of-thesis, else
+    2. Run the research phase (``new_thesis`` on first-of-thesis, else
        ``compose_expression``).
     3. Persist ``algorithm_prompt.txt`` under the expression directory.
-    4. Call developer → strategy code.
-    5. Call analyst → returns ``(metrics, failure_mode)``.
+    4. Run the development phase → strategy code.
+    5. Run the analysis phase → returns ``(metrics, failure_mode)``.
     6. Build seen list, run thesis_gate → verdict.
     7. Write verdict.md.
     8. Append to expression_log.jsonl (and seen_failure_modes.jsonl).
@@ -242,7 +242,7 @@ def run(
         iter_start = time.perf_counter()
         active_thesis = _pick_active_thesis(run_dir, plan)
 
-        # ----- 1. Researcher: new_thesis or compose_expression --------------
+        # ----- 1. Research phase: new_thesis or compose_expression ----------
         if active_thesis is None:
             # Check budget: can we even mint another thesis?
             n_theses = len(list((run_dir / "theses").glob("th_*")))
@@ -301,10 +301,10 @@ def run(
         exp_dir.mkdir(parents=True, exist_ok=True)
         (exp_dir / "algorithm_prompt.txt").write_text(expr_text)
 
-        # ----- 3. Developer -------------------------------------------------
+        # ----- 3. Development phase ----------------------------------------
         coord.develop(DeveloperRequest(algorithm_prompt=parsed, workdir=exp_dir))
 
-        # ----- 4. Analyst ---------------------------------------------------
+        # ----- 4. Analysis phase -------------------------------------------
         analyst_resp = coord.analyze(
             AnalystRequest(algorithm_prompt=parsed, workdir=exp_dir, plan=plan)
         )

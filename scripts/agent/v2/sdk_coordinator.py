@@ -1,9 +1,8 @@
 """Claude Agent SDK adapter for the v2 orchestrator.
 
 Implements the :class:`~scripts.agent.v2.orchestrator.AgentCoordinator`
-protocol by dispatching each call to a subagent (``researcher`` /
-``developer`` / ``analyst``) and reading back the artefacts they wrote to
-disk.
+protocol by dispatching each phase prompt to one SDK agent and reading back
+the artefacts it wrote to disk.
 
 The LLM-facing part is ``_invoke`` — a single synchronous shim that we
 monkeypatch in tests to avoid real SDK calls while still exercising the
@@ -27,7 +26,7 @@ from scripts.agent.v2.deterministic import plan as plan_mod
 
 
 InvokeFn = Callable[[str, str], None]
-"""``(subagent_name, task_prompt) -> None``; side-effects are on-disk files."""
+"""``(phase_name, task_prompt) -> None``; side-effects are on-disk files."""
 
 
 # ---------------------------------------------------------------------------
@@ -42,7 +41,7 @@ class SDKCoordinator:
     invoke: InvokeFn
     plan_path: Path | None = None
 
-    # ------------------------------------------------------------------ researcher
+    # ------------------------------------------------------------------ research phase
 
     def new_thesis(self, req: orch.NewThesisRequest) -> orch.NewThesisResponse:
         prompt = researcher.new_thesis_task(
@@ -107,7 +106,7 @@ class SDKCoordinator:
             )
         return orch.ComposeExpressionResponse(algorithm_prompt_text=path.read_text())
 
-    # ------------------------------------------------------------------ developer
+    # ------------------------------------------------------------------ development phase
 
     def develop(self, req: orch.DeveloperRequest) -> orch.DeveloperResponse:
         ap_path = req.workdir / "algorithm_prompt.txt"
@@ -118,7 +117,7 @@ class SDKCoordinator:
         self.invoke("developer", prompt)
         return orch.DeveloperResponse(ok=True)
 
-    # ------------------------------------------------------------------ analyst
+    # ------------------------------------------------------------------ analysis phase
 
     def analyze(self, req: orch.AnalystRequest) -> orch.AnalystResponse:
         plan_path = self.plan_path or (self.run_dir / "PLAN.md")

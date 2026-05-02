@@ -12,9 +12,10 @@ loop driven by agent judgment. This produces two known failure modes:
 1. Parameter-space exhaustion gets misrouted as algorithm redesign.
 2. Hypothesis is abandoned before representation space has been explored.
 
-v2 separates three axes:
+v2 uses one SDK agent, driven by the Python orchestrator through explicit
+phase prompts. It separates three axes:
 
-- **Parameter** — numeric knobs within an expression. Developer handles.
+- **Parameter** — numeric knobs within an expression. The development phase handles.
 - **Expression** — a point in `config/expression_axes.yaml`. Same thesis,
   different representation.
 - **Thesis** — the underlying economic claim. Changes only via a
@@ -54,7 +55,7 @@ intraday_trading/
 │   │       ├── spec.md                 # axis choices + param values
 │   │       ├── algorithm_prompt.txt    # v2 schema
 │   │       ├── backtest_report.md
-│   │       ├── failure_mode.txt        # enum tag (Analyst output)
+│   │       ├── failure_mode.txt        # enum tag (analysis output)
 │   │       └── addresses.txt           # "this exp targets prior failure X"
 │   └── DONE                      # sentinel, written by exit_check
 │
@@ -77,7 +78,7 @@ intraday_trading/
     │       ├── oos_clamp.py
     │       ├── integrity_test.py
     │       └── build_wiki.py
-    └── agents/                   # prompts; will be updated in Phase 1
+    └── agents/                   # single-agent identity + phase prompts
 ```
 
 ## Flow (Phase 2 complete view)
@@ -86,24 +87,24 @@ intraday_trading/
 user → PLAN.md (editor)
          │
          ▼
-Orchestrator loop:
+Orchestrator loop, one SDK agent:
    ┌────────────────────────────────────────────────┐
-   │ Researcher.compose_expression OR new_thesis    │
+   │ Research phase: compose_expression OR thesis   │
    │   - new_thesis path runs thesis_fingerprint    │
    │     and blocks on wiki/refuted_theses.md match │
    ├────────────────────────────────────────────────┤
-   │ Developer → strategy code + tests              │
+   │ Development phase → strategy code + tests      │
    ├────────────────────────────────────────────────┤
-   │ Analyst → runs backtest, tags failure_mode     │
+   │ Analysis phase → backtest, artifacts, tag      │
    │   (enum ONLY, no verdict language)             │
    ├────────────────────────────────────────────────┤
    │ ★ thesis_gate.py reads seen_failure_modes      │
    │   Emits verdict.md:                            │
-   │     ACTIVE → Researcher.compose_expression     │
+   │     ACTIVE → compose_expression                │
    │     EXHAUSTED → compose_expression, new axis   │
    │     SCOPE_RESTRICTED → compose_expression +    │
    │                        regime/universe filter  │
-   │     REFUTED → Researcher.new_thesis            │
+   │     REFUTED → new_thesis                       │
    ├────────────────────────────────────────────────┤
    │ exit_check.py → targets met? budget gone?      │
    │   yes → write DONE, break                      │
@@ -128,6 +129,6 @@ Orchestrator loop:
 
 1. **Agents never write `verdict.md`.** Only `thesis_gate.py` writes it.
 2. **Agents never read `expression_log.jsonl` directly.** Only `research_map.md` summary.
-3. **Failure modes are enum, not prose.** Analyst output is a single key from `config/failure_modes.yaml`.
+3. **Failure modes are enum, not prose.** Analysis phase output is a single key from `config/failure_modes.yaml`.
 4. **`wiki/` is rebuildable.** Deleting `wiki/` and re-running `build_wiki.py` must reproduce byte-for-byte.
 5. **One thesis, many expressions.** A redesign that keeps `thesis_id` is an expression change; a new `thesis_id` is a thesis change.

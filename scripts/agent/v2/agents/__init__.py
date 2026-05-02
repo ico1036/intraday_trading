@@ -1,12 +1,13 @@
-"""v2 agent prompt library.
+"""v2 phase prompt library.
 
-Each agent module exposes:
+The runtime uses one Claude SDK agent. The modules here provide phase prompts:
 
-    - ``identity_prompt()`` — static system prompt (what the agent IS).
+    - ``single.identity_prompt()`` — the single runtime agent identity.
+    - ``researcher`` / ``developer`` / ``analyst`` — phase task builders.
     - Task-prompt builders — dynamic per-iteration instructions.
 
 Prompts deliberately reference the bounded enums from ``config/`` so the
-agents have a single authoritative vocabulary.
+single agent has a single authoritative vocabulary.
 """
 
-from . import analyst, developer, researcher  # noqa: F401
+from . import analyst, developer, researcher, single  # noqa: F401

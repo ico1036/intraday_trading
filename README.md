@@ -32,10 +32,12 @@ INTRADAY_CONFIG_PATH=./config/timeframes.yaml
 아이디어만 입력하면 AI가 전략 설계 → 구현 → 백테스트까지 자동 수행합니다.
 
 ```bash
-uv run python scripts/agent/run.py "VPIN 기반 모멘텀 필터 전략"
+uv run python scripts/agent/run_v2.py alpha_run
+# PLAN.md의 Strategy request를 수정한 뒤:
+uv run python scripts/agent/run_v2.py alpha_run --run
 ```
 
-**결과물**: `{전략명}_dir/` 폴더에 전략 코드, 테스트, 백테스트 리포트 생성
+**결과물**: `archive/alpha_run/` 아래에 thesis, expression, 전략 코드, 테스트, `weights.parquet`, `metrics.json`, 백테스트 리포트 생성
 
 ### 2. 수동 백테스트
 
@@ -69,16 +71,16 @@ uv run python scripts/run_portfolio_forward_test.py --strategy momentum --symbol
 ## AI Agent 워크플로우
 
 ```
-아이디어 입력 → Researcher(설계) → Developer(구현) → Analyst(검증)
-                     ↑                                    │
-                     └──────── 개선 필요시 피드백 ─────────┘
+아이디어 입력 → 단일 에이전트가 Research → Develop → Analyze 단계를 순차 실행
+                         ↑                              │
+                         └──── 개선 필요시 다음 단계로 반복 ────┘
 ```
 
 | 단계 | 역할 | 결과물 |
 |------|------|--------|
-| Researcher | 가설 설계, 리스크 분석 | `algorithm_prompt.txt` |
-| Developer | 전략 코드 구현 | `{name}.py`, 테스트 |
-| Analyst | 백테스트 실행 | `backtest_report.md` |
+| Research | 가설 설계, 리스크 분석 | `algorithm_prompt.txt` |
+| Develop | 전략 코드 구현 | `{name}.py`, 테스트 |
+| Analyze | 백테스트 실행, weight/metrics 저장 | `weights.parquet`, `metrics.json`, `backtest_report.md` |
 
 ## 핵심 설정
 
