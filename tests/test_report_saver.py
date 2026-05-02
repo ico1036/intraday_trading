@@ -194,6 +194,12 @@ class TestReportSaver:
         assert (report_dir / "equity_curve.parquet").exists()
         assert (report_dir / "trades.parquet").exists()
         assert (report_dir / "summary.parquet").exists()
+        assert (report_dir / "summary.json").exists()
+        assert (report_dir / "summary.csv").exists()
+        assert (report_dir / "metrics.json").exists()
+        assert (report_dir / "manifest.json").exists()
+        assert (report_dir / "weights.parquet").exists()
+        assert (report_dir / "events.parquet").exists()
         assert (report_dir / "report.png").exists()
 
     def test_empty_equity_curve_warning(self, sample_report, sample_trades, temp_dir, capsys):

@@ -428,8 +428,30 @@ class TestPortfolioForwardRunner:
 
         saved = runner.save_report(tmp_path)
 
-        assert {"state", "events", "weights", "portfolio", "summary_csv"}.issubset(saved.keys())
-        for key in ["state", "events", "weights", "portfolio", "summary_csv"]:
+        assert {
+            "state",
+            "summary",
+            "manifest",
+            "metrics",
+            "events",
+            "trades",
+            "weights",
+            "equity_curve",
+            "portfolio",
+            "summary_csv",
+        }.issubset(saved.keys())
+        for key in [
+            "state",
+            "summary",
+            "manifest",
+            "metrics",
+            "events",
+            "trades",
+            "weights",
+            "equity_curve",
+            "portfolio",
+            "summary_csv",
+        ]:
             assert saved[key].exists(), f"missing {key}"
             assert saved[key].stat().st_size > 0
 

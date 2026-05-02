@@ -270,7 +270,8 @@ class TestPortfolioBacktestRunner:
         final_capital = runner.capital
 
         report_dir = runner.save_report(tmp_path)
-        summary = pd.read_parquet(Path(report_dir) / "summary.parquet").iloc[0]
+        report_path = Path(report_dir)
+        summary = pd.read_parquet(report_path / "summary.parquet").iloc[0]
 
         assert len(runner.trade_log) == trade_count
         assert len(runner.equity_curve) == equity_count
@@ -278,6 +279,18 @@ class TestPortfolioBacktestRunner:
         assert summary["final_capital"] == pytest.approx(result.final_capital)
         assert summary["total_return"] == pytest.approx(result.total_return)
         assert summary["total_trades"] == result.total_trades
+        for artifact in [
+            "manifest.json",
+            "summary.json",
+            "metrics.json",
+            "summary.csv",
+            "equity_curve.parquet",
+            "trades.parquet",
+            "weights.parquet",
+            "events.parquet",
+            "report.png",
+        ]:
+            assert (report_path / artifact).exists()
 
 
 class TestPortfolioBacktestResult:

@@ -5,6 +5,7 @@ Performance 모듈
 교육 목적으로 상세한 주석을 포함합니다.
 """
 
+import json
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -339,6 +340,12 @@ class ReportSaver:
         self.save_equity_curve()
         self.save_trades()
         self.save_summary()
+        self.save_summary_csv()
+        self.save_summary_json()
+        self.save_metrics_json()
+        self.save_manifest_json()
+        self.save_events()
+        self.save_weights()
         self.save_report_png()
 
         print(f"[ReportSaver] 리포트 저장 완료: {self.report_dir}")
@@ -346,9 +353,19 @@ class ReportSaver:
 
     def save_equity_curve(self) -> Path:
         """Equity curve를 parquet으로 저장"""
+        filepath = self.report_dir / "equity_curve.parquet"
         if not self.equity_curve:
             print("[ReportSaver] Warning: Empty equity curve")
-            return self.report_dir / "equity_curve.parquet"
+            pd.DataFrame(
+                columns=[
+                    "timestamp",
+                    "equity",
+                    "drawdown",
+                    "cumulative_pnl",
+                    "cumulative_return_pct",
+                ]
+            ).to_parquet(filepath, index=False)
+            return filepath
 
         df = pd.DataFrame([
             {
@@ -361,19 +378,23 @@ class ReportSaver:
             for ep in self.equity_curve
         ])
 
-        filepath = self.report_dir / "equity_curve.parquet"
         df.to_parquet(filepath, index=False)
         return filepath
 
     def save_trades(self) -> Path:
         """거래 내역을 parquet으로 저장"""
+        filepath = self.report_dir / "trades.parquet"
         if not self.trades:
             print("[ReportSaver] Warning: Empty trades")
-            return self.report_dir / "trades.parquet"
+            pd.DataFrame(
+                columns=["timestamp", "symbol", "side", "price", "quantity", "fee", "pnl"]
+            ).to_parquet(filepath, index=False)
+            return filepath
 
         df = pd.DataFrame([
             {
                 "timestamp": t.timestamp,
+                "symbol": self.report.symbol,
                 "side": t.side.value,
                 "price": t.price,
                 "quantity": t.quantity,
@@ -383,7 +404,6 @@ class ReportSaver:
             for t in self.trades
         ])
 
-        filepath = self.report_dir / "trades.parquet"
         df.to_parquet(filepath, index=False)
         return filepath
 
@@ -411,6 +431,120 @@ class ReportSaver:
 
         filepath = self.report_dir / "summary.parquet"
         df.to_parquet(filepath, index=False)
+        return filepath
+
+    def save_summary_csv(self) -> Path:
+        """요약 지표를 CSV로도 저장해 운영자가 바로 열 수 있게 함"""
+        filepath = self.report_dir / "summary.csv"
+        pd.DataFrame([self._summary_payload()]).to_csv(filepath, index=False)
+        return filepath
+
+    def _summary_payload(self) -> dict:
+        return {
+            "strategy_name": self.report.strategy_name,
+            "symbol": self.report.symbol,
+            "start_time": self.report.start_time.isoformat(),
+            "end_time": self.report.end_time.isoformat(),
+            "initial_capital": self.report.initial_capital,
+            "final_capital": self.report.final_capital,
+            "total_return_pct": self.report.total_return,
+            "total_trades": self.report.total_trades,
+            "winning_trades": self.report.winning_trades,
+            "losing_trades": self.report.losing_trades,
+            "win_rate_pct": self.report.win_rate,
+            "profit_factor": self.report.profit_factor,
+            "avg_win": self.report.avg_win,
+            "avg_loss": self.report.avg_loss,
+            "max_drawdown_pct": self.report.max_drawdown,
+            "sharpe_ratio": self.report.sharpe_ratio,
+            "total_fees": self.report.total_fees,
+            "total_funding_paid": self.report.total_funding_paid,
+        }
+
+    def save_summary_json(self) -> Path:
+        """Human/machine-readable summary in the common artifact contract."""
+        filepath = self.report_dir / "summary.json"
+        filepath.write_text(
+            json.dumps(self._summary_payload(), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        return filepath
+
+    def save_metrics_json(self) -> Path:
+        """Flat metrics file used by agent and dashboard code."""
+        payload = {
+            "profit_factor": self.report.profit_factor,
+            "total_return": self.report.total_return / 100,
+            "total_return_pct": self.report.total_return,
+            "max_drawdown": self.report.max_drawdown / 100,
+            "max_drawdown_pct": self.report.max_drawdown,
+            "total_trades": self.report.total_trades,
+            "win_rate": self.report.win_rate / 100,
+            "win_rate_pct": self.report.win_rate,
+            "sharpe": self.report.sharpe_ratio,
+            "sharpe_ratio": self.report.sharpe_ratio,
+        }
+        filepath = self.report_dir / "metrics.json"
+        filepath.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        return filepath
+
+    def save_manifest_json(self) -> Path:
+        """Run-level metadata shared by backtest and forward artifacts."""
+        filepath = self.report_dir / "manifest.json"
+        payload = {
+            "artifact_version": 1,
+            "run_type": "backtest",
+            "strategy_name": self.report.strategy_name,
+            "symbols": [self.report.symbol],
+            "started_at": self.report.start_time.isoformat(),
+            "ended_at": self.report.end_time.isoformat(),
+            "files": {
+                "summary": "summary.json",
+                "metrics": "metrics.json",
+                "summary_table": "summary.parquet",
+                "summary_csv": "summary.csv",
+                "equity_curve": "equity_curve.parquet",
+                "trades": "trades.parquet",
+                "weights": "weights.parquet",
+                "events": "events.parquet",
+                "report": "report.png",
+            },
+        }
+        filepath.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        return filepath
+
+    def save_events(self) -> Path:
+        """Create the standard events artifact for single-strategy backtests."""
+        filepath = self.report_dir / "events.parquet"
+        pd.DataFrame(
+            columns=["timestamp", "event_type", "symbol", "details"]
+        ).to_parquet(filepath, index=False)
+        return filepath
+
+    def save_weights(self) -> Path:
+        """Create the standard weights artifact.
+
+        Single-symbol tick/orderbook backtests do not maintain portfolio
+        weights, so this file is an empty table with the shared schema.
+        """
+        filepath = self.report_dir / "weights.parquet"
+        pd.DataFrame(
+            columns=[
+                "timestamp",
+                "symbol",
+                "side",
+                "quantity",
+                "price",
+                "notional",
+                "weight",
+            ]
+        ).to_parquet(filepath, index=False)
         return filepath
 
     def save_report_png(self) -> Path:
@@ -506,4 +640,3 @@ class ReportSaver:
         plt.close()
 
         return filepath
-

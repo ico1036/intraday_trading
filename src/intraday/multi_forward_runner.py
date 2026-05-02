@@ -890,15 +890,63 @@ class PortfolioForwardRunner:
         state_payload["generated_at"] = generated_at.isoformat()
 
         state_json = run_dir / "summary.json"
+        manifest_json = run_dir / "manifest.json"
+        metrics_json = run_dir / "metrics.json"
         summary_csv = run_dir / "summary.csv"
         events_parquet = run_dir / "events.parquet"
+        trades_parquet = run_dir / "trades.parquet"
         weights_parquet = run_dir / "weights.parquet"
+        equity_curve_parquet = run_dir / "equity_curve.parquet"
         nav_parquet = run_dir / "portfolio_nav.parquet"
 
         events_rows = self.rebalance_events + self.execution_events
+        metrics = state_payload["metrics"]
+        flat_metrics = {
+            "profit_factor": metrics["profit_factor"],
+            "total_return": metrics["total_return_pct"] / 100,
+            "total_return_pct": metrics["total_return_pct"],
+            "max_drawdown": None,
+            "max_drawdown_pct": None,
+            "total_trades": metrics["trades_with_pnl"],
+            "win_rate": metrics["win_rate"] / 100,
+            "win_rate_pct": metrics["win_rate"],
+            "sharpe": None,
+            "sharpe_ratio": None,
+        }
 
         # summary.json
         state_json.write_text(json.dumps(state_payload, ensure_ascii=False, default=str, indent=2), encoding="utf-8")
+        metrics_json.write_text(
+            json.dumps(flat_metrics, ensure_ascii=False, default=str, indent=2),
+            encoding="utf-8",
+        )
+        manifest_json.write_text(
+            json.dumps(
+                {
+                    "artifact_version": 1,
+                    "run_type": "forward",
+                    "run_id": self.run_id,
+                    "strategy_name": self.strategy.__class__.__name__,
+                    "symbols": self.symbols,
+                    "started_at": self._start_time.isoformat() if self._start_time else None,
+                    "ended_at": generated_at.isoformat(),
+                    "files": {
+                        "summary": "summary.json",
+                        "metrics": "metrics.json",
+                        "summary_csv": "summary.csv",
+                        "equity_curve": "equity_curve.parquet",
+                        "portfolio_nav": "portfolio_nav.parquet",
+                        "trades": "trades.parquet",
+                        "weights": "weights.parquet",
+                        "events": "events.parquet",
+                    },
+                },
+                ensure_ascii=False,
+                default=str,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
 
         # summary.csv (human)
         summary_csv.write_text(
@@ -911,13 +959,20 @@ class PortfolioForwardRunner:
         )
 
         self._to_parquet_safe(events_rows, events_parquet)
+        self._to_parquet_safe(self.trade_log, trades_parquet)
         self._to_parquet_safe(self.weight_events, weights_parquet)
+        self._to_parquet_safe(self.nav_events, equity_curve_parquet)
         self._to_parquet_safe(self.nav_events, nav_parquet)
 
         return {
             "state": state_json,
+            "summary": state_json,
+            "manifest": manifest_json,
+            "metrics": metrics_json,
             "events": events_parquet,
+            "trades": trades_parquet,
             "weights": weights_parquet,
+            "equity_curve": equity_curve_parquet,
             "portfolio": nav_parquet,
             "summary_csv": summary_csv,
         }

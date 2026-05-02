@@ -11,6 +11,7 @@
     result = runner.run()
 """
 
+import json
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -484,18 +485,111 @@ class PortfolioBacktestRunner:
         })
 
         summary_df = pd.DataFrame([summary])
+        metrics = {
+            "profit_factor": result.profit_factor,
+            "total_return": result.total_return,
+            "max_drawdown": result.max_drawdown,
+            "total_trades": result.total_trades,
+            "win_rate": result.win_rate,
+            "sharpe": result.sharpe_ratio,
+            "sharpe_ratio": result.sharpe_ratio,
+            "per_symbol": result.get_symbol_breakdown(),
+        }
+        summary_json = {
+            "artifact_version": 1,
+            "run_type": "backtest",
+            "strategy_name": self.strategy.__class__.__name__,
+            "symbols": list(getattr(self.strategy, "symbols", [])),
+            **summary,
+            "metrics": metrics,
+        }
+
+        equity_by_ts = {
+            ts: float(eq)
+            for ts, eq in zip(self.equity_timestamps, self.equity_curve)
+        }
+        weight_rows = []
+        for trade in self.trade_log:
+            timestamp = trade.get("timestamp")
+            price = trade.get("price")
+            quantity = trade.get("quantity")
+            equity = equity_by_ts.get(timestamp, self.capital)
+            notional = abs(float(price) * float(quantity)) if price and quantity else 0.0
+            weight_rows.append({
+                "timestamp": timestamp,
+                "symbol": trade.get("symbol"),
+                "side": str(trade.get("action", "")).replace("OPEN_", ""),
+                "quantity": quantity,
+                "price": price,
+                "notional": notional,
+                "weight": notional / equity if equity else 0.0,
+            })
+
+        weights_df = pd.DataFrame(
+            weight_rows,
+            columns=[
+                "timestamp",
+                "symbol",
+                "side",
+                "quantity",
+                "price",
+                "notional",
+                "weight",
+            ],
+        )
+        events_df = trades_df.copy()
+        if events_df.empty:
+            events_df = pd.DataFrame(columns=["timestamp", "event_type", "symbol", "details"])
+        else:
+            events_df.insert(1, "event_type", "trade")
 
         paths = [
             (equity_df, out_dir / "equity_curve.parquet", out_dir / "equity_curve.csv"),
             (trades_df, out_dir / "trades.parquet", out_dir / "trades.csv"),
             (summary_df, out_dir / "summary.parquet", out_dir / "summary.csv"),
+            (weights_df, out_dir / "weights.parquet", out_dir / "weights.csv"),
+            (events_df, out_dir / "events.parquet", out_dir / "events.csv"),
         ]
 
         for df, pqt, csv in paths:
             try:
                 df.to_parquet(pqt, index=False)
             except Exception:
-                df.to_csv(csv, index=False)
+                pass
+            df.to_csv(csv, index=False)
+
+        (out_dir / "summary.json").write_text(
+            json.dumps(summary_json, ensure_ascii=False, default=str, indent=2),
+            encoding="utf-8",
+        )
+        (out_dir / "metrics.json").write_text(
+            json.dumps(metrics, ensure_ascii=False, default=str, indent=2),
+            encoding="utf-8",
+        )
+        (out_dir / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "artifact_version": 1,
+                    "run_type": "backtest",
+                    "strategy_name": self.strategy.__class__.__name__,
+                    "symbols": list(getattr(self.strategy, "symbols", [])),
+                    "files": {
+                        "summary": "summary.json",
+                        "metrics": "metrics.json",
+                        "summary_table": "summary.parquet",
+                        "summary_csv": "summary.csv",
+                        "equity_curve": "equity_curve.parquet",
+                        "trades": "trades.parquet",
+                        "weights": "weights.parquet",
+                        "events": "events.parquet",
+                        "report": "report.png",
+                    },
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
 
         try:
             import matplotlib.pyplot as plt
