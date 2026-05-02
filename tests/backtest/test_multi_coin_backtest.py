@@ -12,6 +12,7 @@ TDD로 개발: 테스트 먼저 작성 → 구현 → 통과
 
 import pytest
 from datetime import datetime, timedelta
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 import pandas as pd
 import numpy as np
@@ -234,6 +235,49 @@ class TestPortfolioBacktestRunner:
         assert hasattr(result, "max_drawdown")
         assert hasattr(result, "total_trades")
         assert hasattr(result, "win_rate")
+
+    def test_save_report_uses_existing_run_without_rerun(self, tmp_path):
+        """save_report는 이미 실행된 백테스트 상태를 다시 실행하지 않고 저장"""
+        strategy = PortfolioMomentum(
+            symbols=["BTCUSDT", "ETHUSDT"],
+            lookback_minutes=5,
+            top_n=1,
+            bottom_n=1,
+        )
+
+        runner = PortfolioBacktestRunner(
+            strategy=strategy,
+            initial_capital=10000,
+            position_size_pct=0.5,
+            rebalance_minutes=10,
+        )
+
+        times = pd.date_range("2025-01-01", periods=60, freq="1min")
+        runner.load_data({
+            "BTCUSDT": pd.DataFrame({
+                "timestamp": times,
+                "price": [50000 + i * 50 for i in range(60)],
+            }),
+            "ETHUSDT": pd.DataFrame({
+                "timestamp": times,
+                "price": [3000 - i * 10 for i in range(60)],
+            }),
+        })
+
+        result = runner.run()
+        trade_count = len(runner.trade_log)
+        equity_count = len(runner.equity_curve)
+        final_capital = runner.capital
+
+        report_dir = runner.save_report(tmp_path)
+        summary = pd.read_parquet(Path(report_dir) / "summary.parquet").iloc[0]
+
+        assert len(runner.trade_log) == trade_count
+        assert len(runner.equity_curve) == equity_count
+        assert runner.capital == final_capital
+        assert summary["final_capital"] == pytest.approx(result.final_capital)
+        assert summary["total_return"] == pytest.approx(result.total_return)
+        assert summary["total_trades"] == result.total_trades
 
 
 class TestPortfolioBacktestResult:

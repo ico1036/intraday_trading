@@ -352,7 +352,7 @@ class PortfolioBacktestRunner:
                 "quantity": quantity,
                 "fee": fee,
             })
-        
+
         elif signal == "CLOSE":
             if self.position.has_position(symbol):
                 pnl = self.position.close(symbol, price, timestamp)
@@ -420,6 +420,33 @@ class PortfolioBacktestRunner:
                 "quantity": quantity,
                 "fee": fee,
             })
+
+    def _result_from_current_state(self) -> PortfolioBacktestResult:
+        """Build a result snapshot without mutating or rerunning the backtest."""
+        equity_series = pd.Series(self.equity_curve)
+        total_return = (self.capital - self.initial_capital) / self.initial_capital
+        sharpe_ratio = sharpe_daily_annualized(equity_series, timestamps=self.equity_timestamps)
+
+        rolling_max = equity_series.cummax()
+        drawdown = (equity_series - rolling_max) / rolling_max
+        max_drawdown = drawdown.min()
+
+        closed_trades = [t for t in self.trade_log if "pnl" in t]
+        winning_trades = len([t for t in closed_trades if t["pnl"] > 0])
+        losing_trades = len([t for t in closed_trades if t["pnl"] < 0])
+
+        return PortfolioBacktestResult(
+            initial_capital=self.initial_capital,
+            final_capital=self.capital,
+            total_return=total_return,
+            sharpe_ratio=sharpe_ratio,
+            max_drawdown=max_drawdown,
+            total_trades=len(closed_trades),
+            winning_trades=winning_trades,
+            losing_trades=losing_trades,
+            equity_curve=equity_series,
+            trade_log=self.trade_log,
+        )
     
     def save_report(self, output_dir: str | Path) -> str:
         """Save backtest artifacts and summary for parity with other runners."""
@@ -444,29 +471,17 @@ class PortfolioBacktestRunner:
             "initial_capital": self.initial_capital,
             "final_capital": self.capital,
         }
-        result = self.run() if self.equity_timestamps else None
-        if result is not None:
-            summary.update({
-                "total_return": result.total_return,
-                "sharpe_ratio": result.sharpe_ratio,
-                "max_drawdown": result.max_drawdown,
-                "total_trades": result.total_trades,
-                "winning_trades": result.winning_trades,
-                "losing_trades": result.losing_trades,
-                "win_rate": result.win_rate,
-                "profit_factor": result.profit_factor,
-            })
-        else:
-            summary.update({
-                "total_return": 0.0,
-                "sharpe_ratio": 0.0,
-                "max_drawdown": 0.0,
-                "total_trades": len(closed_trades),
-                "winning_trades": 0,
-                "losing_trades": 0,
-                "win_rate": 0.0,
-                "profit_factor": 0.0,
-            })
+        result = self._result_from_current_state()
+        summary.update({
+            "total_return": result.total_return,
+            "sharpe_ratio": result.sharpe_ratio,
+            "max_drawdown": result.max_drawdown,
+            "total_trades": result.total_trades,
+            "winning_trades": result.winning_trades,
+            "losing_trades": result.losing_trades,
+            "win_rate": result.win_rate,
+            "profit_factor": result.profit_factor,
+        })
 
         summary_df = pd.DataFrame([summary])
 
@@ -555,29 +570,4 @@ class PortfolioBacktestRunner:
         self.equity_timestamps.append(final_ts)
         self.equity_curve.append(self.capital)
 
-        # 결과 계산
-        equity_series = pd.Series(self.equity_curve)
-        total_return = (self.capital - self.initial_capital) / self.initial_capital
-        sharpe_ratio = sharpe_daily_annualized(equity_series, timestamps=self.equity_timestamps)
-        
-        rolling_max = equity_series.cummax()
-        drawdown = (equity_series - rolling_max) / rolling_max
-        max_drawdown = drawdown.min()
-        
-        # 거래 통계
-        closed_trades = [t for t in self.trade_log if "pnl" in t]
-        winning_trades = len([t for t in closed_trades if t["pnl"] > 0])
-        losing_trades = len([t for t in closed_trades if t["pnl"] < 0])
-        
-        return PortfolioBacktestResult(
-            initial_capital=self.initial_capital,
-            final_capital=self.capital,
-            total_return=total_return,
-            sharpe_ratio=sharpe_ratio,
-            max_drawdown=max_drawdown,
-            total_trades=len(closed_trades),
-            winning_trades=winning_trades,
-            losing_trades=losing_trades,
-            equity_curve=equity_series,
-            trade_log=self.trade_log,
-        )
+        return self._result_from_current_state()
