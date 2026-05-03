@@ -18,8 +18,32 @@ from intraday.multi_forward_runner import (
     PortfolioForwardRunner,
     SymbolState,
 )
+from intraday.strategy import Order, OrderType, PortfolioOrder, Side
 from scripts.run_portfolio_forward_test import build_strategy
 from types import SimpleNamespace
+
+
+class FixedLongOnceForwardStrategy:
+    """첫 패널 수신 시 지정 수량 LONG을 한 번 낸다."""
+
+    def __init__(self, symbol: str, quantity: float):
+        self.symbol = symbol
+        self.quantity = quantity
+        self.done = False
+
+    def generate_order(self, state):
+        if self.done or state.panel is None:
+            return None
+        self.done = True
+        return PortfolioOrder(
+            orders={
+                self.symbol: Order(
+                    side=Side.BUY,
+                    quantity=self.quantity,
+                    order_type=OrderType.MARKET,
+                )
+            }
+        )
 
 
 class TestSymbolState:
@@ -482,3 +506,82 @@ class TestPortfolioForwardRunner:
 
         summary_text = saved["summary_csv"].read_text()
         assert "run_id" in summary_text
+
+    def test_forward_simple_long_has_exact_realized_pnl_and_artifacts(self, tmp_path):
+        """고정 가격 경로에서 포워드 진입/청산/저장값을 정확히 검증."""
+        strategy = FixedLongOnceForwardStrategy("BTCUSDT", quantity=2.0)
+        runner = PortfolioForwardRunner(
+            strategy=strategy,
+            symbols=["BTCUSDT"],
+            candle_type=CandleType.TIME,
+            candle_size=60,
+            initial_capital=10000.0,
+            position_size_pct=1.0,
+            fee_rate=0.0,
+            rebalance_minutes=1,
+            run_id="forward_exact",
+        )
+
+        base = datetime(2025, 3, 1, 9, 0, 0)
+        runner._start_time = base
+        runner._last_rebalance_time = base - timedelta(minutes=2)
+
+        for i in range(61):
+            runner.on_trade(
+                "BTCUSDT",
+                AggTrade(
+                    timestamp=base + timedelta(seconds=i),
+                    symbol="BTCUSDT",
+                    price=100.0,
+                    quantity=1.0,
+                    is_buyer_maker=False,
+                ),
+            )
+
+        opened = [t for t in runner.trade_log if t["action"] == "OPEN_LONG"]
+        assert opened == [
+            {
+                "timestamp": base + timedelta(seconds=60),
+                "symbol": "BTCUSDT",
+                "action": "OPEN_LONG",
+                "price": 100.0,
+                "quantity": 2.0,
+                "fee": 0.0,
+            }
+        ]
+
+        close_ts = base + timedelta(seconds=61)
+        runner.on_trade(
+            "BTCUSDT",
+            AggTrade(
+                timestamp=close_ts,
+                symbol="BTCUSDT",
+                price=120.0,
+                quantity=1.0,
+                is_buyer_maker=False,
+            ),
+        )
+        runner.close_all_positions(timestamp=close_ts)
+        runner._record_nav(close_ts)
+        saved = runner.save_report(tmp_path)
+
+        closed = [t for t in runner.trade_log if t["action"] == "CLOSE"]
+        assert len(closed) == 1
+        assert closed[0]["timestamp"] == close_ts
+        assert closed[0]["symbol"] == "BTCUSDT"
+        assert closed[0]["price"] == 120.0
+        assert closed[0]["quantity"] == 0.0
+        assert closed[0]["pnl"] == pytest.approx((120.0 - 100.0) * 2.0)
+        assert runner.capital == pytest.approx(10040.0)
+
+        weights = pd.read_parquet(saved["weights"])
+        metrics = pd.read_json(saved["metrics"], typ="series")
+
+        assert len(weights) == 1
+        assert weights.iloc[0]["timestamp"] == pd.Timestamp(base + timedelta(seconds=60))
+        assert weights.iloc[0]["symbol"] == "BTCUSDT"
+        assert weights.iloc[0]["target_qty"] == pytest.approx(2.0)
+        assert weights.iloc[0]["target_notional"] == pytest.approx(200.0)
+        assert weights.iloc[0]["target_weight"] == pytest.approx(0.02)
+        assert metrics["total_return"] == pytest.approx(0.004)
+        assert metrics["total_trades"] == 1

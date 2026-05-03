@@ -158,6 +158,29 @@ class WeightedPortfolioStrategy:
         return PortfolioOrder(orders=orders)
 
 
+class FixedLongOncePortfolioStrategy:
+    """첫 패널 수신 시 지정 수량 LONG을 한 번 낸다."""
+
+    def __init__(self, symbol: str, quantity: float):
+        self.symbol = symbol
+        self.quantity = quantity
+        self.done = False
+
+    def generate_order(self, state: MarketState) -> PortfolioOrder | None:
+        if self.done or state.panel is None:
+            return None
+        self.done = True
+        return PortfolioOrder(
+            orders={
+                self.symbol: Order(
+                    side=Side.BUY,
+                    quantity=self.quantity,
+                    order_type=OrderType.MARKET,
+                )
+            }
+        )
+
+
 # ─── 테스트 ───────────────────────────
 
 
@@ -755,6 +778,68 @@ class TestResultOutput:
             "metadata",
         }.issubset(weights.columns)
         assert not weights.empty
+
+
+class TestDeterministicBacktestAccounting:
+    """가격 경로가 고정된 단순 전략의 결과값 검증."""
+
+    def test_single_long_next_tick_fill_and_final_pnl_are_exact(self, tmp_path):
+        """신호 다음 틱 진입가와 최종 청산 PnL을 수식 그대로 검증."""
+        from intraday.backtest.multi_tick_runner import PortfolioTickBacktestRunner
+
+        base = datetime(2025, 3, 1, 9, 0, 0)
+        prices = [100.0] * 61 + [110.0, 120.0]
+        trades = [
+            make_trade("BTC", price, 1.0, base + timedelta(seconds=i))
+            for i, price in enumerate(prices)
+        ]
+
+        runner = PortfolioTickBacktestRunner(
+            strategy=FixedLongOncePortfolioStrategy("BTCUSDT", quantity=2.0),
+            data_loaders={"BTCUSDT": FakeTickLoader(trades)},
+            bar_type=CandleType.TIME,
+            bar_size=60,
+            initial_capital=10000.0,
+            maker_fee_rate=0.0,
+            taker_fee_rate=0.0,
+        )
+
+        result = runner.run()
+        out = runner.save_report(tmp_path)
+
+        opened = [t for t in result.trade_log if t["action"] == "OPEN_LONG"]
+        closed = [t for t in result.trade_log if t["action"] == "CLOSE_FINAL"]
+
+        assert opened == [
+            {
+                "timestamp": base + timedelta(seconds=61),
+                "symbol": "BTCUSDT",
+                "action": "OPEN_LONG",
+                "price": 110.0,
+                "quantity": 2.0,
+                "fee": 0.0,
+            }
+        ]
+        assert closed[0]["timestamp"] == base + timedelta(seconds=62)
+        assert closed[0]["symbol"] == "BTCUSDT"
+        assert closed[0]["price"] == 120.0
+        assert closed[0]["pnl"] == pytest.approx((120.0 - 110.0) * 2.0)
+        assert closed[0]["fee"] == 0.0
+        assert result.final_capital == pytest.approx(10020.0)
+        assert result.total_return == pytest.approx(0.002)
+        assert result.total_trades == 1
+        assert result.winning_trades == 1
+        assert result.losing_trades == 0
+
+        import pandas as pd
+
+        weights = pd.read_parquet(out / "weights.parquet")
+        assert len(weights) == 1
+        assert weights.iloc[0]["timestamp"] == pd.Timestamp(base + timedelta(seconds=60))
+        assert weights.iloc[0]["price"] == pytest.approx(100.0)
+        assert weights.iloc[0]["target_qty"] == pytest.approx(2.0)
+        assert weights.iloc[0]["target_notional"] == pytest.approx(200.0)
+        assert weights.iloc[0]["target_weight"] == pytest.approx(0.02)
 
 
 class TestEmptyData:
