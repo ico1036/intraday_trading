@@ -1,1 +1,1 @@
-"""Agent support for the staged v2 portfolio-alpha workflow."""
+"""Agent support utilities for portfolio-alpha exploration."""
