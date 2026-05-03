@@ -3,7 +3,6 @@
 
 import argparse
 import asyncio
-import json
 import signal
 from datetime import datetime
 import sys
@@ -14,7 +13,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from intraday import CandleType
 from intraday.strategies.multi import PortfolioMomentum, PairTradingStrategy, ATRVolumeRiskMomentumStrategy
-from intraday.strategies.tick.vpin_top5_rebalance import VPINTop5RebalanceStrategy
 from intraday.multi_forward_runner import PortfolioForwardRunner
 
 
@@ -31,15 +29,6 @@ def parse_candle_type(value: str) -> CandleType:
     return mapping[v]
 
 
-def parse_vpin_params(text: str | None) -> dict:
-    if not text:
-        return {}
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"Invalid --strategy-params JSON: {exc}")
-
-
 def default_run_id() -> str:
     return datetime.now().strftime("%Y%m%d_%H%M%S")
 
@@ -48,9 +37,9 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Portfolio Forward Test")
     parser.add_argument(
         "--strategy",
-        choices=["momentum", "pair", "vpin_top5", "atr_risk_momentum"],
+        choices=["momentum", "pair", "atr_risk_momentum"],
         default="momentum",
-        help="strategy (momentum, pair, vpin_top5, atr_risk_momentum)",
+        help="strategy (momentum, pair, atr_risk_momentum)",
     )
     parser.add_argument("--symbols", nargs="+", default=["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT"])
     parser.add_argument("--coin-a", default="BTCUSDT", help="Pair Trading: coin A")
@@ -71,7 +60,7 @@ def parse_args() -> argparse.Namespace:
         "--strategy-params",
         type=str,
         default=None,
-        help='JSON for VPIN top5 params, ex: {"top_n":5,"rebalance_minutes":60,"vpin_lookback":24}',
+        help="Reserved for strategy-specific JSON params.",
     )
     parser.add_argument("--run-id", default=None, help="Run identifier for logs (default: timestamp)")
     parser.add_argument(
@@ -130,14 +119,7 @@ def build_strategy(args: argparse.Namespace):
             bottom_n=args.bottom_n,
         )
 
-    vpin_params = parse_vpin_params(args.strategy_params)
-    defaults = {
-        "top_n": args.top_n,
-        "rebalance_minutes": args.rebalance,
-        "vpin_lookback": 24,
-    }
-    defaults.update(vpin_params)
-    return VPINTop5RebalanceStrategy(**defaults)
+    raise ValueError(f"Unknown strategy: {args.strategy}")
 
 
 def runner_symbols(args: argparse.Namespace) -> list[str]:
