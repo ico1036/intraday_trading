@@ -586,7 +586,7 @@ class TestPortfolioFuturesExecution:
         from intraday.backtest.multi_tick_runner import PortfolioTickBacktestRunner
 
         base = datetime(2025, 3, 1, 9, 0, 0)
-        prices = [50000.0] * 61 + [44000.0] * 10
+        prices = [50000.0] * 62 + [44000.0] * 10
         trades = [
             make_trade("BTC", price, 0.1, base + timedelta(seconds=i))
             for i, price in enumerate(prices)
@@ -606,6 +606,32 @@ class TestPortfolioFuturesExecution:
 
         assert any(t["action"] == "LIQUIDATION" for t in runner._trade_log)
         assert not any(t["action"] == "CLOSE_FINAL" for t in runner._trade_log)
+
+    def test_orders_execute_on_next_tick_after_signal(self):
+        """완성 캔들로 만든 주문은 같은 틱이 아니라 다음 틱에서 체결된다."""
+        from intraday.backtest.multi_tick_runner import PortfolioTickBacktestRunner
+
+        base = datetime(2025, 3, 1, 9, 0, 0)
+        prices = [50000.0] * 61 + [51000.0, 52000.0]
+        trades = [
+            make_trade("BTC", price, 0.1, base + timedelta(seconds=i))
+            for i, price in enumerate(prices)
+        ]
+
+        runner = PortfolioTickBacktestRunner(
+            strategy=BuyOnceStrategy(quantity=0.01),
+            data_loaders={"BTCUSDT": FakeTickLoader(trades)},
+            bar_type=CandleType.TIME,
+            bar_size=60,
+            initial_capital=10000.0,
+            taker_fee_rate=0.0,
+        )
+
+        runner.run()
+
+        opened = [t for t in runner._trade_log if t["action"] == "OPEN_LONG"]
+        assert opened[0]["timestamp"] == base + timedelta(seconds=61)
+        assert opened[0]["price"] == 51000.0
 
 
 class TestResultOutput:
@@ -678,6 +704,57 @@ class TestResultOutput:
         # get_symbol_breakdown 존재
         breakdown = result.get_symbol_breakdown()
         assert isinstance(breakdown, dict)
+
+    def test_save_report_writes_standard_alpha_artifacts(self, tmp_path):
+        """백테스트는 표준 산출물과 weights.parquet 계약 컬럼을 저장한다."""
+        from intraday.backtest.multi_tick_runner import PortfolioTickBacktestRunner
+
+        base = datetime(2025, 3, 1, 9, 0, 0)
+        btc_trades = [
+            make_trade("BTC", 50000.0 + i, 0.1, base + timedelta(seconds=i))
+            for i in range(130)
+        ]
+
+        runner = PortfolioTickBacktestRunner(
+            strategy=AlwaysBuyStrategy(),
+            data_loaders={"BTCUSDT": FakeTickLoader(btc_trades)},
+            bar_type=CandleType.TIME,
+            bar_size=60,
+            initial_capital=10000.0,
+            taker_fee_rate=0.0,
+        )
+        runner.run()
+        out = runner.save_report(tmp_path)
+
+        expected = {
+            "manifest.json",
+            "weights.parquet",
+            "metrics.json",
+            "summary.json",
+            "summary.csv",
+            "equity_curve.parquet",
+            "trades.parquet",
+            "events.parquet",
+            "backtest_report.md",
+        }
+        assert expected.issubset({p.name for p in out.iterdir()})
+
+        import pandas as pd
+
+        weights = pd.read_parquet(out / "weights.parquet")
+        assert {
+            "timestamp",
+            "alpha_id",
+            "symbol",
+            "target_weight",
+            "target_notional",
+            "target_qty",
+            "price",
+            "bar_type",
+            "bar_size",
+            "metadata",
+        }.issubset(weights.columns)
+        assert not weights.empty
 
 
 class TestEmptyData:

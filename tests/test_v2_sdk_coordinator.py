@@ -215,10 +215,13 @@ def test_sdk_coordinator_compose_expression(run_dir, plan):
 
 def test_sdk_coordinator_develop_returns_ok(tmp_path, plan):
     called = {"count": 0}
+    strategy_root = tmp_path / "strategies" / "multi"
+    strategy_root.mkdir(parents=True)
 
     def _invoke(agent, prompt):
         assert agent == "developer"
         called["count"] += 1
+        (strategy_root / "x.py").write_text("class X:\n    pass\n")
 
     workdir = tmp_path / "wd"
     workdir.mkdir()
@@ -235,10 +238,43 @@ def test_sdk_coordinator_develop_returns_ok(tmp_path, plan):
     )
     parsed = ap.parse((workdir / "algorithm_prompt.txt").read_text())
 
-    coord = sdk.SDKCoordinator(run_dir=tmp_path, plan=plan, invoke=_invoke)
+    coord = sdk.SDKCoordinator(
+        run_dir=tmp_path,
+        plan=plan,
+        invoke=_invoke,
+        strategy_root=strategy_root,
+    )
     resp = coord.develop(orch.DeveloperRequest(algorithm_prompt=parsed, workdir=workdir))
     assert resp.ok
     assert called["count"] == 1
+
+
+def test_sdk_coordinator_develop_requires_strategy_in_strategy_root(tmp_path, plan):
+    strategy_root = tmp_path / "strategies" / "multi"
+    strategy_root.mkdir(parents=True)
+    workdir = tmp_path / "wd"
+    workdir.mkdir()
+    (workdir / "algorithm_prompt.txt").write_text(
+        ap.build(
+            thesis_id="th_000",
+            expression_id="exp_001",
+            expression_spec=_spec(),
+            features_used=["vpin"],
+            addresses=None,
+            body="# Strategy: MissingAlpha\n",
+        )
+    )
+    parsed = ap.parse((workdir / "algorithm_prompt.txt").read_text())
+
+    coord = sdk.SDKCoordinator(
+        run_dir=tmp_path,
+        plan=plan,
+        invoke=lambda *_: None,
+        strategy_root=strategy_root,
+    )
+
+    with pytest.raises(sdk.SDKCoordinatorError, match="strategy file"):
+        coord.develop(orch.DeveloperRequest(algorithm_prompt=parsed, workdir=workdir))
 
 
 # ---------------------------------------------------------------------------

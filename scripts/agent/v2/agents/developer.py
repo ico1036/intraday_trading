@@ -19,8 +19,9 @@ Python code and accompanying tests, then verify the tests pass.
    spec — e.g. if ``threshold_type: adaptive_quantile``, implement a
    rolling-quantile threshold, not a fixed float.
 2. **Use only features listed in ``features_used``.** Don't pull in others.
-3. **Don't overwrite ``base.py``, ``strategy.py``, ``tick_runner.py``, or
-   ``__init__.py``.** Only create strategy files and tests.
+3. **Don't overwrite framework files.** Do not edit ``base.py``,
+   ``strategy.py``, backtest/forward runners, data loaders, or ``__init__.py``.
+   Only create strategy files and tests.
 4. **Never touch verdict.md or expression_log.jsonl.**
 5. **Don't call MCP backtest tools.** That's the Analyst's job.
 6. **Use one template for single and multi coin.** A one-symbol list

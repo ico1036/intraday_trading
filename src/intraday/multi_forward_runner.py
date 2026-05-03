@@ -297,6 +297,40 @@ class PortfolioForwardRunner:
                     "target_notional": target_notional,
                     "position_qty_before": current_qty,
                 })
+                self.weight_events.append({
+                    "timestamp": timestamp,
+                    "alpha_id": self.strategy.__class__.__name__,
+                    "symbol": sym,
+                    "target_weight": (
+                        (
+                            (float(target_notional) * (1.0 if order.side == Side.BUY else -1.0)) / self.capital
+                            if target_notional is not None and self.capital
+                            else 0.0
+                        ) if target_weight is None
+                        else float(target_weight) * (1.0 if order.side == Side.BUY else -1.0)
+                    ),
+                    "target_notional": (
+                        None if target_notional is None
+                        else float(target_notional) * (1.0 if order.side == Side.BUY else -1.0)
+                    ),
+                    "target_qty": (
+                        float(target_qty) * (1.0 if order.side == Side.BUY else -1.0)
+                    ),
+                    "price": price,
+                    "bar_type": self.candle_type.value,
+                    "bar_size": float(self.candle_size),
+                    "metadata": json.dumps(
+                        {
+                            "run_id": self.run_id,
+                            "rebalance_id": rebalance_id,
+                            "source": "portfolio_order",
+                            "order_side": order.side.value,
+                            "order_type": order.order_type.value,
+                        },
+                        ensure_ascii=False,
+                        default=str,
+                    ),
+                })
 
                 self._execute_portfolio_order(sym, order, price, timestamp)
 
@@ -672,26 +706,35 @@ class PortfolioForwardRunner:
             if sym not in prices:
                 continue
             qty = self._get_position_qty(sym)
-            notional = abs(qty * prices[sym])
-            if notional == 0:
+            gross_notional = abs(qty * prices[sym])
+            if gross_notional == 0:
                 continue
-            total_notional += notional
-            entries.append((sym, qty, notional, prices[sym]))
+            total_notional += gross_notional
+            side = self.position.get_side(sym)
+            signed_qty = qty if side == "LONG" else -qty
+            entries.append((sym, signed_qty, gross_notional, prices[sym]))
 
         if not entries:
             self._last_daily_weight_date = date_key
             return
 
-        for sym, qty, notional, price in entries:
+        for sym, signed_qty, gross_notional, price in entries:
+            signed_notional = signed_qty * price
             self.weight_events.append({
-                "run_id": self.run_id,
-                "date": date_key,
                 "timestamp": timestamp,
+                "alpha_id": self.strategy.__class__.__name__,
                 "symbol": sym,
-                "qty": qty,
+                "target_weight": signed_notional / total_notional if total_notional else 0.0,
+                "target_notional": signed_notional,
+                "target_qty": signed_qty,
                 "price": price,
-                "notional": notional,
-                "weight": notional / total_notional if total_notional else 0.0,
+                "bar_type": self.candle_type.value,
+                "bar_size": float(self.candle_size),
+                "metadata": json.dumps(
+                    {"run_id": self.run_id, "source": "position_snapshot", "date": date_key},
+                    ensure_ascii=False,
+                    default=str,
+                ),
             })
 
         self._last_daily_weight_date = date_key
@@ -835,6 +878,68 @@ class PortfolioForwardRunner:
     # ----- persistence -----
     def _to_parquet_safe(self, rows: list[dict[str, Any]], path: Path) -> None:
         # parquet가 dict/list 컬럼을 못 쓰는 경우가 있어 문자열로 정규화
+        if not rows:
+            schemas = {
+                "weights.parquet": [
+                    "timestamp",
+                    "alpha_id",
+                    "symbol",
+                    "target_weight",
+                    "target_notional",
+                    "target_qty",
+                    "price",
+                    "bar_type",
+                    "bar_size",
+                    "metadata",
+                ],
+                "events.parquet": [
+                    "run_id",
+                    "rebalance_id",
+                    "timestamp",
+                    "event_type",
+                    "symbol",
+                    "target_side",
+                    "target_weight",
+                    "target_qty",
+                    "target_notional",
+                    "position_qty_before",
+                    "position_qty_after",
+                ],
+                "trades.parquet": [
+                    "timestamp",
+                    "symbol",
+                    "action",
+                    "price",
+                    "quantity",
+                    "pnl",
+                    "fee",
+                ],
+                "equity_curve.parquet": [
+                    "run_id",
+                    "timestamp",
+                    "capital",
+                    "unrealized",
+                    "equity",
+                    "positions",
+                    "active_symbols",
+                    "trades",
+                    "runtime_sec",
+                ],
+                "portfolio_nav.parquet": [
+                    "run_id",
+                    "timestamp",
+                    "capital",
+                    "unrealized",
+                    "equity",
+                    "positions",
+                    "active_symbols",
+                    "trades",
+                    "runtime_sec",
+                ],
+            }
+            pd.DataFrame(columns=schemas.get(path.name, [])).to_parquet(path, index=False)
+            return
+
         normalized: list[dict[str, Any]] = []
         for row in rows:
             normalized_row: dict[str, Any] = {}
@@ -846,10 +951,6 @@ class PortfolioForwardRunner:
                 else:
                     normalized_row[k] = v
             normalized.append(normalized_row)
-
-        if not normalized:
-            pd.DataFrame({"_empty": [True], "_note": ["empty"]}).to_parquet(path, index=False)
-            return
 
         df = pd.DataFrame(normalized)
         if "timestamp" in df.columns:

@@ -63,6 +63,8 @@ def test_v2_research_develop_backtest_review_one_cycle(tmp_path):
     run_dir = tmp_path / "archive" / "cycle_smoke"
     run_dir.mkdir(parents=True)
     (run_dir / "theses").mkdir()
+    strategy_root = tmp_path / "src" / "intraday" / "strategies" / "multi"
+    strategy_root.mkdir(parents=True)
     plan_path = run_dir / "PLAN.md"
     plan_path.write_text(PLAN_TEXT)
     plan = plan_mod.parse(PLAN_TEXT)
@@ -113,7 +115,7 @@ Compact VPIN momentum alpha for one or many symbols.
             template = Path(
                 "src/intraday/strategies/multi/_alpha_template.py"
             ).read_text()
-            (exp_dir / "cycle_smoke_alpha.py").write_text(
+            (strategy_root / "cycle_smoke_alpha.py").write_text(
                 template.replace("AlphaTemplateStrategy", "CycleSmokeAlpha")
             )
             (exp_dir / "test_cycle_smoke_alpha.py").write_text(
@@ -122,7 +124,7 @@ Compact VPIN momentum alpha for one or many symbols.
             return
 
         if phase_name == "analyst":
-            assert (exp_dir / "cycle_smoke_alpha.py").is_file()
+            assert (strategy_root / "cycle_smoke_alpha.py").is_file()
             assert "output_dir" in prompt
             weights = pd.DataFrame(
                 [
@@ -182,6 +184,7 @@ Compact VPIN momentum alpha for one or many symbols.
         plan=plan,
         invoke=invoke,
         plan_path=plan_path,
+        strategy_root=strategy_root,
     )
 
     result = orch.run(run_dir=run_dir, plan=plan, coord=coord)

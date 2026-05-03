@@ -108,8 +108,8 @@ class TickDataLoader:
             pattern = "*.parquet"
             self._files = sorted(self.data_path.rglob(pattern))
 
-            # 심볼 필터링 (파일명에 심볼 포함된 것만)
-            if self.symbol:
+            # 심볼별 디렉터리(BTCUSDT/ticks.parquet)는 파일명에 심볼이 없어도 허용.
+            if self.symbol and self.data_path.name.upper() != self.symbol:
                 self._files = [f for f in self._files if self.symbol in f.name.upper()]
         else:
             raise FileNotFoundError(f"Path not found: {self.data_path}")
@@ -264,4 +264,3 @@ class TickDataLoader:
     def file_count(self) -> int:
         """로드된 파일 수"""
         return len(self._files)
-

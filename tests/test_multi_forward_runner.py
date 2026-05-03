@@ -405,11 +405,16 @@ class TestPortfolioForwardRunner:
         runner.execution_events = []
         runner.weight_events = [
             {
-                "run_id": runner.run_id,
-                "date": now.date().isoformat(),
                 "timestamp": now,
+                "alpha_id": strategy.__class__.__name__,
                 "symbol": "BTCUSDT",
-                "weight": 0.5,
+                "target_weight": 0.5,
+                "target_notional": 5000.0,
+                "target_qty": 0.1,
+                "price": 50000.0,
+                "bar_type": "TIME",
+                "bar_size": 300.0,
+                "metadata": "{}",
             }
         ]
         runner.nav_events = [
@@ -462,6 +467,18 @@ class TestPortfolioForwardRunner:
         assert not events_df.empty
         assert not weights_df.empty
         assert not nav_df.empty
+        assert {
+            "timestamp",
+            "alpha_id",
+            "symbol",
+            "target_weight",
+            "target_notional",
+            "target_qty",
+            "price",
+            "bar_type",
+            "bar_size",
+            "metadata",
+        }.issubset(weights_df.columns)
 
         summary_text = saved["summary_csv"].read_text()
         assert "run_id" in summary_text

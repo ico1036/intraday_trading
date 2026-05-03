@@ -79,10 +79,11 @@ Steps:
 3. Pick a 30-day IS subset: ``is_start`` → ``is_start + 30d``. Same for OS.
    The MCP backtest tool rejects longer windows.
 4. Call ``mcp__backtest__run_backtest`` for IS, then for OS, with:
-   ``data_path="./data/futures_ticks/BTCUSDT"`` (or matching symbol),
+   ``data_path="./data/futures_ticks"`` plus explicit ``symbols`` when running
+   a portfolio, or a single symbol directory for single-asset tests,
    ``data_type="tick"``, ``bar_type`` / ``bar_size`` derived from the
    ``expression_spec``, ``output_dir`` = ``{workdir}`` (so equity_curve.parquet
-   and report.png land next to this expression's artefacts).
+   and weights.parquet land next to this expression's artefacts).
 5. Write ``{workdir}/backtest_report.md`` with IS + OS tables + per-regime/
    per-symbol breakdowns when available.
 6. Write ``{workdir}/metrics.json`` — flat top-level keys must mirror IS:

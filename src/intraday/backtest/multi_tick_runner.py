@@ -23,11 +23,13 @@ heapq.merge로 O(N log K) 병합 (K = 심볼 수).
 """
 
 import heapq
+import json
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Optional, Iterator
 import logging
 import time
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -277,6 +279,10 @@ class PortfolioTickBacktestRunner:
 
         # 거래 로그
         self._trade_log: list[dict] = []
+        self._weight_events: list[dict] = []
+        self._event_log: list[dict] = []
+        self._pending_orders: dict[str, tuple[Order, datetime]] = {}
+        self._last_result: PortfolioTickResult | None = None
 
         # 에쿼티 커브
         self._equity_points: list[float] = []
@@ -417,6 +423,87 @@ class PortfolioTickBacktestRunner:
         position_value = self._capital * self.position_size_pct * order.weight
         return position_value / price if price > 0 else 0.0
 
+    def _record_weight_event(
+        self,
+        *,
+        symbol: str,
+        order: Order,
+        price: float,
+        timestamp: datetime,
+        source: str,
+    ) -> None:
+        target_qty = 0.0
+        target_notional = 0.0
+        target_weight = 0.0
+        try:
+            qty = self._resolve_order_quantity(symbol, order, price)
+            sign = 1.0 if order.side == Side.BUY else -1.0
+            target_qty = sign * qty
+            target_notional = target_qty * price
+            target_weight = (
+                sign * float(order.weight)
+                if order.weight is not None
+                else target_notional / self._capital if self._capital else 0.0
+            )
+        except ValueError:
+            target_qty = float("nan")
+            target_notional = float("nan")
+            target_weight = float("nan")
+
+        self._weight_events.append({
+            "timestamp": timestamp,
+            "alpha_id": self.strategy.__class__.__name__,
+            "symbol": symbol,
+            "target_weight": target_weight,
+            "target_notional": target_notional,
+            "target_qty": target_qty,
+            "price": price,
+            "bar_type": self.bar_type.value,
+            "bar_size": float(self.bar_size),
+            "metadata": json.dumps(
+                {
+                    "source": source,
+                    "order_side": order.side.value,
+                    "order_type": order.order_type.value,
+                    "limit_price": order.limit_price,
+                },
+                default=str,
+            ),
+        })
+
+    def _queue_order(
+        self,
+        symbol: str,
+        order: Order,
+        timestamp: datetime,
+        source: str,
+    ) -> None:
+        price = self._latest_prices.get(symbol, 0.0)
+        if price > 0:
+            self._record_weight_event(
+                symbol=symbol,
+                order=order,
+                price=price,
+                timestamp=timestamp,
+                source=source,
+            )
+        self._pending_orders[symbol] = (order, timestamp)
+
+    def _execute_pending_order(
+        self,
+        symbol: str,
+        price: float,
+        timestamp: datetime,
+    ) -> None:
+        pending = self._pending_orders.get(symbol)
+        if pending is None:
+            return
+        order, signal_ts = pending
+        if timestamp <= signal_ts:
+            return
+        self._pending_orders.pop(symbol, None)
+        self._execute_order(symbol, order, price, timestamp)
+
     def _validate_weight_sum(self, order: PortfolioOrder) -> None:
         """포트폴리오 주문의 weight 합계가 1을 넘지 않도록 검증."""
         weighted_orders = [
@@ -497,11 +584,6 @@ class PortfolioTickBacktestRunner:
         is_market = order.order_type == OrderType.MARKET
         fee_rate = self.taker_fee_rate if is_market else self.maker_fee_rate
 
-        quantity = self._resolve_order_quantity(symbol, order, price)
-        if quantity <= 0:
-            return
-        notional = price * quantity
-
         if order.side == Side.BUY:
             if self._position.has(symbol) and self._position.get_side(symbol) == "SHORT":
                 # 숏 청산 후 롱
@@ -518,6 +600,10 @@ class PortfolioTickBacktestRunner:
                     "fee": fee,
                 })
 
+            quantity = self._resolve_order_quantity(symbol, order, price)
+            if quantity <= 0:
+                return
+            notional = price * quantity
             if not self._position.has(symbol):
                 fee = notional * fee_rate
                 self._capital -= fee
@@ -555,6 +641,10 @@ class PortfolioTickBacktestRunner:
                     "fee": fee,
                 })
 
+            quantity = self._resolve_order_quantity(symbol, order, price)
+            if quantity <= 0:
+                return
+            notional = price * quantity
             if not self._position.has(symbol):
                 fee = notional * fee_rate
                 self._capital -= fee
@@ -631,13 +721,10 @@ class PortfolioTickBacktestRunner:
             # 포트폴리오 주문
             self._validate_weight_sum(result)
             for sym, order in result.active_orders.items():
-                price = self._latest_prices.get(sym, 0.0)
-                if price > 0:
-                    self._execute_order(sym, order, price, timestamp)
+                self._queue_order(sym, order, timestamp, source="portfolio_order")
         elif isinstance(result, Order):
             # 단일 심볼 주문 → trigger_symbol에 적용
-            price = self._latest_prices.get(trigger_symbol, candle.close)
-            self._execute_order(trigger_symbol, result, price, timestamp)
+            self._queue_order(trigger_symbol, result, timestamp, source="single_order")
 
     def run(
         self,
@@ -666,6 +753,10 @@ class PortfolioTickBacktestRunner:
         self._capital = self.initial_capital
         self._equity_points = []
         self._trade_log = []
+        self._weight_events = []
+        self._event_log = []
+        self._pending_orders = {}
+        self._last_result = None
         self._tick_counts = {sym: 0 for sym in self._symbols}
         self._bar_counts = {sym: 0 for sym in self._symbols}
         self._wall_start_ts = time.perf_counter()
@@ -675,6 +766,8 @@ class PortfolioTickBacktestRunner:
         self._latest_candles = {}
         self._latest_prices = {}
         self._position = _MultiPosition()
+        self._start_time = None
+        self._end_time = None
 
         for sym in self._symbols:
             self._candle_builders[sym]._reset()
@@ -691,6 +784,7 @@ class PortfolioTickBacktestRunner:
             self._latest_prices[symbol] = trade.price
             total_ticks += 1
             self._liquidate_if_needed(symbol, trade.price, trade.timestamp)
+            self._execute_pending_order(symbol, trade.price, trade.timestamp)
 
             if total_ticks % 10000 == 0:
                 self._print_progress(total_ticks)
@@ -739,7 +833,8 @@ class PortfolioTickBacktestRunner:
         if self._end_time is not None:
             self._equity_timestamps.append(self._end_time)
 
-        return self._compute_result()
+        self._last_result = self._compute_result()
+        return self._last_result
 
     def _print_progress(self, total_ticks: int) -> None:
         """진행 상황 로그"""
@@ -802,3 +897,111 @@ class PortfolioTickBacktestRunner:
             tick_counts=self._tick_counts,
             bar_counts=self._bar_counts,
         )
+
+    def save_report(self, output_dir: str | Path) -> Path:
+        """Persist the standard alpha artifact set into ``output_dir``."""
+        if self._last_result is None:
+            raise RuntimeError("run() must complete before save_report()")
+
+        out = Path(output_dir)
+        out.mkdir(parents=True, exist_ok=True)
+        result = self._last_result
+        generated_at = datetime.now()
+
+        equity_timestamps = list(self._equity_timestamps[: len(self._equity_points)])
+        while len(equity_timestamps) < len(self._equity_points):
+            equity_timestamps.append(self._end_time)
+        equity_df = pd.DataFrame({
+            "timestamp": equity_timestamps,
+            "equity": self._equity_points,
+        })
+        if equity_df.empty:
+            equity_df = pd.DataFrame(columns=["timestamp", "equity"])
+
+        trades_df = pd.DataFrame(self._trade_log)
+        if trades_df.empty:
+            trades_df = pd.DataFrame(
+                columns=["timestamp", "symbol", "action", "price", "quantity", "pnl", "fee"]
+            )
+
+        weights_df = pd.DataFrame(self._weight_events)
+        if weights_df.empty:
+            weights_df = pd.DataFrame(
+                columns=[
+                    "timestamp",
+                    "alpha_id",
+                    "symbol",
+                    "target_weight",
+                    "target_notional",
+                    "target_qty",
+                    "price",
+                    "bar_type",
+                    "bar_size",
+                    "metadata",
+                ]
+            )
+
+        events_df = pd.DataFrame(self._event_log)
+        if events_df.empty:
+            events_df = pd.DataFrame(columns=["timestamp", "event_type", "symbol", "details"])
+
+        per_symbol = result.get_symbol_breakdown()
+        metrics = {
+            "profit_factor": result.profit_factor,
+            "total_return": result.total_return,
+            "max_drawdown": -result.max_drawdown,
+            "total_trades": result.total_trades,
+            "win_rate": result.win_rate,
+            "sharpe": result.sharpe_ratio,
+            "per_symbol": per_symbol,
+        }
+        summary = {
+            "artifact_version": 1,
+            "run_type": "backtest",
+            "strategy_name": self.strategy.__class__.__name__,
+            "symbols": self._symbols,
+            "bar_type": self.bar_type.value,
+            "bar_size": self.bar_size,
+            "initial_capital": result.initial_capital,
+            "final_capital": result.final_capital,
+            "total_return": result.total_return,
+            "started_at": self._start_time.isoformat() if self._start_time else None,
+            "ended_at": self._end_time.isoformat() if self._end_time else None,
+            "generated_at": generated_at.isoformat(),
+            "tick_counts": result.tick_counts,
+            "bar_counts": result.bar_counts,
+        }
+        manifest = {
+            "artifact_version": 1,
+            "run_type": "backtest",
+            "alpha_id": self.strategy.__class__.__name__,
+            "strategy_name": self.strategy.__class__.__name__,
+            "symbols": self._symbols,
+            "generated_at": generated_at.isoformat(),
+            "files": {
+                "manifest": "manifest.json",
+                "weights": "weights.parquet",
+                "metrics": "metrics.json",
+                "summary": "summary.json",
+                "summary_csv": "summary.csv",
+                "equity_curve": "equity_curve.parquet",
+                "trades": "trades.parquet",
+                "events": "events.parquet",
+                "backtest_report": "backtest_report.md",
+            },
+        }
+
+        (out / "metrics.json").write_text(json.dumps(metrics, indent=2, default=str))
+        (out / "summary.json").write_text(json.dumps(summary, indent=2, default=str))
+        (out / "manifest.json").write_text(json.dumps(manifest, indent=2, default=str))
+        (out / "backtest_report.md").write_text(result.summary())
+        (out / "summary.csv").write_text(
+            "strategy,total_return,sharpe,max_drawdown,total_trades,win_rate,profit_factor\n"
+            f"{self.strategy.__class__.__name__},{result.total_return},{result.sharpe_ratio},"
+            f"{result.max_drawdown},{result.total_trades},{result.win_rate},{result.profit_factor}\n"
+        )
+        equity_df.to_parquet(out / "equity_curve.parquet", index=False)
+        trades_df.to_parquet(out / "trades.parquet", index=False)
+        weights_df.to_parquet(out / "weights.parquet", index=False)
+        events_df.to_parquet(out / "events.parquet", index=False)
+        return out

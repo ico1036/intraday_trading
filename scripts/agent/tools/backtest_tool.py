@@ -445,14 +445,11 @@ async def _run_backtest_impl(args: dict[str, Any]) -> dict[str, Any]:
         output_dir_str = args.get("output_dir")
         if output_dir_str:
             output_dir = PROJECT_ROOT / output_dir_str
-            if output_dir.exists():
-                try:
-                    report_path = runner.save_report(output_dir)
-                    result += f"\n\n**Report saved to**: {report_path}"
-                except Exception as e:
-                    result += f"\n\n**Warning**: Failed to save report: {e}"
-            else:
-                result += f"\n\n**Warning**: output_dir '{output_dir_str}' not found, report not saved"
+            try:
+                report_path = runner.save_report(output_dir)
+                result += f"\n\n**Report saved to**: {report_path}"
+            except Exception as e:
+                result += f"\n\n**Warning**: Failed to save report: {e}"
 
         return {
             "content": [{

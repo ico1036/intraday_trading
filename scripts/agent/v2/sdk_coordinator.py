@@ -11,7 +11,8 @@ file-parsing logic around it.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+import re
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
@@ -40,6 +41,13 @@ class SDKCoordinator:
     plan: plan_mod.PlanConfig
     invoke: InvokeFn
     plan_path: Path | None = None
+    strategy_root: Path = field(
+        default_factory=lambda: Path(__file__).resolve().parents[3]
+        / "src"
+        / "intraday"
+        / "strategies"
+        / "multi"
+    )
 
     # ------------------------------------------------------------------ research phase
 
@@ -115,6 +123,16 @@ class SDKCoordinator:
             workdir=str(req.workdir),
         )
         self.invoke("developer", prompt)
+        expected = _expected_strategy_path(req.algorithm_prompt, self.strategy_root)
+        if not expected.is_file():
+            raise SDKCoordinatorError(
+                f"developer did not produce strategy file {expected}"
+            )
+        class_name = _strategy_class_name(req.algorithm_prompt)
+        if class_name not in expected.read_text():
+            raise SDKCoordinatorError(
+                f"developer strategy file {expected} does not define {class_name}"
+            )
         return orch.DeveloperResponse(ok=True)
 
     # ------------------------------------------------------------------ analysis phase
@@ -158,3 +176,26 @@ def _next_expression_id(run_dir: Path, thesis_id: str) -> str:
     exp_dir = run_dir / "theses" / thesis_id / "expressions"
     existing = sorted(exp_dir.glob("exp_*")) if exp_dir.exists() else []
     return f"exp_{len(existing) + 1:03d}"
+
+
+_STRATEGY_RE = re.compile(r"^#\s*Strategy:\s*([A-Za-z_][A-Za-z0-9_]*)\s*$", re.M)
+
+
+def _strategy_class_name(prompt: Any) -> str:
+    match = _STRATEGY_RE.search(prompt.body)
+    if not match:
+        raise SDKCoordinatorError("algorithm_prompt body missing '# Strategy: <ClassName>'")
+    return match.group(1)
+
+
+def _class_to_snake(name: str) -> str:
+    out = []
+    for idx, char in enumerate(name):
+        if char.isupper() and idx > 0 and (not name[idx - 1].isupper()):
+            out.append("_")
+        out.append(char.lower())
+    return "".join(out)
+
+
+def _expected_strategy_path(prompt: Any, strategy_root: Path) -> Path:
+    return Path(strategy_root) / f"{_class_to_snake(_strategy_class_name(prompt))}.py"
