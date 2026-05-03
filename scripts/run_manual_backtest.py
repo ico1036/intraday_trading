@@ -31,9 +31,7 @@ if str(SRC_ROOT) not in sys.path:
 from intraday.backtest.multi_tick_runner import PortfolioTickBacktestRunner
 from intraday.candle_builder import CandleType
 from intraday.data import TickDataLoader
-from intraday.strategies.multi.atr_volume_risk_momentum import (
-    ATRVolumeRiskMomentumStrategy,
-)
+from intraday.strategies.multi._alpha_template import AlphaTemplateStrategy
 
 
 def parse_args() -> argparse.Namespace:
@@ -77,14 +75,15 @@ def build_loaders(
     return loaders
 
 
-def build_strategy(symbols: list[str]) -> ATRVolumeRiskMomentumStrategy:
+def build_strategy(symbols: list[str]) -> AlphaTemplateStrategy:
     """Replace this function when testing a new strategy."""
-    return ATRVolumeRiskMomentumStrategy(
+    return AlphaTemplateStrategy(
         symbols=symbols,
-        lookback_minutes=60,
-        top_n=min(1, len(symbols)),
-        bottom_n=0 if len(symbols) <= 1 else 1,
-        rebalance_interval_minutes=60,
+        lookback_bars=24,
+        rebalance_bars=1,
+        entry_threshold=0.003,
+        exit_threshold=0.001,
+        max_weight=min(1.0, 1.0 / max(1, len(symbols))),
     )
 
 

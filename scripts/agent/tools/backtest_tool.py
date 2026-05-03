@@ -1,8 +1,7 @@
-"""
-MCP Backtest Tool
+"""MCP portfolio backtest tool.
 
-Wraps TickBacktestRunner and OrderbookBacktestRunner as MCP tools for the Claude Agent SDK.
-Supports dynamic strategy loading from src/intraday/strategies/.
+Discovers strategies from ``src/intraday/strategies/multi`` and runs them
+through the portfolio backtest engine with tick input data.
 
 Usage:
     from claude_agent_sdk import tool, create_sdk_mcp_server
@@ -28,7 +27,6 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from claude_agent_sdk import tool
 
-from intraday.backtest.tick_runner import TickBacktestRunner
 from intraday.candle_builder import CandleType
 
 
@@ -46,7 +44,7 @@ def _discover_strategies(data_type: str) -> dict[str, type]:
     Dynamically discover strategies from src/intraday/strategies/{data_type}/.
 
     Args:
-        data_type: "tick" or "orderbook"
+        data_type: currently only "multi"
 
     Returns:
         Dict mapping strategy class names to classes
@@ -98,28 +96,13 @@ def _discover_strategies(data_type: str) -> dict[str, type]:
 
 
 def _get_all_strategies() -> dict[str, dict]:
-    """Get all available strategies with metadata.
-
-    NOTE:
-    - 실행은 유니버스 크기에 따라 동일 포트폴리오 엔진으로 처리한다.
-    - 포트폴리오 전략도 'tick' 분류로 노출해 사용자에게 전략 그룹 선택 부담을 없앤다.
-    """
+    """Get available portfolio strategies with metadata."""
     result = {}
 
-    for data_type in ["tick", "orderbook"]:
-        strategies = _discover_strategies(data_type)
-        for name, cls in strategies.items():
-            result[name] = {
-                "class": cls,
-                "data_type": data_type,
-            }
-
-    # 포트폴리오형 전략도 실행 가능 목록에 포함(전략 목록에는 tick와 함께 노출)
     for name, cls in _discover_strategies("multi").items():
         result[name] = {
             "class": cls,
             "data_type": "tick",
-            "alias": "tick",
         }
 
     return result
@@ -130,12 +113,10 @@ async def _get_available_strategies_impl(args: dict[str, Any]) -> dict[str, Any]
     import inspect
 
     all_strategies = _get_all_strategies()
-    strategies_info = {"tick": [], "orderbook": []}
+    strategies_info = []
 
     for name, info in all_strategies.items():
         cls = info["class"]
-        # 포트폴리오 전략은 통합 파이프라인으로 실행되어 사용자 노출은 tick 영역에 통합
-        data_type = info.get("alias", info["data_type"])
 
         # Get default parameters from __init__ signature
         sig = inspect.signature(cls.__init__)
@@ -148,33 +129,17 @@ async def _get_available_strategies_impl(args: dict[str, Any]) -> dict[str, Any]
             else:
                 params[param_name] = "required"
 
-        strategies_info[data_type].append({
-            "name": name,
-            "parameters": params,
-        })
+        strategies_info.append({"name": name, "parameters": params})
 
     # Format output
-    lines = ["# Available Strategies\n"]
-
-    lines.append("## Tick Strategies")
-    if strategies_info["tick"]:
-        for info in strategies_info["tick"]:
-            lines.append(f"\n### {info['name']}")
-            lines.append("Parameters:")
-            for param, default in info["parameters"].items():
-                lines.append(f"  - {param}: {default}")
-    else:
+    lines = ["# Available Portfolio Strategies\n"]
+    if not strategies_info:
         lines.append("(none found)")
-
-    lines.append("\n## Orderbook Strategies")
-    if strategies_info["orderbook"]:
-        for info in strategies_info["orderbook"]:
-            lines.append(f"\n### {info['name']}")
-            lines.append("Parameters:")
-            for param, default in info["parameters"].items():
-                lines.append(f"  - {param}: {default}")
-    else:
-        lines.append("(none found)")
+    for info in strategies_info:
+        lines.append(f"\n### {info['name']}")
+        lines.append("Parameters:")
+        for param, default in info["parameters"].items():
+            lines.append(f"  - {param}: {default}")
 
     return {
         "content": [{
@@ -261,13 +226,13 @@ async def _run_backtest_impl(args: dict[str, Any]) -> dict[str, Any]:
     Run a backtest with the specified strategy (implementation).
 
     Args:
-        strategy: Strategy class name (e.g., "VolumeImbalanceStrategy")
-        data_type: "tick" or "orderbook"
-        data_path: Path to data directory
+        strategy: Strategy class name (e.g., "ATRVolumeRiskMomentumStrategy")
+        data_type: must be "tick" because portfolio strategies consume tick data
+        data_path: Path to tick data directory
         start_date: Start date ("YYYY-MM-DD" or "YYYY-MM-DD HH:MM:SS")
         end_date: End date ("YYYY-MM-DD" or "YYYY-MM-DD HH:MM:SS")
-        bar_type: Bar type for tick strategies ("VOLUME", "TICK", "TIME", "DOLLAR")
-        bar_size: Bar size for tick strategies
+        bar_type: Bar type ("VOLUME", "TICK", "TIME", "DOLLAR")
+        bar_size: Bar size
         initial_capital: Initial capital in USD
         leverage: Leverage (1=spot, >1=futures)
         include_funding: Whether to include funding rate (futures only)
@@ -281,9 +246,9 @@ async def _run_backtest_impl(args: dict[str, Any]) -> dict[str, Any]:
 
     try:
         # Parse parameters
-        strategy_name = args.get("strategy", "VolumeImbalanceStrategy")
+        strategy_name = args.get("strategy", "ATRVolumeRiskMomentumStrategy")
         data_type = args.get("data_type", "tick").lower()
-        data_path = Path(args.get("data_path", f"./data/{data_type}s"))
+        data_path = Path(args.get("data_path", "./data/futures_ticks"))
         # Optional universe override: explicit symbols. If omitted, infer from data_path.
         symbols = args.get("symbols")
         symbol_data_paths_raw = args.get("symbol_data_paths", {})
@@ -349,12 +314,13 @@ async def _run_backtest_impl(args: dict[str, Any]) -> dict[str, Any]:
             if end_date.hour == 0 and end_date.minute == 0 and end_date.second == 0:
                 end_date = end_date.replace(hour=23, minute=59, second=59)
 
-        # Validate data_type
-        if data_type not in ["tick", "orderbook"]:
+        # Validate data_type. The strategy surface is unified under multi/;
+        # "tick" here only describes the historical input data.
+        if data_type != "tick":
             return {
                 "content": [{
                     "type": "text",
-                    "text": f"Error: Invalid data_type '{data_type}'. Must be 'tick' or 'orderbook'."
+                    "text": f"Error: Invalid data_type '{data_type}'. Must be 'tick'."
                 }],
                 "is_error": True
             }
@@ -362,30 +328,19 @@ async def _run_backtest_impl(args: dict[str, Any]) -> dict[str, Any]:
         # Discover and validate strategy (exact match required)
         all_strategies = _get_all_strategies()
         if strategy_name not in all_strategies:
-            if data_type == "tick":
-                available = [n for n, i in all_strategies.items() if i["data_type"] == "tick"]
-            else:
-                available = [n for n, i in all_strategies.items() if i["data_type"] == data_type]
+            available = sorted(all_strategies)
             return {
                 "content": [{
                     "type": "text",
-                    "text": f"Error: Unknown strategy '{strategy_name}'. Available {data_type} strategies: {available}. Strategy name must match exactly as defined in algorithm_prompt.txt (e.g., '# Strategy: VPINMomentumFilter' → 'VPINMomentumFilterStrategy')."
+                    "text": f"Error: Unknown strategy '{strategy_name}'. Available strategies: {available}."
                 }],
                 "is_error": True
             }
 
         strategy_info = all_strategies[strategy_name]
-        if strategy_info["data_type"] != data_type:
-            return {
-                "content": [{
-                    "type": "text",
-                    "text": f"Error: Strategy '{strategy_name}' is a {strategy_info['data_type']} strategy, not {data_type}."
-                }],
-                "is_error": True
-            }
 
-        # Validate bar type (tick only)
-        if data_type == "tick" and bar_type_str not in BAR_TYPES:
+        # Validate bar type.
+        if bar_type_str not in BAR_TYPES:
             return {
                 "content": [{
                     "type": "text",
@@ -395,7 +350,7 @@ async def _run_backtest_impl(args: dict[str, Any]) -> dict[str, Any]:
             }
 
         # Validate bar_size for VOLUME bars (practical limit to prevent slow backtests)
-        if data_type == "tick" and bar_type_str == "VOLUME" and bar_size < 10.0:
+        if bar_type_str == "VOLUME" and bar_size < 10.0:
             return {
                 "content": [{
                     "type": "text",
@@ -406,7 +361,7 @@ async def _run_backtest_impl(args: dict[str, Any]) -> dict[str, Any]:
             }
         
         # Validate bar_size for TIME bars (practical limit)
-        if data_type == "tick" and bar_type_str == "TIME" and bar_size < 60:
+        if bar_type_str == "TIME" and bar_size < 60:
             return {
                 "content": [{
                     "type": "text",
@@ -454,58 +409,37 @@ async def _run_backtest_impl(args: dict[str, Any]) -> dict[str, Any]:
         if "symbols" in sig.parameters and "symbols" not in strategy_params:
             strategy_params = {**strategy_params, "symbols": symbols}
 
-        # Enforce expected minimum symbol count for strategies that require multiple symbols.
         if "symbols" in sig.parameters:
             symbol_count = len(strategy_params.get("symbols", []))
-            if symbol_count < 2:
+            if symbol_count < 1:
                 return {
                     "content": [{
                         "type": "text",
-                        "text": f"Error: Strategy '{strategy_name}' requires at least 2 symbols for initialization, got {symbol_count}: {strategy_params.get('symbols', [])}"
+                        "text": f"Error: Strategy '{strategy_name}' requires at least 1 symbol for initialization, got {symbol_count}: {strategy_params.get('symbols', [])}"
                     }],
                     "is_error": True
                 }
 
         strategy = strategy_cls(**strategy_params)
 
-        # Run in portfolio-first engine for all tick execution
-        # (single symbol is just a 1-symbol portfolio, no separate single codepath)
-        if data_type == "tick":
-            report, runner = _run_portfolio_like_tick_backtest(
-                strategy=strategy,
-                data_path=data_path,
-                symbol_data_paths=symbol_data_paths_raw,
-                symbols=symbols,
-                bar_type=BAR_TYPES[bar_type_str],
-                bar_size=bar_size,
-                initial_capital=initial_capital,
-                leverage=leverage,
-                start_date=start_date,
-                end_date=end_date,
-                include_funding=include_funding,
-                fee_rate=fee_rate,
-                maker_fee_rate=maker_fee_rate,
-                taker_fee_rate=taker_fee_rate,
-                position_size_pct=position_size_pct,
-            )
-            # Single/universe 1-symbol and multi are both rendered as portfolio report
-            if len(symbols) <= 1:
-                result = _format_portfolio_report(report)
-            else:
-                result = _format_portfolio_report(report)
-        else:
-            report, runner = _run_orderbook_backtest(
-                strategy=strategy,
-                data_path=data_path,
-                initial_capital=initial_capital,
-                leverage=leverage,
-                start_date=start_date,
-                end_date=end_date,
-                fee_rate=fee_rate,
-                maker_fee_rate=maker_fee_rate,
-                taker_fee_rate=taker_fee_rate,
-            )
-            result = _format_report(report, runner, data_type)
+        report, runner = _run_portfolio_like_tick_backtest(
+            strategy=strategy,
+            data_path=data_path,
+            symbol_data_paths=symbol_data_paths_raw,
+            symbols=symbols,
+            bar_type=BAR_TYPES[bar_type_str],
+            bar_size=bar_size,
+            initial_capital=initial_capital,
+            leverage=leverage,
+            start_date=start_date,
+            end_date=end_date,
+            include_funding=include_funding,
+            fee_rate=fee_rate,
+            maker_fee_rate=maker_fee_rate,
+            taker_fee_rate=taker_fee_rate,
+            position_size_pct=position_size_pct,
+        )
+        result = _format_portfolio_report(report)
 
         # Save report to specified output directory
         output_dir_str = args.get("output_dir")
@@ -543,14 +477,14 @@ async def _run_backtest_impl(args: dict[str, Any]) -> dict[str, Any]:
     "Run a backtest with specified strategy and parameters. Returns performance metrics.",
     {
         "strategy": str,
-        "data_type": str,  # "tick" or "orderbook"
+        "data_type": str,  # must be "tick"; strategies live under multi/
         "data_path": str,
         "symbols": list,
         "symbol_data_paths": dict,
         "start_date": str,  # "YYYY-MM-DD" or "YYYY-MM-DD HH:MM:SS"
         "end_date": str,  # "YYYY-MM-DD" or "YYYY-MM-DD HH:MM:SS"
-        "bar_type": str,  # For tick strategies only
-        "bar_size": float,  # For tick strategies only
+        "bar_type": str,
+        "bar_size": float,
         "initial_capital": float,
         "leverage": int,
         "include_funding": bool,  # For futures only
@@ -564,53 +498,6 @@ async def _run_backtest_impl(args: dict[str, Any]) -> dict[str, Any]:
 async def run_backtest(args: dict[str, Any]) -> dict[str, Any]:
     """Run a backtest with the specified strategy."""
     return await _run_backtest_impl(args)
-
-
-def _run_tick_backtest(
-    strategy,
-    data_path: Path,
-    bar_type: CandleType,
-    bar_size: float,
-    initial_capital: float,
-    leverage: int,
-    include_funding: bool,
-    start_date=None,
-    end_date=None,
-    fee_rate: float | None = None,
-    maker_fee_rate: float = 0.0002,
-    taker_fee_rate: float = 0.0005,
-):
-    """Run tick backtest with TickBacktestRunner."""
-    from intraday.data.loader import TickDataLoader
-
-    loader = TickDataLoader(data_path)
-
-    # Optionally load funding data
-    funding_loader = None
-    if include_funding and leverage > 1:
-        funding_path = data_path.parent / "funding"
-        if funding_path.exists():
-            try:
-                from intraday.data.funding_downloader import FundingDataLoader
-                funding_loader = FundingDataLoader(funding_path)
-            except ImportError:
-                pass  # Funding loader not available
-
-    runner = TickBacktestRunner(
-        strategy=strategy,
-        data_loader=loader,
-        bar_type=bar_type,
-        bar_size=bar_size,
-        initial_capital=initial_capital,
-        fee_rate=fee_rate,
-        maker_fee_rate=maker_fee_rate,
-        taker_fee_rate=taker_fee_rate,
-        leverage=leverage,
-        funding_loader=funding_loader,
-    )
-
-    report = runner.run(start_time=start_date, end_time=end_date)
-    return report, runner
 
 
 def _run_portfolio_like_tick_backtest(
@@ -673,86 +560,6 @@ def _run_portfolio_like_tick_backtest(
     return report, runner
 
 
-
-
-
-def _format_report(report, runner, data_type: str) -> str:
-    """Format backtest report as structured text."""
-    maker_fee_rate = 0.0002  # default (Binance futures maker)
-    taker_fee_rate = 0.0005  # default (Binance futures taker)
-    if hasattr(runner, '_trader'):
-        if hasattr(runner._trader, 'maker_fee_rate'):
-            maker_fee_rate = runner._trader.maker_fee_rate
-        if hasattr(runner._trader, 'taker_fee_rate'):
-            taker_fee_rate = runner._trader.taker_fee_rate
-    elif hasattr(runner, 'maker_fee_rate') and hasattr(runner, 'taker_fee_rate'):
-        maker_fee_rate = runner.maker_fee_rate
-        taker_fee_rate = runner.taker_fee_rate
-
-    lines = [
-        "# Backtest Results",
-        "",
-        "## Configuration",
-        "| Item | Value |",
-        "|------|-------|",
-        f"| Data Type | {data_type.upper()} |",
-        f"| Leverage | {runner.leverage if hasattr(runner, 'leverage') else 1}x |",
-        f"| Maker Fee | {maker_fee_rate * 100:.3f}% (Limit) |",
-        f"| Taker Fee | {taker_fee_rate * 100:.3f}% (Market) |",
-        "",
-        "## Summary",
-        "| Item | Value |",
-        "|------|-------|",
-        f"| Strategy | {report.strategy_name} |",
-        f"| Symbol | {report.symbol} |",
-        f"| Period | {report.start_time} ~ {report.end_time} |",
-        f"| Initial Capital | ${report.initial_capital:,.2f} |",
-        f"| Final Capital | ${report.final_capital:,.2f} |",
-        f"| **Total Return** | **{report.total_return:+.2f}%** |",
-        "",
-        "## Trading Statistics",
-        "| Metric | Value |",
-        "|--------|-------|",
-        f"| Total Trades | {report.total_trades} |",
-        f"| Win Rate | {report.win_rate:.1f}% |",
-        f"| Winning Trades | {report.winning_trades} |",
-        f"| Losing Trades | {report.losing_trades} |",
-        f"| Profit Factor | {report.profit_factor:.2f} |",
-        f"| Avg Win | ${report.avg_win:.2f} |",
-        f"| Avg Loss | ${report.avg_loss:.2f} |",
-        "",
-        "## Risk Metrics",
-        "| Metric | Value |",
-        "|--------|-------|",
-        f"| Max Drawdown | {report.max_drawdown:.2f}% |",
-        f"| Sharpe Ratio | {report.sharpe_ratio:.2f} |",
-        "",
-        "## Costs",
-        "| Item | Value |",
-        "|------|-------|",
-        f"| Total Fees | ${report.total_fees:.2f} |",
-    ]
-
-    if hasattr(report, 'total_funding_paid'):
-        lines.append(f"| Funding Paid | ${report.total_funding_paid:+.2f} |")
-
-    lines.extend([
-        "",
-        "## Execution Stats",
-        "| Item | Value |",
-        "|------|-------|",
-    ])
-
-    if data_type == "tick":
-        if hasattr(runner, 'tick_count'):
-            lines.append(f"| Ticks Processed | {runner.tick_count:,} |")
-        if hasattr(runner, 'bar_count'):
-            lines.append(f"| Bars Generated | {runner.bar_count:,} |")
-    else:
-        if hasattr(runner, 'snapshot_count'):
-            lines.append(f"| Snapshots Processed | {runner.snapshot_count:,} |")
-
-    return "\n".join(lines)
 
 
 

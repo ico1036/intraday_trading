@@ -5,8 +5,8 @@ backtester over N overlapping windows, and for each pair compare trades
 produced on the shared sub-window. Any divergence after warmup indicates
 look-ahead bias or path-dependent state.
 
-This module exposes the pure algorithm. A thin runner adapter (``run_suite``)
-wires it to ``TickBacktestRunner`` — tested separately.
+This module exposes the pure comparison algorithm. Runner-specific adapters
+can convert backtest trades into ``TradeEvent`` records before calling it.
 """
 from __future__ import annotations
 

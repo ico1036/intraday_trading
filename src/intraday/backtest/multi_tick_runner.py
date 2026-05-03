@@ -57,8 +57,8 @@ class PortfolioTickResult:
     """
     포트폴리오 틱 백테스트 결과
 
-    TickBacktestRunner의 PerformanceReport와 유사하되
-    포트폴리오 확장 필드 추가.
+    Portfolio tick runner result with portfolio-level metrics and per-symbol
+    execution logs.
     """
     initial_capital: float
     final_capital: float

@@ -530,8 +530,8 @@ class ReportSaver:
     def save_weights(self) -> Path:
         """Create the standard weights artifact.
 
-        Single-symbol tick/orderbook backtests do not maintain portfolio
-        weights, so this file is an empty table with the shared schema.
+        Legacy report objects do not maintain portfolio weights, so this file
+        is an empty table with the shared schema.
         """
         filepath = self.report_dir / "weights.parquet"
         pd.DataFrame(
