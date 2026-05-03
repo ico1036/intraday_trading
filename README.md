@@ -5,9 +5,8 @@ Compact intraday alpha research repo.
 ## Core Paths
 
 - `AGENT.md`: markdown operating manual for alpha exploration agents.
+- `CLAUDE.md`: Claude Code entry instructions; mirrors the same workflow.
 - `AGENTS.md`: compact first-read context for coding agents.
-- `docs/agent/SEARCH_SPACE.md`: coverage axes for alpha generation.
-- `scripts/agent/exploration.py`: deterministic coverage/index utility.
 - `docs/MANUAL_BACKTEST.md`: manual strategy + backtest path.
 - `docs/ALPHA_ARTIFACT_CONTRACT.md`: saved alpha artifact contract.
 - `src/intraday/strategies/multi/_alpha_template.py`: strategy template.
@@ -39,19 +38,11 @@ Single and multi coin are the same interface:
 
 ## Markdown Agent Exploration
 
-```bash
-uv run python scripts/agent/exploration.py init archive/alpha_run
-uv run python scripts/agent/exploration.py next-cells archive/alpha_run --limit 10
-```
+Read `AGENT.md`, implement one independent alpha, backtest it into
+`archive/<run_id>/alphas/<alpha_id>/`, and append the result to
+`archive/<run_id>/LOG.md`.
 
-Then read `AGENT.md` and implement one independent alpha for an underexplored
-cell. After backtesting into `archive/alpha_run/alphas/<alpha_id>/`, record it:
-
-```bash
-uv run python scripts/agent/exploration.py record archive/alpha_run <alpha_id>
-```
-
-Exploration is coverage-driven. Do not refine prior winners during alpha
+Exploration is breadth-first. Do not refine prior winners during alpha
 generation; selection and composite construction are separate phases.
 
 The older v2 staged loop remains in `scripts/agent/run_v2.py`, but it is no
@@ -63,7 +54,6 @@ Focused smoke path:
 
 ```bash
 uv run pytest \
-  tests/test_agent_exploration.py \
   tests/strategies/test_alpha_template.py \
   tests/backtest/test_multi_tick_runner.py \
   tests/test_multi_forward_runner.py \

@@ -16,8 +16,8 @@ combining saved alpha weights. Composite research should read saved
   `AGENT.md` first.
 - Treat alpha generation as search-space coverage, not evolutionary
   optimization. Do not refine winners during exploration.
-- Use `archive/<run_id>/coverage_map.json` and `alpha_index.csv` to record
-  visited cells and valid artifacts.
+- Record attempts in `archive/<run_id>/LOG.md`. Keep it human-readable and
+  short.
 - The old staged v2 flow can remain as legacy support, but do not make it the
   default path for new alpha generation.
 - Do not reintroduce Claude Task subagents or `AgentDefinition`-style
@@ -52,25 +52,23 @@ artifacts.
 
 When implementing a generated alpha:
 
-1. Pick an underexplored search cell from `docs/agent/SEARCH_SPACE.md`.
-2. Write `archive/<run_id>/alphas/<alpha_id>/search_cell.json`.
-3. Copy `src/intraday/strategies/multi/_alpha_template.py`.
-4. Keep `symbols: list[str]` in the constructor.
-5. Implement signal logic inside the copied strategy.
-6. Return `PortfolioOrder | None` from `generate_order`.
-7. Use target weights, not ad hoc quantity sizing, unless the runner contract
+1. Pick an underexplored search cell from `AGENT.md`.
+2. Copy `src/intraday/strategies/multi/_alpha_template.py`.
+3. Keep `symbols: list[str]` in the constructor.
+4. Implement signal logic inside the copied strategy.
+5. Return `PortfolioOrder | None` from `generate_order`.
+6. Use target weights, not ad hoc quantity sizing, unless the runner contract
    explicitly requires otherwise.
-8. Put strategy tests under `tests/strategies/`.
-9. Do not edit infrastructure files such as `strategy.py`, runners, artifact
+7. Put strategy tests under `tests/strategies/`.
+8. Do not edit infrastructure files such as `strategy.py`, runners, artifact
    writers, or backtest tools unless the task is explicitly infrastructure
    work.
-10. Record completed artifacts with
-    `uv run python scripts/agent/exploration.py record archive/<run_id> <alpha_id>`.
+9. Backtest into `archive/<run_id>/alphas/<alpha_id>/` and append a short
+   entry to `archive/<run_id>/LOG.md`.
 
 ## Important Validation Commands
 
 ```bash
-uv run pytest tests/test_agent_exploration.py -q
 uv run pytest tests/strategies/test_alpha_template.py tests/test_v2_agent_prompts.py -q
 uv run pytest -q
 git diff --check
@@ -81,6 +79,6 @@ git diff --check
 - `tests/strategies/test_alpha_template.py` locks the unified template:
   single-symbol and multi-symbol operation both return `PortfolioOrder`
   target weights through the same class.
-- `tests/test_agent_exploration.py` locks the markdown coverage utility:
-  initialize runs, suggest underexplored cells, validate artifacts, and update
-  coverage/index state.
+- `tests/backtest/test_multi_tick_runner.py` and
+  `tests/test_multi_forward_runner.py` include deterministic PnL checks for
+  simple strategies.
