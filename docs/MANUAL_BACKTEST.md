@@ -22,7 +22,20 @@ single-coin template.
 
 ## 2. Run A Backtest
 
-Use `PortfolioTickBacktestRunner` directly:
+The runnable example is:
+
+```bash
+uv run python scripts/run_manual_backtest.py --help
+uv run python scripts/run_manual_backtest.py \
+  --symbols BTCUSDT ETHUSDT \
+  --start "2025-03-01" \
+  --end "2025-03-31 23:59:59"
+```
+
+It is intentionally written as a learning file. To test your own strategy,
+edit `build_strategy()` in `scripts/run_manual_backtest.py`.
+
+The underlying shape is:
 
 ```python
 from datetime import datetime
@@ -62,6 +75,7 @@ print(result.total_return, result.profit_factor, result.total_trades)
 ## Core Files
 
 - Strategy template: `src/intraday/strategies/multi/_alpha_template.py`
+- Runnable example: `scripts/run_manual_backtest.py`
 - Backtest runner: `src/intraday/backtest/multi_tick_runner.py`
 - Data loader: `src/intraday/data/loader.py`
 - Artifact contract: `docs/ALPHA_ARTIFACT_CONTRACT.md`
