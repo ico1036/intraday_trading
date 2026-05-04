@@ -65,11 +65,15 @@ When implementing a generated alpha:
    work.
 9. Backtest into `archive/<run_id>/alphas/<alpha_id>/` and append a short
    entry to `archive/<run_id>/LOG.md`.
+10. Prefer deterministic CLI commands over runtime-specific tool calling:
+    `scripts/tools/backtest.py --json` and
+    `scripts/tools/verify_artifact.py --json`.
 
 ## Important Validation Commands
 
 ```bash
 uv run pytest tests/strategies/test_alpha_template.py tests/test_v2_agent_prompts.py -q
+uv run pytest tests/tools/test_cli_backtest_and_verify.py -q
 uv run pytest -q
 git diff --check
 ```

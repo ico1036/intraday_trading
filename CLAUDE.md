@@ -10,8 +10,10 @@ Use the simple markdown workflow:
 3. Implement one strategy in `src/intraday/strategies/multi/<alpha>.py`.
 4. Add focused tests in `tests/strategies/test_<alpha>.py`.
 5. Run focused tests.
-6. Backtest into `archive/<run_id>/alphas/<alpha_id>/`.
-7. Inspect artifact files and `weights.parquet` values.
+6. Backtest with `uv run python scripts/tools/backtest.py ... --json` into
+   `archive/<run_id>/alphas/<alpha_id>/`.
+7. Verify with `uv run python scripts/tools/verify_artifact.py ... --json`
+   and inspect `weights.parquet` values.
 8. Append a short entry to `archive/<run_id>/LOG.md`.
 
 Do not use or recreate a Python research orchestrator loop. During exploration,

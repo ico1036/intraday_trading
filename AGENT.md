@@ -33,9 +33,35 @@ Do not edit framework code unless explicitly asked.
 3. Implement one strategy in `src/intraday/strategies/multi/<alpha>.py`.
 4. Add focused tests in `tests/strategies/test_<alpha>.py`.
 5. Run the focused tests.
-6. Run a backtest into `archive/<run_id>/alphas/<alpha_id>/`.
-7. Verify the artifact files and inspect `weights.parquet`.
+6. Run `scripts/tools/backtest.py` into
+   `archive/<run_id>/alphas/<alpha_id>/`.
+7. Run `scripts/tools/verify_artifact.py` and inspect `weights.parquet`.
 8. Append one short entry to `archive/<run_id>/LOG.md`.
+
+## Deterministic Commands
+
+Backtest:
+
+```bash
+uv run python scripts/tools/backtest.py \
+  --strategy <ClassName> \
+  --symbols BTCUSDT ETHUSDT \
+  --data-path data/futures_ticks \
+  --start "2025-03-01 00:00:00" \
+  --end "2025-03-07 23:59:59" \
+  --bar-type TIME \
+  --bar-size 60 \
+  --output-dir archive/<run_id>/alphas/<alpha_id> \
+  --json
+```
+
+Verify:
+
+```bash
+uv run python scripts/tools/verify_artifact.py \
+  archive/<run_id>/alphas/<alpha_id> \
+  --json
+```
 
 ## Search Space
 

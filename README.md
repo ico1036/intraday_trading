@@ -48,6 +48,13 @@ generation; selection and composite construction are separate phases.
 The older v2 staged loop remains in `scripts/agent/run_v2.py`, but it is no
 longer the default path for new exploration work.
 
+Deterministic commands for any agent runtime:
+
+```bash
+uv run python scripts/tools/backtest.py ... --json
+uv run python scripts/tools/verify_artifact.py archive/<run_id>/alphas/<alpha_id> --json
+```
+
 ## Tests
 
 Focused smoke path:
@@ -55,6 +62,7 @@ Focused smoke path:
 ```bash
 uv run pytest \
   tests/strategies/test_alpha_template.py \
+  tests/tools/test_cli_backtest_and_verify.py \
   tests/backtest/test_multi_tick_runner.py \
   tests/test_multi_forward_runner.py \
   -q
