@@ -24,6 +24,12 @@ from intraday.candle_builder import CandleType
 from intraday.data.bar_loader import BarDataLoader
 from intraday.data.loader import TickDataLoader
 
+import shutil
+
+from scripts.governance.check import (
+    _apply_quality_gates,
+    _load_quality_gates_for_run,
+)
 from scripts.tools.verify_artifact import verify_artifact
 
 
@@ -139,13 +145,19 @@ def run_backtest(args: argparse.Namespace) -> dict[str, Any]:
         "sharpe": result.sharpe_ratio,
         "per_symbol": result.get_symbol_breakdown(),
     }
+
+    quality_report = _enforce_quality_gates(output_dir, enforce=args.enforce_quality)
+
+    overall_ok = verification["ok"] and quality_report["ok"]
     return {
-        "ok": verification["ok"],
-        "artifact_dir": str(output_dir),
+        "ok": overall_ok,
+        "artifact_dir": str(output_dir) if quality_report["kept"] else None,
+        "artifact_kept": quality_report["kept"],
         "strategy": args.strategy,
         "symbols": symbols,
         "metrics": metrics,
         "verification": verification,
+        "quality": quality_report,
         "summary": {
             "initial_capital": result.initial_capital,
             "final_capital": result.final_capital,
@@ -154,6 +166,39 @@ def run_backtest(args: argparse.Namespace) -> dict[str, Any]:
             "data_type": args.data_type,
         },
     }
+
+
+def _enforce_quality_gates(output_dir: Path, *, enforce: bool) -> dict:
+    """Apply run quality_gates; delete artifact dir on failure when enforce=True.
+
+    The run dir is inferred as ``output_dir.parents[2]`` (i.e.
+    ``archive/<run>/alphas/<alpha>/<split>`` -> ``archive/<run>``).
+    If the run has no ``quality_gates`` block, nothing is enforced.
+    """
+    report: dict = {
+        "ok": True,
+        "kept": True,
+        "enforced": bool(enforce),
+        "violations": [],
+        "gates": {},
+    }
+    try:
+        run_dir = output_dir.resolve().parents[2]
+    except IndexError:
+        return report
+    gates = _load_quality_gates_for_run(run_dir)
+    if not gates:
+        return report
+    report["gates"] = gates
+    violations = _apply_quality_gates(output_dir, gates)
+    if not violations:
+        return report
+    report["ok"] = False
+    report["violations"] = violations
+    if enforce:
+        shutil.rmtree(output_dir, ignore_errors=True)
+        report["kept"] = False
+    return report
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -174,6 +219,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--taker-fee-rate", type=float, default=0.0005)
     parser.add_argument("--strategy-params", default="")
     parser.add_argument("--output-dir", required=True)
+    parser.add_argument(
+        "--no-enforce-quality",
+        dest="enforce_quality",
+        action="store_false",
+        help="Do not delete artifact dir on quality_gate failure (debug only).",
+    )
+    parser.set_defaults(enforce_quality=True)
     parser.add_argument("--json", action="store_true", help="emit JSON only")
     return parser.parse_args(argv)
 

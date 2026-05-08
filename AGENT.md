@@ -52,6 +52,12 @@ strategy is frozen.
 Default thresholds for the active run: Sharpe ≥ 0.6, trades ≥ 100,
 turnover ≥ 10x. The gates exist to drop flukes and passive holds.
 
+**Quality gates are enforced at write time.** `scripts/tools/backtest.py`
+applies `splits.json.quality_gates` after every backtest and **deletes
+the artifact directory** if any gate fails. Failed alphas leave no
+durable output — only the JSON response in stdout records the violation.
+Use `--no-enforce-quality` only for offline debugging.
+
 Exploration is breadth-first. Do not refine winners during alpha generation.
 Bad performance is archived, not repaired. Repair only broken code, broken
 tests, or invalid artifact output.
