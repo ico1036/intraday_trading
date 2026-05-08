@@ -1,9 +1,16 @@
 #!/usr/bin/env python3
-"""NiceGUI dashboard for archived alpha artifacts."""
+"""NiceGUI dashboard for archived alpha artifacts.
+
+Pure logic (formatters, IS_PASS gate, drawdown / net-bps / turnover compute,
+downsamplers) lives in ``alpha_dashboard_lib`` so it can be unit-tested
+without a NiceGUI / Plotly runtime. This module wires those primitives to
+file I/O caches, builds Plotly figures, and renders NiceGUI pages.
+"""
 from __future__ import annotations
 
 import argparse
 import json
+import sys
 from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
@@ -13,31 +20,69 @@ import pandas as pd
 import plotly.graph_objects as go
 from nicegui import app, ui
 
+# Allow running both as `python scripts/tools/alpha_dashboard.py` (CLI) and via
+# importlib in tests; in the CLI case Python only auto-adds the script's
+# directory, so the sibling lib module is reachable as `alpha_dashboard_lib`.
+_HERE = Path(__file__).resolve().parent
+if str(_HERE) not in sys.path:
+    sys.path.insert(0, str(_HERE))
+
+from alpha_dashboard_lib import (  # noqa: E402  (path injection above)
+    _downsample_frame as _lib_downsample_frame,
+    _duration_days,
+    _fmt_bps,
+    _fmt_days,
+    _fmt_duration_days,
+    _fmt_int,
+    _fmt_num,
+    _fmt_pct,
+    _fmt_turnover,
+    _is_pass_eligible,
+    _missing,
+    _series_downsample as _lib_series_downsample,
+    compute_drawdown_metrics,
+    compute_net_pnl_bps,
+    compute_turnover,
+)
+
 
 DEFAULT_RUN_DIR = Path("archive")
 MAX_LINE_POINTS = 2000
+# Members in the composite "hairball" chart are faded grey overlays — full
+# 2000-point resolution is wasted there. Drop to 250pt to cut JSON payload
+# (16 MB → ~2 MB) and browser render time.
+MEMBER_TRACE_POINTS = 250
 METRIC_COLUMNS = [
     "run_id",
     "alpha_id",
     "status",
-    "os_return",
-    "os_sharpe",
-    "os_trades",
-    "is_return",
     "is_sharpe",
+    "is_return",
+    "is_max_dd",
+    "is_dd_duration",
+    "is_pnl_bps",
     "is_trades",
+    "os_sharpe",
+    "os_return",
+    "os_max_dd",
+    "os_pnl_bps",
+    "os_trades",
     "flags",
 ]
 TABLE_COLUMNS = [
     ("run_id", "run", "left"),
     ("alpha_id", "alpha_id", "left"),
     ("status", "status", "left"),
-    ("os_return_fmt", "OS ret", "right"),
-    ("os_sharpe_fmt", "OS sh", "right"),
-    ("os_trades", "OS tr", "right"),
+    ("is_sharpe_fmt", "IS NetSh", "right"),
     ("is_return_fmt", "IS ret", "right"),
-    ("is_sharpe_fmt", "IS sh", "right"),
+    ("is_max_dd_fmt", "IS DD", "right"),
+    ("is_pnl_bps_fmt", "IS bps", "right"),
     ("is_trades", "IS tr", "right"),
+    ("os_sharpe_fmt", "OS NetSh", "right"),
+    ("os_return_fmt", "OS ret", "right"),
+    ("os_max_dd_fmt", "OS DD", "right"),
+    ("os_pnl_bps_fmt", "OS bps", "right"),
+    ("os_trades", "OS tr", "right"),
     ("flags", "flags", "left"),
 ]
 VALIDATION_RULES = {
@@ -65,49 +110,6 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _missing(value: Any) -> bool:
-    try:
-        return bool(pd.isna(value))
-    except Exception:
-        return value is None
-
-
-def _fmt_pct(value: Any) -> str:
-    try:
-        if _missing(value):
-            return "-"
-        return f"{float(value) * 100:.2f}%"
-    except Exception:
-        return "-"
-
-
-def _fmt_num(value: Any) -> str:
-    try:
-        if _missing(value):
-            return "-"
-        return f"{float(value):.3f}"
-    except Exception:
-        return "-"
-
-
-def _fmt_int(value: Any) -> str:
-    try:
-        if _missing(value):
-            return "-"
-        return f"{int(float(value)):,}"
-    except Exception:
-        return "-"
-
-
-def _fmt_turnover(value: Any) -> str:
-    try:
-        if _missing(value):
-            return "-"
-        return f"{float(value):.2f}x"
-    except Exception:
-        return "-"
-
-
 def _threshold_text(thresholds: dict[str, Any]) -> str:
     merged = dict(DEFAULT_THRESHOLDS)
     merged.update(thresholds or {})
@@ -120,44 +122,161 @@ def _threshold_text(thresholds: dict[str, Any]) -> str:
     )
 
 
-def _duration_days(start: Any, end: Any) -> float | None:
-    try:
-        start_dt = datetime.fromisoformat(str(start))
-        end_dt = datetime.fromisoformat(str(end))
-    except Exception:
-        return None
-    return (end_dt - start_dt).total_seconds() / 86400.0 + 1 / 1440.0
+_INDEX_CACHE: dict[str, tuple[float, pd.DataFrame]] = {}
+_INDEX_CACHE_TTL_SEC = 60.0
 
 
-def _fmt_days(days: float | None) -> str:
-    if days is None:
-        return "-"
-    if days < 1:
-        return f"{days * 24:.1f}h"
-    if days < 10:
-        return f"{days:.1f}d"
-    return f"{days:.0f}d"
+def _detailed_signature(run_dir: Path) -> list[list]:
+    """Per-alpha (run, alpha, metrics.json mtime_ns). Detects any change."""
+    if (run_dir / "alphas").exists():
+        run_dirs = [run_dir]
+    else:
+        run_dirs = sorted(
+            d for d in run_dir.iterdir()
+            if d.is_dir() and d.name != "composites" and (d / "alphas").exists()
+        )
+    sig: list[list] = []
+    for r in run_dirs:
+        for ad in sorted((r / "alphas").iterdir()):
+            if not ad.is_dir():
+                continue
+            m = ad / "is" / "metrics.json"
+            if m.exists():
+                sig.append([r.name, ad.name, m.stat().st_mtime_ns])
+    return sig
+
+
+def _persistent_cache_paths(run_dir: Path) -> tuple[Path, Path]:
+    import hashlib
+    h = hashlib.md5(str(run_dir.resolve()).encode()).hexdigest()[:8]
+    base = Path("/tmp") / f"alpha_dashboard_index_{h}"
+    return base.with_suffix(".parquet"), base.with_suffix(".sig.json")
 
 
 def load_index(run_dir: Path) -> pd.DataFrame:
-    paths = [run_dir / "alpha_index.csv"] if (run_dir / "alpha_index.csv").exists() else sorted(run_dir.glob("*/alpha_index.csv"))
-    if not paths:
-        raise FileNotFoundError(f"missing alpha_index.csv under: {run_dir}")
-    frames = []
-    for path in paths:
-        df = pd.read_csv(path)
-        child_run_dir = path.parent
-        df["run_id"] = child_run_dir.name
-        df["_run_dir"] = str(child_run_dir)
-        frames.append(df)
-    df = pd.concat(frames, ignore_index=True)
-    for col in ("os_return", "os_sharpe", "os_trades", "is_return", "is_sharpe", "is_trades"):
-        if col not in df.columns:
-            df[col] = pd.NA
-    for col in ("flags", "status"):
-        if col in df.columns:
-            df[col] = df[col].fillna("")
-    return df
+    """Build the alpha index by scanning the archive on disk.
+
+    The per-run alpha_index.csv files were observed to drift from disk truth
+    (alphas appended LOG.md/index step skipped for some attempts). Rebuilding
+    in-memory from each alpha's metrics.json + splits.json gives exact counts
+    and a uniform IS_PASS/IS_FAIL label across runs whether or not OS exists.
+
+    Cached for ``_INDEX_CACHE_TTL_SEC`` seconds keyed by a directory signature
+    that captures alpha-count changes, so rebuilds happen automatically when
+    new alphas land but the dashboard isn't slow on every page navigation.
+    """
+    import time as _time
+    sig = _detailed_signature(run_dir)
+    key = (str(run_dir), len(sig), sig[0] if sig else None, sig[-1] if sig else None)
+    cached = _INDEX_CACHE.get(str(key))
+    now = _time.time()
+    if cached is not None and (now - cached[0]) < _INDEX_CACHE_TTL_SEC:
+        return cached[1].copy()
+
+    # Persistent disk cache: skip the 30s+ rebuild when no alpha's metrics.json
+    # has changed since the last successful build.
+    cache_pq, cache_sig = _persistent_cache_paths(run_dir)
+    if cache_pq.exists() and cache_sig.exists():
+        try:
+            saved = json.loads(cache_sig.read_text())
+            if saved == sig:
+                df = pd.read_parquet(cache_pq)
+                _INDEX_CACHE[str(key)] = (now, df.copy())
+                return df
+        except Exception:
+            pass
+    if (run_dir / "alphas").exists():
+        run_dirs = [run_dir]
+    else:
+        run_dirs = sorted(
+            d for d in run_dir.iterdir()
+            if d.is_dir() and d.name != "composites" and (d / "alphas").exists()
+        )
+    rows: list[dict[str, Any]] = []
+    for r in run_dirs:
+        splits = read_json(r / "splits.json")
+        target_threshold = float((splits.get("target") or {}).get("threshold", 0.6))
+        qg = splits.get("quality_gates") or {}
+        min_trades = float(qg.get("min_trades", 0))
+        min_turnover = float(qg.get("min_turnover", 0))
+        for alpha_d in sorted((r / "alphas").iterdir()):
+            if not alpha_d.is_dir():
+                continue
+            is_m = read_json(alpha_d / "is" / "metrics.json")
+            os_m = read_json(alpha_d / "os" / "metrics.json")
+
+            is_turnover = turnover_from_weights(r, alpha_d.name, "is")
+            os_turnover = turnover_from_weights(r, alpha_d.name, "os")
+
+            sharpe = is_m.get("sharpe") if is_m else None
+            trades = is_m.get("total_trades") if is_m else None
+            is_pass = _is_pass_eligible(
+                sharpe,
+                trades,
+                is_turnover,
+                sharpe_threshold=target_threshold,
+                min_trades=min_trades,
+                min_turnover=min_turnover,
+            )
+
+            v = read_json(alpha_d / "validation.json")
+            flags = ",".join(v.get("flags", []) or []) if v else ""
+
+            # Cold-start optimisation: max_drawdown is already in metrics.json
+            # (engine writes it from the same equity curve we'd reload). DD
+            # duration is only used on the detail page → compute lazily there.
+            # Per-trade bps requires reading trades.parquet, so only do it for
+            # IS_PASS alphas (the rest will display "-" in the bps column).
+            is_dd = is_m.get("max_drawdown") if is_m else None
+            is_dd_dur = None
+            if is_pass:
+                is_bps_simple, is_bps_w, _ = net_pnl_per_trade_bps(r, alpha_d.name, "is")
+            else:
+                is_bps_simple = is_bps_w = None
+            os_bps_simple = os_bps_w = os_dd = os_dd_dur = None
+
+            rows.append(
+                {
+                    "run_id": r.name,
+                    "_run_dir": str(r),
+                    "alpha_id": alpha_d.name,
+                    "status": "IS_PASS" if is_pass else "IS_FAIL",
+                    "is_sharpe": sharpe,
+                    "is_return": is_m.get("total_return") if is_m else None,
+                    "is_trades": trades,
+                    "is_turnover": is_turnover,
+                    "is_max_dd": is_dd,
+                    "is_dd_duration": is_dd_dur,
+                    "is_pnl_bps": is_bps_simple,
+                    "is_pnl_bps_w": is_bps_w,
+                    "os_sharpe": os_m.get("sharpe") if os_m else None,
+                    "os_return": os_m.get("total_return") if os_m else None,
+                    "os_trades": os_m.get("total_trades") if os_m else None,
+                    "os_turnover": os_turnover,
+                    "os_max_dd": os_dd,
+                    "os_dd_duration": os_dd_dur,
+                    "os_pnl_bps": os_bps_simple,
+                    "os_pnl_bps_w": os_bps_w,
+                    "has_os": bool(os_m),
+                    "flags": flags,
+                    "th_sharpe": target_threshold,
+                    "th_trades": min_trades,
+                    "th_turnover": min_turnover,
+                }
+            )
+    if not rows:
+        result = pd.DataFrame(
+            columns=["run_id", "alpha_id", "status", "is_sharpe", "is_return", "is_trades", "os_sharpe", "os_return", "os_trades", "flags"]
+        )
+    else:
+        result = pd.DataFrame(rows)
+    _INDEX_CACHE[str(key)] = (now, result.copy())
+    try:
+        result.to_parquet(cache_pq, index=False)
+        cache_sig.write_text(json.dumps(sig))
+    except Exception:
+        pass  # cache is opportunistic, skip on write failure
+    return result
 
 
 def load_splits(run_dir: Path) -> dict[str, Any]:
@@ -182,7 +301,11 @@ def read_json(path: Path) -> dict[str, Any]:
     return read_json_cached(str(path))
 
 
-@lru_cache(maxsize=512)
+# Cap the raw-parquet cache to 32 entries — large equity_curve.parquet files
+# (~10 MB each, 453K rows) blow this cache up to multi-GB if uncapped. Charts
+# now use derived caches (downsampled cumret/drawdown) so we don't need the
+# full df cached past the next render.
+@lru_cache(maxsize=32)
 def read_parquet_cached(path_text: str) -> pd.DataFrame:
     path = Path(path_text)
     return pd.read_parquet(path) if path.exists() else pd.DataFrame()
@@ -192,33 +315,53 @@ def read_parquet(path: Path) -> pd.DataFrame:
     return read_parquet_cached(str(path))
 
 
+@lru_cache(maxsize=4096)
+def _equity_chart_series_cached(
+    equity_path: str, max_points: int = MAX_LINE_POINTS
+) -> pd.DataFrame:
+    """Downsampled (timestamp, cumret, drawdown) for chart rendering only.
+
+    Returns ~max_points rows so 487 alphas × ~32 KB each ≈ 15 MB cap. The full
+    equity_curve.parquet (~10 MB each) is read once, downsampled, and freed.
+    """
+    p = Path(equity_path)
+    if not p.exists():
+        return pd.DataFrame(columns=["timestamp", "cumret", "drawdown"])
+    df = pd.read_parquet(p, columns=["timestamp", "equity"])
+    if df.empty:
+        return pd.DataFrame(columns=["timestamp", "cumret", "drawdown"])
+    df = _lib_downsample_frame(df, max_points=max_points)
+    eq = df["equity"].astype(float)
+    base = float(eq.iloc[0]) if eq.iloc[0] != 0 else 1.0
+    return pd.DataFrame(
+        {
+            "timestamp": df["timestamp"].values,
+            "cumret": (eq / base - 1.0).values,
+            "drawdown": (eq / eq.cummax() - 1.0).values,
+        }
+    )
+
+
 def _x(values: pd.Series) -> list[str]:
     return pd.to_datetime(values).astype(str).tolist()
 
 
 def _downsample_frame(df: pd.DataFrame, max_points: int = MAX_LINE_POINTS) -> pd.DataFrame:
-    if len(df) <= max_points:
-        return df
-    step = max(1, len(df) // max_points)
-    sampled = df.iloc[::step].copy()
-    if sampled.index[-1] != df.index[-1]:
-        sampled = pd.concat([sampled, df.iloc[[-1]]])
-    return sampled
+    return _lib_downsample_frame(df, max_points=max_points)
 
 
 def equity_figure(run_dir: Path, alpha_id: str) -> go.Figure:
     fig = go.Figure()
     for split, color in (("is", "#2563eb"), ("os", "#dc2626")):
-        df = read_parquet(alpha_dir(run_dir, alpha_id) / split / "equity_curve.parquet")
+        df = _equity_chart_series_cached(
+            str(alpha_dir(run_dir, alpha_id) / split / "equity_curve.parquet")
+        )
         if df.empty:
             continue
-        df = _downsample_frame(df)
-        equity = df["equity"].astype(float)
-        cumulative_return = equity / equity.iloc[0] - 1.0
         fig.add_trace(
             go.Scatter(
                 x=_x(df["timestamp"]),
-                y=cumulative_return,
+                y=df["cumret"],
                 mode="lines",
                 name=split.upper(),
                 line={"color": color, "width": 1.5},
@@ -228,7 +371,7 @@ def equity_figure(run_dir: Path, alpha_id: str) -> go.Figure:
     fig.update_layout(
         height=285,
         margin=dict(l=35, r=20, t=35, b=25),
-        title="Cumulative Return",
+        title="Net cumulative return (after fees)",
         legend=dict(orientation="h"),
     )
     fig.update_yaxes(tickformat=".1%")
@@ -238,16 +381,15 @@ def equity_figure(run_dir: Path, alpha_id: str) -> go.Figure:
 def drawdown_figure(run_dir: Path, alpha_id: str) -> go.Figure:
     fig = go.Figure()
     for split, color in (("is", "#2563eb"), ("os", "#dc2626")):
-        df = read_parquet(alpha_dir(run_dir, alpha_id) / split / "equity_curve.parquet")
+        df = _equity_chart_series_cached(
+            str(alpha_dir(run_dir, alpha_id) / split / "equity_curve.parquet")
+        )
         if df.empty:
             continue
-        df = _downsample_frame(df)
-        equity = df["equity"].astype(float)
-        dd = equity / equity.cummax() - 1.0
         fig.add_trace(
             go.Scatter(
                 x=_x(df["timestamp"]),
-                y=dd,
+                y=df["drawdown"],
                 mode="lines",
                 name=split.upper(),
                 line={"color": color, "width": 1.5},
@@ -255,33 +397,6 @@ def drawdown_figure(run_dir: Path, alpha_id: str) -> go.Figure:
         )
     fig.update_layout(height=250, margin=dict(l=35, r=20, t=35, b=25), title="Drawdown")
     fig.update_yaxes(tickformat=".1%")
-    return fig
-
-
-def return_distribution_figure(df: pd.DataFrame) -> go.Figure:
-    fig = go.Figure()
-    if not df.empty and "os_return" in df and df["os_return"].notna().any():
-        fig.add_trace(
-            go.Histogram(
-                x=df["os_return"],
-                name="OS total return",
-                marker_color="#334155",
-                hovertemplate="OS return=%{x:.2%}<br>count=%{y}<extra></extra>",
-            )
-        )
-        fig.add_vline(
-            x=0,
-            line_width=1,
-            line_dash="dash",
-            line_color="#dc2626",
-        )
-    fig.update_layout(
-        height=230,
-        margin=dict(l=35, r=20, t=35, b=35),
-        title="OS Return Distribution",
-        showlegend=False,
-    )
-    fig.update_xaxes(tickformat=".1%")
     return fig
 
 
@@ -303,12 +418,36 @@ def _weight_pivot(run_dir: Path, alpha_id: str, split: str) -> pd.DataFrame:
 
 
 def turnover_from_weights(run_dir: Path, alpha_id: str, split: str) -> float | None:
-    pivot = _weight_pivot(run_dir, alpha_id, split)
-    if pivot.empty:
-        return None
-    zero = pd.DataFrame([[0.0] * len(pivot.columns)], columns=pivot.columns)
-    aligned = pd.concat([zero, pivot.reset_index(drop=True)], ignore_index=True)
-    return float(aligned.diff().abs().sum(axis=1).sum())
+    return compute_turnover(_weight_pivot(run_dir, alpha_id, split))
+
+
+@lru_cache(maxsize=2048)
+def _net_trade_metrics_cached(trades_path: str) -> tuple[float | None, float | None, int]:
+    p = Path(trades_path)
+    if not p.exists():
+        return (None, None, 0)
+    return compute_net_pnl_bps(pd.read_parquet(p))
+
+
+def net_pnl_per_trade_bps(run_dir: Path, alpha_id: str, split: str) -> tuple[float | None, float | None, int]:
+    return _net_trade_metrics_cached(str(alpha_dir(run_dir, alpha_id) / split / "trades.parquet"))
+
+
+@lru_cache(maxsize=2048)
+def _drawdown_metrics_cached(equity_path: str) -> tuple[float | None, float | None, str | None, str | None]:
+    p = Path(equity_path)
+    if not p.exists():
+        return (None, None, None, None)
+    df = pd.read_parquet(p)
+    if df.empty:
+        return (None, None, None, None)
+    eq = df.set_index(pd.to_datetime(df["timestamp"]))["equity"].astype(float)
+    eq = eq[~eq.index.duplicated(keep="last")].sort_index()
+    return compute_drawdown_metrics(eq)
+
+
+def drawdown_metrics(run_dir: Path, alpha_id: str, split: str) -> tuple[float | None, float | None, str | None, str | None]:
+    return _drawdown_metrics_cached(str(alpha_dir(run_dir, alpha_id) / split / "equity_curve.parquet"))
 
 
 def hourly_weight_stack_figure(run_dir: Path, alpha_id: str, split: str = "os") -> go.Figure:
@@ -433,10 +572,23 @@ def field_contract_card() -> None:
         with ui.grid(columns=2).classes("w-full gap-2"):
             with ui.card().classes("mini-card"):
                 ui.label("status").classes("metric-label")
-                ui.label("IS/OS warning label").classes("mini-value")
+                ui.label(
+                    "IS_PASS = meets run's IS gates "
+                    "(Sharpe ≥ threshold, min_trades, min_turnover from splits.json)"
+                ).classes("mini-value")
             with ui.card().classes("mini-card"):
                 ui.label("return").classes("metric-label")
                 ui.label("split total return, not CAGR").classes("mini-value")
+            with ui.card().classes("mini-card"):
+                ui.label("flags").classes("metric-label")
+                ui.label(
+                    "OS-vs-IS validation flags from validation.json (only set on runs with OS data)"
+                ).classes("mini-value")
+            with ui.card().classes("mini-card"):
+                ui.label("source").classes("metric-label")
+                ui.label(
+                    "rebuilt live from each alpha's metrics.json — alpha_index.csv ignored"
+                ).classes("mini-value")
 
 
 def add_styles() -> None:
@@ -478,6 +630,10 @@ def display_rows(df: pd.DataFrame) -> list[dict[str, Any]]:
         row["is_sharpe_fmt"] = _fmt_num(raw.get("is_sharpe"))
         row["os_trades"] = _fmt_int(raw.get("os_trades"))
         row["is_trades"] = _fmt_int(raw.get("is_trades"))
+        row["is_max_dd_fmt"] = _fmt_pct(raw.get("is_max_dd"))
+        row["os_max_dd_fmt"] = _fmt_pct(raw.get("os_max_dd"))
+        row["is_pnl_bps_fmt"] = _fmt_bps(raw.get("is_pnl_bps"))
+        row["os_pnl_bps_fmt"] = _fmt_bps(raw.get("os_pnl_bps"))
         rows.append(row)
     return rows
 
@@ -550,10 +706,7 @@ def discover_composites(archive_root: Path) -> list[dict[str, Any]]:
 
 
 def _series_downsample(s: pd.Series, max_points: int = MAX_LINE_POINTS) -> pd.Series:
-    if len(s) <= max_points:
-        return s
-    step = max(1, len(s) // max_points)
-    return s.iloc[::step]
+    return _lib_series_downsample(s, max_points=max_points)
 
 
 @lru_cache(maxsize=512)
@@ -564,6 +717,13 @@ def _member_cumret(equity_path: str) -> pd.Series:
     df = pd.read_parquet(p)
     if df.empty:
         return pd.Series(dtype=float)
+    # Downsample BEFORE pd.to_datetime: converting 453K timestamp strings is
+    # the dominant cost (~35 ms per member), and the chart layer immediately
+    # downsamples to MAX_LINE_POINTS anyway. Strided iloc keeps endpoints.
+    n = len(df)
+    if n > MAX_LINE_POINTS:
+        stride = max(1, n // MAX_LINE_POINTS)
+        df = df.iloc[::stride]
     s = df.set_index("timestamp")["equity"].astype(float)
     s.index = pd.to_datetime(s.index)
     if s.empty or s.iloc[0] == 0:
@@ -571,39 +731,43 @@ def _member_cumret(equity_path: str) -> pd.Series:
     return s / s.iloc[0] - 1.0
 
 
-def _member_alloc_panel(composite_dir: Path, freq: str = "1h") -> pd.DataFrame:
-    """Per-(time, alpha) allocation share assigned by the composite.
+@lru_cache(maxsize=64)
+def _composite_cumret_cached(
+    composite_dir_str: str, manifest_mtime_ns: int
+) -> go.Figure:
+    composite_dir = Path(composite_dir_str)
+    archive_root = composite_dir.parent.parent
+    # Persistent /tmp cache: a 234-member composite needs ~2 s of parquet
+    # reads to rebuild. We pickle ``fig.to_dict()`` (not the Figure object) —
+    # unpickling a Figure runs Plotly's full validator tree per trace and
+    # itself costs ~2 s; loading a plain dict is ~10 ms.
+    import hashlib
+    import pickle
 
-    For equal-weight 1/N composites the value is 1/N constant. Future schemes
-    (Sharpe-weighted, risk-parity, mean-variance) will populate time-varying
-    per-alpha shares; the chart layer is method-agnostic.
-    """
-    members_csv = composite_dir / "members.csv"
-    manifest = read_json(composite_dir / "manifest.json")
-    if not members_csv.exists():
-        return pd.DataFrame()
-    members = pd.read_csv(members_csv)
-    n = len(members)
-    if n == 0:
-        return pd.DataFrame()
-    window = manifest.get("is_window", {})
-    start = pd.Timestamp(window.get("start", "2026-03-04 00:00:00"))
-    end = pd.Timestamp(window.get("end", "2026-04-17 23:59:00"))
-    grid = pd.date_range(start, end, freq=freq)
-    method = (manifest.get("method") or "").lower()
-    cols = members["alpha_id"].astype(str).tolist()
-    if method.startswith("equal_weight"):
-        return pd.DataFrame(1.0 / n, index=grid, columns=cols)
-    # Unknown method: leave empty so caller can show a notice
-    return pd.DataFrame(index=grid, columns=cols, dtype=float)
+    h = hashlib.md5(composite_dir_str.encode()).hexdigest()[:10]
+    cache_path = Path("/tmp") / f"alpha_dashboard_cumret_{h}_{manifest_mtime_ns}.pkl"
+    if cache_path.exists():
+        try:
+            with cache_path.open("rb") as f:
+                d = pickle.load(f)
+            return go.Figure(data=d.get("data", []), layout=d.get("layout", {}), skip_invalid=True)
+        except Exception:
+            pass  # fall through and rebuild
+    fig = composite_cumret_figure(composite_dir, archive_root)
+    try:
+        with cache_path.open("wb") as f:
+            pickle.dump(fig.to_dict(), f, protocol=pickle.HIGHEST_PROTOCOL)
+    except Exception:
+        pass  # opportunistic
+    return fig
 
 
 def composite_cumret_figure(composite_dir: Path, archive_root: Path) -> go.Figure:
     fig = go.Figure()
     members_csv = composite_dir / "members.csv"
     members = pd.read_csv(members_csv) if members_csv.exists() else pd.DataFrame()
-    for _, m in members.iterrows():
-        ec_path = (
+    member_paths = [
+        str(
             archive_root
             / str(m["run"])
             / "alphas"
@@ -611,19 +775,44 @@ def composite_cumret_figure(composite_dir: Path, archive_root: Path) -> go.Figur
             / "is"
             / "equity_curve.parquet"
         )
-        s = _member_cumret(str(ec_path))
+        for _, m in members.iterrows()
+    ]
+    # Parquet read releases the GIL inside pyarrow, so threads parallelise
+    # the IO-bound fan-out. Each call still flows through _member_cumret's
+    # lru_cache, so warm hits remain free.
+    if member_paths:
+        from concurrent.futures import ThreadPoolExecutor
+
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            series_list = list(pool.map(_member_cumret, member_paths))
+    else:
+        series_list = []
+    # Pack all member curves into ONE trace separated by None gaps. Plotly
+    # draws them as visually distinct line segments with a single trace's
+    # JSON overhead instead of 234. Note: numpy datetime64("NaT") cannot be
+    # used as a separator — it serialises to its int64 epoch (1677-09-21)
+    # and stretches the X axis 350+ years. Plain Python None gives the
+    # correct gap behaviour.
+    xs: list[Any] = []
+    ys: list[Any] = []
+    for s in series_list:
         if s.empty:
             continue
-        s = _series_downsample(s)
+        s = _series_downsample(s, max_points=MEMBER_TRACE_POINTS)
+        xs.extend(s.index.strftime("%Y-%m-%d %H:%M:%S").tolist())
+        xs.append(None)
+        ys.extend(s.values.astype(float).tolist())
+        ys.append(None)
+    if xs:
         fig.add_trace(
-            go.Scatter(
-                x=s.index.astype(str),
-                y=s.values,
+            go.Scattergl(
+                x=xs,
+                y=ys,
                 mode="lines",
                 line=dict(color=COMPOSITE_MEMBER_LINE_COLOR, width=1),
-                name=str(m["alpha_id"]),
+                name="members",
                 showlegend=False,
-                hovertemplate="member %{fullData.name}<br>%{x}<br>%{y:.2%}<extra></extra>",
+                hoverinfo="skip",
             )
         )
     comp_ec_path = composite_dir / "is" / "equity_curve.parquet"
@@ -655,80 +844,6 @@ def composite_cumret_figure(composite_dir: Path, archive_root: Path) -> go.Figur
     return fig
 
 
-def composite_member_alloc_figure(composite_dir: Path, freq: str = "1h") -> go.Figure:
-    fig = go.Figure()
-    panel = _member_alloc_panel(composite_dir, freq=freq)
-    if panel.empty or panel.dropna(how="all").empty:
-        manifest = read_json(composite_dir / "manifest.json")
-        method = manifest.get("method", "?")
-        fig.update_layout(
-            title=f"Per-member allocation weight (method={method!r} — not yet supported by chart)",
-            height=320,
-        )
-        return fig
-    n = len(panel.columns)
-    for col in panel.columns:
-        s = _series_downsample(panel[col].dropna())
-        if s.empty:
-            continue
-        fig.add_trace(
-            go.Scatter(
-                x=s.index.astype(str),
-                y=s.values,
-                mode="lines",
-                line=dict(color=COMPOSITE_MEMBER_LINE_COLOR, width=1),
-                name=str(col),
-                showlegend=False,
-                hovertemplate="%{fullData.name}<br>share %{y:.4f}<extra></extra>",
-            )
-        )
-    fig.update_layout(
-        title=f"Per-member allocation share — {n} members, resampled to {freq} (1/N = {1.0/n:.4f})",
-        height=320,
-        margin=dict(l=40, r=20, t=50, b=40),
-        xaxis_title="time",
-        yaxis_title="share",
-        showlegend=False,
-    )
-    return fig
-
-
-def composite_member_alloc_heatmap(composite_dir: Path, freq: str = "4h") -> go.Figure:
-    panel = _member_alloc_panel(composite_dir, freq=freq)
-    if panel.empty or panel.dropna(how="all").empty:
-        return go.Figure()
-    members_csv = composite_dir / "members.csv"
-    if members_csv.exists():
-        members_df = pd.read_csv(members_csv)
-        order_keyed = members_df.set_index(members_df["alpha_id"].astype(str))[
-            "is_sharpe"
-        ]
-        ordered_cols = [
-            c for c in order_keyed.sort_values(ascending=False).index if c in panel.columns
-        ]
-    else:
-        ordered_cols = list(panel.columns)
-    panel = panel.reindex(columns=ordered_cols)
-    fig = go.Figure(
-        data=go.Heatmap(
-            z=panel.T.values,
-            x=panel.index.astype(str),
-            y=panel.columns.tolist(),
-            colorscale="Viridis",
-            colorbar=dict(title="share"),
-            hovertemplate="member %{y}<br>%{x}<br>share %{z:.4f}<extra></extra>",
-        )
-    )
-    fig.update_layout(
-        title=f"Per-member allocation share heatmap — {freq} buckets, sorted by IS Sharpe",
-        height=max(360, 12 * len(panel.columns)),
-        margin=dict(l=200, r=30, t=50, b=40),
-        xaxis_title="time",
-        yaxis_title="member alpha",
-    )
-    return fig
-
-
 def main() -> None:
     args = parse_args()
     run_dir = Path(args.run_dir)
@@ -752,28 +867,17 @@ def main() -> None:
                     df = state["df"]
                     with ui.row().classes("w-full gap-2"):
                         metric_card("Alphas", str(len(df)))
-                        metric_card("Runs", str(df["run_id"].nunique()))
-                        metric_card("IS Sharpe >= 1", str((pd.to_numeric(df["is_sharpe"], errors="coerce") >= 1).sum()))
-                        if (df["status"] == "IS_PASS").any():
-                            metric_card("IS_PASS", str((df["status"] == "IS_PASS").sum()))
-                        metric_card("PASS", str((df["status"] == "PASS").sum()))
-                        metric_card("WARNING", str((df["status"] == "WARNING").sum()))
-                        metric_card("Best IS Sharpe", _fmt_num(pd.to_numeric(df["is_sharpe"], errors="coerce").max()))
-                        if "os_sharpe" in df and df["os_sharpe"].notna().any():
-                            metric_card("Best OS Sharpe", _fmt_num(pd.to_numeric(df["os_sharpe"], errors="coerce").max()))
-
-                    with ui.row().classes("w-full gap-3"):
-                        field_contract_card()
-                        validation_rules_card()
-
-                    ui.plotly(return_distribution_figure(df)).classes("w-full dense-panel")
+                        metric_card("IS_PASS", str((df["status"] == "IS_PASS").sum()))
 
                     with ui.row().classes("w-full items-end gap-3"):
                         search_input = ui.input("Search").props("clearable dense").classes("w-96")
                         status_values = sorted(str(v) for v in df["status"].dropna().unique().tolist())
                         status_filter = ui.select(status_values, multiple=True, label="Status").classes("w-48")
                         sort_select = ui.select(
-                            ["is_sharpe", "is_return", "is_trades", "os_return", "os_sharpe", "os_trades"],
+                            [
+                                "is_sharpe", "is_return", "is_max_dd", "is_pnl_bps", "is_trades",
+                                "os_sharpe", "os_return", "os_max_dd", "os_pnl_bps", "os_trades",
+                            ],
                             value="is_sharpe",
                             label="Sort",
                         ).classes("w-48")
@@ -899,19 +1003,30 @@ def main() -> None:
             os_turnover = turnover_from_weights(detail_run_dir, alpha_id, "os")
 
             ui.label(alpha_id).classes("text-xl font-semibold")
-            with ui.row().classes("w-full gap-3"):
-                field_contract_card()
-                validation_rules_card(validation.get("thresholds", {}))
-            with ui.row().classes("gap-2"):
+            is_bps_simple, is_bps_w, _ = net_pnl_per_trade_bps(detail_run_dir, alpha_id, "is")
+            os_bps_simple, os_bps_w, _ = net_pnl_per_trade_bps(detail_run_dir, alpha_id, "os")
+            is_dd_pct, is_dd_dur, is_peak_ts, is_recov_ts = drawdown_metrics(detail_run_dir, alpha_id, "is")
+            os_dd_pct, os_dd_dur, os_peak_ts, os_recov_ts = drawdown_metrics(detail_run_dir, alpha_id, "os")
+
+            ui.label("Core 4 metrics — net of fees (1-min backtest)").classes("section-title")
+            with ui.row().classes("gap-2 w-full"):
                 metric_card("Status", str(selected.get("status", "-")))
-                metric_card("OS Return", _fmt_pct(selected.get("os_return")))
-                metric_card("OS Sharpe", _fmt_num(selected.get("os_sharpe")))
-                metric_card("OS Trades", _fmt_int(selected.get("os_trades", 0)))
-                metric_card("OS Turnover", _fmt_turnover(os_turnover))
-                metric_card("IS Return", _fmt_pct(selected.get("is_return")))
-                metric_card("IS Sharpe", _fmt_num(selected.get("is_sharpe")))
+                metric_card("IS Net Sharpe", _fmt_num(selected.get("is_sharpe")))
+                metric_card("IS Net return", _fmt_pct(selected.get("is_return")))
+                metric_card("IS Max DD", _fmt_pct(is_dd_pct))
+                metric_card("IS DD duration", _fmt_duration_days(is_dd_dur))
+                metric_card("IS Net bps/trade", _fmt_bps(is_bps_simple))
+                metric_card("IS bps (notional-w)", _fmt_bps(is_bps_w))
                 metric_card("IS Trades", _fmt_int(selected.get("is_trades", 0)))
-                metric_card("IS Turnover", _fmt_turnover(is_turnover))
+            with ui.row().classes("gap-2 w-full"):
+                metric_card("OS Net Sharpe", _fmt_num(selected.get("os_sharpe")))
+                metric_card("OS Net return", _fmt_pct(selected.get("os_return")))
+                metric_card("OS Max DD", _fmt_pct(os_dd_pct))
+                metric_card("OS DD duration", _fmt_duration_days(os_dd_dur))
+                metric_card("OS Net bps/trade", _fmt_bps(os_bps_simple))
+                metric_card("OS bps (notional-w)", _fmt_bps(os_bps_w))
+                metric_card("OS Trades", _fmt_int(selected.get("os_trades", 0)))
+                metric_card("Turnover IS/OS", f"{_fmt_turnover(is_turnover)} / {_fmt_turnover(os_turnover)}")
             with ui.grid(columns=2).classes("w-full gap-3"):
                 ui.plotly(equity_figure(detail_run_dir, alpha_id)).classes("w-full dense-panel")
                 ui.plotly(drawdown_figure(detail_run_dir, alpha_id)).classes("w-full dense-panel")
@@ -956,13 +1071,24 @@ def main() -> None:
                     ui.label("⚠ Selection bias notice").classes("section-title")
                     ui.label(manifest["selection_bias_warning"]).classes("note-text")
 
-            with ui.row().classes("gap-2"):
-                metric_card("IS Sharpe", _fmt_num(metrics.get("sharpe")))
-                metric_card("IS Return", _fmt_pct(metrics.get("total_return")))
-                metric_card("IS DD", _fmt_pct(metrics.get("max_drawdown")))
-                metric_card("Profit factor", _fmt_num(metrics.get("profit_factor")))
+            # Compute trade-level net bps + DD duration for the composite
+            comp_trades_path = composite_dir / "is" / "trades.parquet"
+            comp_eq_path = composite_dir / "is" / "equity_curve.parquet"
+            comp_bps_simple, comp_bps_w, _ = _net_trade_metrics_cached(str(comp_trades_path))
+            comp_dd_pct, comp_dd_dur, _, _ = _drawdown_metrics_cached(str(comp_eq_path))
+
+            ui.label("Core 4 metrics — net of fees (1-min backtest)").classes("section-title")
+            with ui.row().classes("gap-2 w-full"):
+                metric_card("Net Sharpe", _fmt_num(metrics.get("sharpe")))
+                metric_card("Net return", _fmt_pct(metrics.get("total_return")))
+                metric_card("Max DD", _fmt_pct(comp_dd_pct))
+                metric_card("DD duration", _fmt_duration_days(comp_dd_dur))
+                metric_card("Net bps/trade", _fmt_bps(comp_bps_simple))
+                metric_card("bps (notional-w)", _fmt_bps(comp_bps_w))
+                metric_card("Trades", _fmt_int(metrics.get("total_trades")))
                 metric_card("Win rate", _fmt_pct(metrics.get("win_rate")))
-                metric_card("IS Trades", _fmt_int(metrics.get("total_trades")))
+                metric_card("Profit factor", _fmt_num(metrics.get("profit_factor")))
+            with ui.row().classes("gap-2"):
                 metric_card("Members", str(manifest.get("n_members", 0)))
                 metric_card("Mean gross", _fmt_num(manifest.get("mean_row_l1")))
                 metric_card("Max gross", _fmt_num(manifest.get("max_row_l1")))
@@ -973,9 +1099,17 @@ def main() -> None:
                     )
 
             archive_root = run_dir
-            ui.plotly(composite_cumret_figure(composite_dir, archive_root)).classes("w-full dense-panel")
-            ui.plotly(composite_member_alloc_figure(composite_dir, freq="1h")).classes("w-full dense-panel")
-            ui.plotly(composite_member_alloc_heatmap(composite_dir, freq="4h")).classes("w-full dense-panel")
+            mn = manifest_path.stat().st_mtime_ns if manifest_path.exists() else 0
+            method = (manifest.get("method") or "").lower()
+            cumret_fig = _composite_cumret_cached(str(composite_dir), mn)
+            ui.plotly(cumret_fig).classes("w-full dense-panel")
+            if method.startswith("equal_weight"):
+                n = int(manifest.get("n_members", 0)) or 1
+                with ui.card().classes("dense-panel"):
+                    ui.label(
+                        f"Equal-weight composite — each of {n} members holds "
+                        f"{1.0/n:.4f} share (1/N), constant over time."
+                    ).classes("note-text")
 
             members_csv = composite_dir / "members.csv"
             if members_csv.exists():

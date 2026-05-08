@@ -114,6 +114,7 @@ cache/
 # Local development
 *.local
 .nicegui/
+.playwright-mcp/
 *.png
 !docs/assets/*.png
 !docs/site/assets/*.png
