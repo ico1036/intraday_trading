@@ -4,11 +4,12 @@ Copy this file when creating a generated alpha. Do not create separate
 single-symbol templates: ``symbols=["BTCUSDT"]`` is the single-coin case,
 and ``symbols=[...]`` with length > 1 is the multi-coin case.
 
-Agent edit surface:
+Agent edit surface in the *copied* file (not this template):
     - class name
     - ``__init__`` parameters
     - ``_score_symbol``
     - optional target construction in ``generate_order``
+    - ``ALPHA_CELL`` and ``SOURCE_NOTES`` (required, see below)
 
 Infrastructure that must stay outside strategy files:
     - data loading
@@ -16,6 +17,21 @@ Infrastructure that must stay outside strategy files:
     - execution simulation
     - fee/PnL/equity calculations
     - artifact writing, especially ``weights.parquet``
+
+Required module-level metadata for governance:
+
+``ALPHA_CELL`` is a dict whose six keys identify the search-space cell:
+    bar:         "TIME" | "VOLUME" | "DOLLAR" | "TICK"
+    transform:   "raw" | "z_score" | "percentile" | "rolling_rank"
+                 | "ewma_residual" | "composite"
+    horizon:     "ultra_short" | "intraday" | "session" | "multi_day"
+    universe:    "single" | "pair" | "basket_topk" | "basket_full"
+    exit:        "time_stop" | "signal_flip" | "trailing" | "vol_stop"
+                 | "neutral_zone" | "mixed"
+    idea_family: free-form snake_case label; same label twice = saturation
+
+``SOURCE_NOTES`` is a non-empty list of paths to research notes that ground
+this alpha. Each path must point to an existing ``research/notes/<topic>.md``.
 """
 from __future__ import annotations
 
@@ -23,6 +39,17 @@ from collections import deque
 from typing import Any
 
 from intraday.strategy import MarketState, Order, OrderType, PortfolioOrder, Side
+
+
+ALPHA_CELL = {
+    "bar": "TIME",
+    "transform": "raw",
+    "horizon": "intraday",
+    "universe": "basket_topk",
+    "exit": "neutral_zone",
+    "idea_family": "_template_do_not_use",
+}
+SOURCE_NOTES: list[str] = []  # copies must populate before backtest runs
 
 
 class AlphaTemplateStrategy:

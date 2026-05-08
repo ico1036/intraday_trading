@@ -98,6 +98,7 @@ def test_backtest_cli_writes_artifacts_and_json(tmp_path):
             ),
             "--output-dir",
             str(out),
+            "--no-enforce-governance",
             "--json",
         ],
         cwd=Path(__file__).resolve().parents[2],
@@ -158,6 +159,7 @@ def test_backtest_cli_accepts_bar_data(tmp_path):
             ),
             "--output-dir",
             str(out),
+            "--no-enforce-governance",
             "--json",
         ],
         cwd=Path(__file__).resolve().parents[2],
@@ -184,6 +186,9 @@ def _run_backtest_cli(*, run_root: Path, data_root: Path, output_dir: Path,
         "exit_threshold": 0.0,
         "max_weight": 0.4,
     }
+    # AlphaTemplateStrategy carries the template-placeholder ALPHA_CELL,
+    # which the pre-flight guard rejects. Tests in this file exercise quality
+    # / verify paths and bypass governance enforcement explicitly.
     cmd = [
         "uv", "run", "python", "scripts/tools/backtest.py",
         "--data-type", "bars",
@@ -195,6 +200,7 @@ def _run_backtest_cli(*, run_root: Path, data_root: Path, output_dir: Path,
         "--bar-type", "TIME", "--bar-size", "60",
         "--strategy-params", json.dumps(sp),
         "--output-dir", str(output_dir),
+        "--no-enforce-governance",
         "--json",
     ]
     if not enforce:
@@ -262,6 +268,68 @@ def test_run_without_quality_gates_block_does_not_enforce(tmp_path):
     result = _last_json(proc.stdout)
     assert result["quality"]["ok"] is True
     assert result["artifact_kept"] is True
+    assert (out / "weights.parquet").exists()
+
+
+def test_backtest_preflight_blocks_template_placeholder(tmp_path):
+    """The default AlphaTemplateStrategy has ALPHA_CELL.idea_family set to the
+    template placeholder; the pre-flight must refuse when enforcement is on.
+    """
+    data_root, run_dir, out = _setup_run(tmp_path, {"min_trades": 0, "min_turnover": 0.0})
+    cmd = [
+        "uv", "run", "python", "scripts/tools/backtest.py",
+        "--data-type", "bars",
+        "--strategy", "AlphaTemplateStrategy",
+        "--symbols", "BTCUSDT", "ETHUSDT",
+        "--data-path", str(data_root),
+        "--start", "2025-03-01 00:00:00",
+        "--end", "2025-03-01 00:09:00",
+        "--bar-type", "TIME", "--bar-size", "60",
+        "--strategy-params", json.dumps({
+            "lookback_bars": 1, "rebalance_bars": 1, "entry_threshold": 0.00001,
+            "exit_threshold": 0.0, "max_weight": 0.4,
+        }),
+        "--output-dir", str(out),
+        "--json",
+    ]
+    proc = subprocess.run(
+        cmd, cwd=Path(__file__).resolve().parents[2],
+        text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+    )
+    result = _last_json(proc.stdout)
+    assert result["ok"] is False
+    assert "preflight" in result
+    issues = result["preflight"]["issues"]
+    assert any("template placeholder" in i for i in issues)
+    assert not (out / "weights.parquet").exists()
+
+
+def test_backtest_preflight_passes_with_disabled_enforcement(tmp_path):
+    data_root, run_dir, out = _setup_run(tmp_path, {"min_trades": 0, "min_turnover": 0.0})
+    cmd = [
+        "uv", "run", "python", "scripts/tools/backtest.py",
+        "--data-type", "bars",
+        "--strategy", "AlphaTemplateStrategy",
+        "--symbols", "BTCUSDT", "ETHUSDT",
+        "--data-path", str(data_root),
+        "--start", "2025-03-01 00:00:00",
+        "--end", "2025-03-01 00:09:00",
+        "--bar-type", "TIME", "--bar-size", "60",
+        "--strategy-params", json.dumps({
+            "lookback_bars": 1, "rebalance_bars": 1, "entry_threshold": 0.00001,
+            "exit_threshold": 0.0, "max_weight": 0.4,
+        }),
+        "--output-dir", str(out),
+        "--no-enforce-governance",
+        "--json",
+    ]
+    proc = subprocess.run(
+        cmd, cwd=Path(__file__).resolve().parents[2],
+        text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+    )
+    result = _last_json(proc.stdout)
+    # quality_gates loose, preflight bypassed → should succeed
+    assert result["ok"] is True
     assert (out / "weights.parquet").exists()
 
 

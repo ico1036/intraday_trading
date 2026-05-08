@@ -28,7 +28,13 @@ import shutil
 
 from scripts.governance.check import (
     _apply_quality_gates,
+    _cell_signature,
     _load_quality_gates_for_run,
+    _parse_module_constants,
+    _resolve_strategy_path_from_manifest,
+    _validate_cell,
+    ALPHA_CELL_KEYS,
+    REPO_ROOT as GOVERNANCE_REPO_ROOT,
 )
 from scripts.tools.verify_artifact import verify_artifact
 
@@ -107,6 +113,24 @@ def run_backtest(args: argparse.Namespace) -> dict[str, Any]:
     symbol_data_paths = json.loads(args.symbol_data_paths) if args.symbol_data_paths else {}
 
     strategy_cls = load_strategy_class(args.strategy)
+
+    # Pre-flight: ALPHA_CELL / SOURCE_NOTES + saturation
+    output_dir = Path(args.output_dir)
+    preflight = _preflight_governance(
+        strategy_cls=strategy_cls,
+        strategy_class_name=args.strategy,
+        output_dir=output_dir,
+        enforce=args.enforce_governance,
+    )
+    if not preflight["ok"]:
+        return {
+            "ok": False,
+            "error": "governance pre-flight failed",
+            "preflight": preflight,
+            "artifact_dir": str(output_dir),
+            "artifact_kept": False,
+        }
+
     sig = inspect.signature(strategy_cls.__init__)
     if "symbols" in sig.parameters and "symbols" not in strategy_params:
         strategy_params["symbols"] = symbols
@@ -119,7 +143,6 @@ def run_backtest(args: argparse.Namespace) -> dict[str, Any]:
         symbol_data_paths=symbol_data_paths,
         data_type=args.data_type,
     )
-    output_dir = Path(args.output_dir)
 
     runner = PortfolioTickBacktestRunner(
         strategy=strategy,
@@ -166,6 +189,118 @@ def run_backtest(args: argparse.Namespace) -> dict[str, Any]:
             "data_type": args.data_type,
         },
     }
+
+
+def _strategy_module_path(strategy_cls: type) -> Path | None:
+    """Return the source file of an already-loaded strategy class."""
+    try:
+        return Path(inspect.getfile(strategy_cls))
+    except (TypeError, OSError):
+        return None
+
+
+def _existing_cells_in_run(run_dir: Path, *, exclude: Path | None = None) -> set[tuple]:
+    """Collect ALPHA_CELL signatures from already-archived alphas in the run."""
+    cells: set[tuple] = set()
+    alphas_dir = run_dir / "alphas"
+    if not alphas_dir.exists():
+        return cells
+    for alpha_dir in alphas_dir.iterdir():
+        if not alpha_dir.is_dir():
+            continue
+        if exclude is not None and alpha_dir.resolve() == exclude.resolve():
+            continue
+        for split in ("is", "os"):
+            manifest = alpha_dir / split / "manifest.json"
+            if not manifest.exists():
+                continue
+            strat_path = _resolve_strategy_path_from_manifest(manifest)
+            if strat_path is None:
+                continue
+            consts = _parse_module_constants(strat_path)
+            if consts is None:
+                continue
+            cells.add(_cell_signature(consts["alpha_cell"]))
+            break
+    return cells
+
+
+def _preflight_governance(
+    *,
+    strategy_cls: type,
+    strategy_class_name: str,
+    output_dir: Path,
+    enforce: bool,
+) -> dict:
+    """Validate ALPHA_CELL + SOURCE_NOTES and check saturation before backtest.
+
+    On any failure with enforce=True we return ok=False and the caller refuses
+    to run. enforce=False still reports issues but allows continuation.
+    """
+    report: dict = {
+        "ok": True,
+        "enforced": enforce,
+        "issues": [],
+        "cell": None,
+        "source_notes": None,
+    }
+
+    strat_path = _strategy_module_path(strategy_cls)
+    if strat_path is None or not strat_path.exists():
+        report["issues"].append("strategy module path not resolvable")
+        report["ok"] = not enforce
+        return report
+
+    consts = _parse_module_constants(strat_path)
+    if consts is None:
+        report["issues"].append(
+            f"{strat_path.name} missing or invalid ALPHA_CELL / SOURCE_NOTES"
+        )
+        report["ok"] = not enforce
+        return report
+
+    cell = consts["alpha_cell"]
+    notes = consts["source_notes"]
+    report["cell"] = cell
+    report["source_notes"] = notes
+
+    cell_issues = _validate_cell(cell)
+    if cell_issues:
+        report["issues"].extend(f"ALPHA_CELL: {i}" for i in cell_issues)
+
+    if not isinstance(notes, list) or not notes:
+        report["issues"].append("SOURCE_NOTES is empty")
+    else:
+        for n in notes:
+            if not (PROJECT_ROOT / str(n)).exists():
+                report["issues"].append(f"SOURCE_NOTES missing file: {n}")
+
+    if cell.get("idea_family") == "_template_do_not_use":
+        report["issues"].append(
+            "ALPHA_CELL.idea_family is the template placeholder — must be set"
+        )
+
+    # Saturation: same cell signature already in run.
+    try:
+        run_dir = output_dir.resolve().parents[2]
+    except IndexError:
+        run_dir = None
+    if run_dir is not None and run_dir.exists() and not cell_issues:
+        # Exclude the alpha_dir we're about to (re)write; reruns of the same id
+        # should not trip saturation against themselves.
+        try:
+            self_alpha_dir = output_dir.resolve().parents[0]
+        except IndexError:
+            self_alpha_dir = None
+        existing = _existing_cells_in_run(run_dir, exclude=self_alpha_dir)
+        if _cell_signature(cell) in existing:
+            report["issues"].append(
+                "ALPHA_CELL signature already present in this run (saturation)"
+            )
+
+    if report["issues"] and enforce:
+        report["ok"] = False
+    return report
 
 
 def _enforce_quality_gates(output_dir: Path, *, enforce: bool) -> dict:
@@ -226,6 +361,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Do not delete artifact dir on quality_gate failure (debug only).",
     )
     parser.set_defaults(enforce_quality=True)
+    parser.add_argument(
+        "--no-enforce-governance",
+        dest="enforce_governance",
+        action="store_false",
+        help="Skip ALPHA_CELL / SOURCE_NOTES / saturation pre-flight (debug only).",
+    )
+    parser.set_defaults(enforce_governance=True)
     parser.add_argument("--json", action="store_true", help="emit JSON only")
     return parser.parse_args(argv)
 

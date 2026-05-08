@@ -62,27 +62,32 @@ without asking for another prompt until the IS target is reached or the user
 interrupts.
 
 1. Read `archive/<run_id>/splits.json` (including `universe`),
-   `archive/<run_id>/alpha_index.csv`, and recent entries in
-   `archive/<run_id>/LOG.md`.
+   `archive/<run_id>/alpha_index.csv`, recent entries in
+   `archive/<run_id>/LOG.md`, and `research/index.csv`.
 2. Pick the next `alpha_id`. Use the next `is_###` prefix not already present
    in `alpha_index.csv`, then add a compact idea suffix.
-3. Pick an underexplored idea. Do not mutate the best prior alpha.
-4. Copy `src/intraday/strategies/multi/_alpha_template.py` or create one
-   compatible strategy class.
-5. Add focused tests for order direction, finite weights, and single/multi
+3. Pick a cell vector `(bar, transform, horizon, universe, exit,
+   idea_family)` not already attempted in this run. The cell-saturation
+   guard rejects duplicates.
+4. Invoke the `/research` skill for the chosen `idea_family` if no
+   `research/notes/<topic>.md` covers it. Reuse existing notes otherwise.
+5. Copy `src/intraday/strategies/multi/_alpha_template.py` and populate
+   `ALPHA_CELL` and `SOURCE_NOTES` at module top.
+6. Add focused tests for order direction, finite weights, and single/multi
    symbol behavior.
-6. Run focused tests.
-7. Run an IS-only backtest into `archive/<run_id>/alphas/<alpha_id>/is/`,
-   passing the run's `universe` to `--symbols`.
-8. Run artifact verification and inspect `weights.parquet`.
-9. Run `uv run python scripts/governance/check.py --json`. Any
+7. Run focused tests.
+8. Run an IS-only backtest into `archive/<run_id>/alphas/<alpha_id>/is/`,
+   passing the run's `universe` to `--symbols`. The CLI pre-flight refuses
+   on missing/invalid metadata or saturated cells.
+9. Run artifact verification and inspect `weights.parquet`.
+10. Run `uv run python scripts/governance/check.py --json`. Any
    non-zero exit aborts the attempt; revert disallowed changes before
    continuing.
-10. Append one row to `archive/<run_id>/alpha_index.csv`.
-11. Append one short JSON block to `archive/<run_id>/LOG.md`.
+11. Append one row to `archive/<run_id>/alpha_index.csv` and one short
+    block to `archive/<run_id>/LOG.md` (include cell vector + cited note).
 12. If status is `IS_PASS`, stop generation and ask before OS validation.
 13. If status is not `IS_PASS`, start the next attempt from a different
-   search-space cell.
+   search-space cell. Never tune the failing alpha and resubmit.
 
 ## Deterministic Commands
 

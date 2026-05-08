@@ -79,23 +79,44 @@ Before attempts, read `archive/<run_id>/splits.json`. Use its fixed IS period
 for development. OS is reserved for one validation pass after strategy freeze.
 Use the run's `universe` field for `--symbols`.
 
-1. Read `alpha_index.csv` and recent `LOG.md` entries.
-2. Choose a search-space cell that is different from recent attempts.
-3. Pick the next unused `is_###` alpha id with a compact idea suffix.
-4. Copy `src/intraday/strategies/multi/_alpha_template.py`.
-5. Implement one strategy in `src/intraday/strategies/multi/<alpha>.py`.
-6. Add focused tests in `tests/strategies/test_<alpha>.py`.
-7. Run the focused tests.
-8. Run IS backtest into `archive/<run_id>/alphas/<alpha_id>/is/`.
-9. Verify the artifact and inspect `weights.parquet`.
-10. Run `uv run python scripts/governance/check.py --json` and stop on
-    any violation. Do not commit or proceed otherwise.
-11. Append `alpha_index.csv` and `LOG.md`.
-12. If status is `IS_PASS`, stop and ask before OS validation.
-13. If status is not `IS_PASS`, move to a different search-space cell.
+1. Read `alpha_index.csv`, recent `LOG.md`, and `research/index.csv`.
+2. Choose a search-space cell **different from every prior attempt** in this
+   run. The cell is the six-tuple `(bar, transform, horizon, universe, exit,
+   idea_family)` declared by the `ALPHA_CELL` constant in the strategy file.
+   Reusing a saturated cell is rejected by governance and the backtest CLI
+   refuses to run.
+3. **Research:** invoke the `/research` skill for the chosen `idea_family`
+   if no `research/notes/<topic>.md` already covers it. Reuse existing notes
+   when applicable.
+4. Pick the next unused `is_###` alpha id with a compact idea suffix.
+5. Copy `src/intraday/strategies/multi/_alpha_template.py`. Set
+   `ALPHA_CELL` (six required keys) and `SOURCE_NOTES` (paths to research
+   notes) at module top.
+6. Implement one strategy in `src/intraday/strategies/multi/<alpha>.py`.
+7. Add focused tests in `tests/strategies/test_<alpha>.py`.
+8. Run the focused tests.
+9. Run IS backtest into `archive/<run_id>/alphas/<alpha_id>/is/`. The CLI
+   pre-flight refuses if `ALPHA_CELL` is invalid, `SOURCE_NOTES` is empty
+   or missing files, or the cell signature is already present in this run.
+10. Verify the artifact and inspect `weights.parquet`.
+11. Run `uv run python scripts/governance/check.py --json` and stop on any
+    violation. Do not commit or proceed otherwise.
+12. Append `alpha_index.csv` and `LOG.md`. The LOG entry must include the
+    `ALPHA_CELL` and the linked research note.
+13. If status is `IS_PASS`, stop and ask before OS validation.
+14. If status is not `IS_PASS`, move to a different search-space cell —
+    never tune the failing alpha and resubmit.
 
 OS validation labels distribution shift only. Do not modify the strategy based
 on OS results.
+
+## Coverage > exploitation
+
+The worst failure mode in this loop is fixating on what almost worked and
+missing entire regions of the search space. The cell-saturation guard, the
+ban on tune-and-resubmit, and the research-note requirement all exist to
+force breadth. If you find yourself wanting another variant of a near-winner,
+stop and pick an underexplored cell instead.
 
 ## Deterministic Commands
 

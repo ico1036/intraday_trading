@@ -1,33 +1,24 @@
 #!/usr/bin/env python3
 """Workflow governance checks.
 
-Two independent checks, both run by default:
+Independent checks, all run by default:
 
-1. ``editable_surface``
-   Compare changed files (vs ``--baseline``, default ``HEAD``) against a
-   whitelist of paths agents may modify during alpha generation. Any file
-   outside the whitelist is a violation.
-
-2. ``universe``
-   For every alpha artifact directory under ``archive/<run_id>/alphas/<alpha_id>/{is,os}``,
-   ensure the recorded ``manifest.json`` ``symbols`` exactly equals the
-   run's declared ``universe`` in ``archive/<run_id>/splits.json``.
+1. ``editable_surface`` — diff vs ``--baseline`` must stay in whitelist.
+2. ``universe`` — every alpha manifest's ``symbols`` equals run universe.
+3. ``quality`` — every alpha satisfies ``splits.json.quality_gates``.
+4. ``coverage`` — no two alphas share the same ALPHA_CELL six-tuple in a run.
+5. ``research`` — every alpha references at least one existing
+   ``research/notes/<topic>.md`` via SOURCE_NOTES.
 
 Exit codes:
     0 - clean
     1 - violations found
     2 - usage / IO error
-
-Usage:
-    uv run python scripts/governance/check.py --json
-    uv run python scripts/governance/check.py --baseline HEAD~1
-    uv run python scripts/governance/check.py --staged
-    uv run python scripts/governance/check.py --only editable_surface
-    uv run python scripts/governance/check.py --only universe
 """
 from __future__ import annotations
 
 import argparse
+import ast
 import fnmatch
 import json
 import re
@@ -333,9 +324,244 @@ def check_quality(
     return res
 
 
+# ----- alpha-cell parsing -------------------------------------------------
+
+ALPHA_CELL_KEYS = ("bar", "transform", "horizon", "universe", "exit", "idea_family")
+ALLOWED_BAR = {"TIME", "VOLUME", "DOLLAR", "TICK"}
+ALLOWED_TRANSFORM = {"raw", "z_score", "percentile", "rolling_rank", "ewma_residual", "composite"}
+ALLOWED_HORIZON = {"ultra_short", "intraday", "session", "multi_day"}
+ALLOWED_UNIVERSE = {"single", "pair", "basket_topk", "basket_full"}
+ALLOWED_EXIT = {"time_stop", "signal_flip", "trailing", "vol_stop", "neutral_zone", "mixed"}
+
+ALLOWED_VALUES = {
+    "bar": ALLOWED_BAR,
+    "transform": ALLOWED_TRANSFORM,
+    "horizon": ALLOWED_HORIZON,
+    "universe": ALLOWED_UNIVERSE,
+    "exit": ALLOWED_EXIT,
+}
+
+TEMPLATE_FILES = {
+    "_alpha_template.py",
+    "__init__.py",
+}
+
+
+def _parse_module_constants(path: Path) -> dict | None:
+    """Statically extract ALPHA_CELL and SOURCE_NOTES from a strategy file.
+
+    Returns None if either is missing or unparseable. The ALPHA_CELL keys are
+    validated against the allowed value sets; ``idea_family`` is free-form.
+    """
+    try:
+        tree = ast.parse(path.read_text())
+    except SyntaxError:
+        return None
+
+    cell: dict | None = None
+    notes: list | None = None
+
+    def _eval_targets(targets: list[ast.expr], value: ast.expr | None) -> None:
+        nonlocal cell, notes
+        if value is None:
+            return
+        for tgt in targets:
+            if not isinstance(tgt, ast.Name):
+                continue
+            if tgt.id == "ALPHA_CELL" and isinstance(value, ast.Dict):
+                try:
+                    cell = ast.literal_eval(value)
+                except (ValueError, SyntaxError):
+                    cell = None
+            elif tgt.id == "SOURCE_NOTES":
+                try:
+                    notes = ast.literal_eval(value)
+                except (ValueError, SyntaxError):
+                    notes = None
+
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            _eval_targets(node.targets, node.value)
+        elif isinstance(node, ast.AnnAssign):
+            # ``SOURCE_NOTES: list[str] = [...]`` is AnnAssign, not Assign.
+            _eval_targets([node.target], node.value)
+
+    if not isinstance(cell, dict) or not isinstance(notes, list):
+        return None
+    return {"alpha_cell": cell, "source_notes": notes}
+
+
+def _validate_cell(cell: dict) -> list[str]:
+    issues: list[str] = []
+    for key in ALPHA_CELL_KEYS:
+        if key not in cell:
+            issues.append(f"missing key: {key}")
+    for key, allowed in ALLOWED_VALUES.items():
+        v = cell.get(key)
+        if v is not None and v not in allowed:
+            issues.append(f"{key}={v!r} not in {sorted(allowed)}")
+    if "idea_family" in cell and not isinstance(cell["idea_family"], str):
+        issues.append("idea_family must be a string")
+    return issues
+
+
+def _cell_signature(cell: dict) -> tuple:
+    return tuple(cell.get(k) for k in ALPHA_CELL_KEYS)
+
+
+# ----- coverage -----------------------------------------------------------
+
+
+@dataclass
+class CoverageCheckResult:
+    violations: list[dict] = field(default_factory=list)
+    inspected: list[str] = field(default_factory=list)
+
+
+def _resolve_strategy_path_from_manifest(manifest_path: Path) -> Path | None:
+    """Locate the strategy module referenced by a manifest.
+
+    Strategy class is in manifest.json; map class -> module via the same
+    snake_case rule the backtest CLI uses.
+    """
+    try:
+        m = json.loads(manifest_path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    cls = m.get("strategy_name")
+    if not isinstance(cls, str) or not cls:
+        return None
+    parts = []
+    for idx, ch in enumerate(cls):
+        if ch.isupper() and idx > 0 and not cls[idx - 1].isupper():
+            parts.append("_")
+        parts.append(ch.lower())
+    module = "".join(parts) + ".py"
+    candidate = REPO_ROOT / "src" / "intraday" / "strategies" / "multi" / module
+    return candidate if candidate.exists() else None
+
+
+def check_coverage(*, archive_root: Path | None = None) -> CoverageCheckResult:
+    """Detect duplicate (bar, transform, horizon, universe, exit, idea_family).
+
+    For each run, walk all alphas with a manifest, locate their strategy file,
+    parse ALPHA_CELL, and report any signature that appears more than once.
+    """
+    res = CoverageCheckResult()
+    archive_root = archive_root or (REPO_ROOT / "archive")
+    if not archive_root.exists():
+        return res
+
+    for run_dir in sorted(p for p in archive_root.iterdir() if p.is_dir()):
+        alphas_dir = run_dir / "alphas"
+        if not alphas_dir.exists():
+            continue
+        seen: dict[tuple, list[str]] = {}
+        for alpha_dir in sorted(p for p in alphas_dir.iterdir() if p.is_dir()):
+            split_dir = None
+            for split in ("is", "os"):
+                if (alpha_dir / split / "manifest.json").exists():
+                    split_dir = alpha_dir / split
+                    break
+            if split_dir is None:
+                continue
+            manifest = split_dir / "manifest.json"
+            strat_path = _resolve_strategy_path_from_manifest(manifest)
+            try:
+                rel = alpha_dir.relative_to(REPO_ROOT).as_posix()
+            except ValueError:
+                rel = alpha_dir.as_posix()
+            res.inspected.append(rel)
+            if strat_path is None:
+                # legacy alpha with no resolvable strategy file; skip silently
+                continue
+            consts = _parse_module_constants(strat_path)
+            if consts is None:
+                # legacy strategy without ALPHA_CELL — skip rather than fail,
+                # so historical alphas don't permanently break the check
+                continue
+            cell = consts["alpha_cell"]
+            if _validate_cell(cell):
+                res.violations.append(
+                    {
+                        "path": rel,
+                        "reason": "ALPHA_CELL invalid",
+                        "issues": _validate_cell(cell),
+                    }
+                )
+                continue
+            sig = _cell_signature(cell)
+            seen.setdefault(sig, []).append(rel)
+
+        for sig, paths in seen.items():
+            if len(paths) >= 2:
+                res.violations.append(
+                    {
+                        "reason": "duplicate cell signature",
+                        "cell": dict(zip(ALPHA_CELL_KEYS, sig)),
+                        "alphas": paths,
+                    }
+                )
+    return res
+
+
+# ----- research citation -------------------------------------------------
+
+
+@dataclass
+class ResearchCheckResult:
+    violations: list[dict] = field(default_factory=list)
+    inspected: list[str] = field(default_factory=list)
+
+
+def check_research(*, archive_root: Path | None = None) -> ResearchCheckResult:
+    """Each alpha's strategy file must cite >=1 existing research note."""
+    res = ResearchCheckResult()
+    archive_root = archive_root or (REPO_ROOT / "archive")
+    if not archive_root.exists():
+        return res
+    for run_dir in sorted(p for p in archive_root.iterdir() if p.is_dir()):
+        alphas_dir = run_dir / "alphas"
+        if not alphas_dir.exists():
+            continue
+        for alpha_dir in sorted(p for p in alphas_dir.iterdir() if p.is_dir()):
+            manifest = None
+            for split in ("is", "os"):
+                m = alpha_dir / split / "manifest.json"
+                if m.exists():
+                    manifest = m
+                    break
+            if manifest is None:
+                continue
+            strat_path = _resolve_strategy_path_from_manifest(manifest)
+            try:
+                rel = alpha_dir.relative_to(REPO_ROOT).as_posix()
+            except ValueError:
+                rel = alpha_dir.as_posix()
+            res.inspected.append(rel)
+            if strat_path is None or strat_path.name in TEMPLATE_FILES:
+                continue
+            consts = _parse_module_constants(strat_path)
+            if consts is None:
+                # legacy strategy without metadata; skip
+                continue
+            notes = consts["source_notes"]
+            if not isinstance(notes, list) or not notes:
+                res.violations.append(
+                    {"path": rel, "reason": "SOURCE_NOTES empty"}
+                )
+                continue
+            missing = [n for n in notes if not (REPO_ROOT / str(n)).exists()]
+            if missing:
+                res.violations.append(
+                    {"path": rel, "reason": "missing note files", "missing": missing}
+                )
+    return res
+
+
 # ----- CLI ----------------------------------------------------------------
 
-CHECK_NAMES = ("editable_surface", "universe", "quality")
+CHECK_NAMES = ("editable_surface", "universe", "quality", "coverage", "research")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -407,6 +633,26 @@ def main(argv: list[str] | None = None) -> int:
         if q.violations:
             out["ok"] = False
 
+    if "coverage" in selected:
+        c = check_coverage()
+        out["checks"]["coverage"] = {
+            "ok": not c.violations,
+            "inspected_count": len(c.inspected),
+            "violations": c.violations,
+        }
+        if c.violations:
+            out["ok"] = False
+
+    if "research" in selected:
+        r = check_research()
+        out["checks"]["research"] = {
+            "ok": not r.violations,
+            "inspected_count": len(r.inspected),
+            "violations": r.violations,
+        }
+        if r.violations:
+            out["ok"] = False
+
     if args.json:
         print(json.dumps(out, indent=2, default=str))
     else:
@@ -448,6 +694,32 @@ def _emit_human(out: dict) -> None:
                 print(f"    - {v['path']}  [{gate}] {v.get('reason', '')}")
         else:
             print("  ok: all alphas pass declared quality_gates")
+    c = out["checks"].get("coverage")
+    if c is not None:
+        print(f"[coverage] inspected {c['inspected_count']} alpha(s)")
+        if c["violations"]:
+            print(f"  VIOLATIONS ({len(c['violations'])}):")
+            for v in c["violations"]:
+                if "alphas" in v:
+                    print(f"    - duplicate cell {v.get('cell')}")
+                    for a in v["alphas"]:
+                        print(f"        {a}")
+                else:
+                    print(f"    - {v.get('path', '?')}  ({v.get('reason', '')})")
+        else:
+            print("  ok: no duplicate cell signatures")
+    r = out["checks"].get("research")
+    if r is not None:
+        print(f"[research] inspected {r['inspected_count']} alpha(s)")
+        if r["violations"]:
+            print(f"  VIOLATIONS ({len(r['violations'])}):")
+            for v in r["violations"]:
+                detail = ""
+                if "missing" in v:
+                    detail = f"  missing={v['missing']}"
+                print(f"    - {v['path']}  ({v.get('reason', '')}){detail}")
+        else:
+            print("  ok: every alpha cites valid research notes")
     print(f"\nresult: {'OK' if out['ok'] else 'FAIL'}")
 
 
