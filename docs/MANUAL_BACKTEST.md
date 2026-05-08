@@ -22,6 +22,20 @@ single-coin template.
 
 ## 2. Run A Backtest
 
+The deterministic CLI defaults to 1m futures bars:
+
+```bash
+uv run python scripts/tools/backtest.py \
+  --data-type bars \
+  --strategy MyAlphaStrategy \
+  --symbols BTCUSDT ETHUSDT \
+  --data-path data/futures_klines \
+  --start "2026-04-01 00:00:00" \
+  --end "2026-04-30 23:59:00" \
+  --output-dir archive/manual/MyAlphaStrategy/is \
+  --json
+```
+
 The runnable example is:
 
 ```bash

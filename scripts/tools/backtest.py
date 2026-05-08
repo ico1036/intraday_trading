@@ -21,6 +21,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from intraday.backtest.multi_tick_runner import PortfolioTickBacktestRunner
 from intraday.candle_builder import CandleType
+from intraday.data.bar_loader import BarDataLoader
 from intraday.data.loader import TickDataLoader
 
 from scripts.tools.verify_artifact import verify_artifact
@@ -79,8 +80,10 @@ def build_loaders(
     symbols: list[str],
     data_path: Path,
     symbol_data_paths: dict[str, str],
+    data_type: str,
 ) -> dict[str, TickDataLoader]:
     loaders = {}
+    loader_cls = BarDataLoader if data_type == "bars" else TickDataLoader
     for symbol in symbols:
         path = Path(symbol_data_paths[symbol]) if symbol in symbol_data_paths else data_path
         candidate = data_path / symbol
@@ -88,7 +91,7 @@ def build_loaders(
             path = candidate
         if not path.exists():
             raise FileNotFoundError(f"data path not found for {symbol}: {path}")
-        loaders[symbol] = TickDataLoader(path, symbol=symbol)
+        loaders[symbol] = loader_cls(path, symbol=symbol)
     return loaders
 
 
@@ -108,6 +111,7 @@ def run_backtest(args: argparse.Namespace) -> dict[str, Any]:
         symbols=symbols,
         data_path=data_path,
         symbol_data_paths=symbol_data_paths,
+        data_type=args.data_type,
     )
     output_dir = Path(args.output_dir)
 
@@ -147,6 +151,7 @@ def run_backtest(args: argparse.Namespace) -> dict[str, Any]:
             "final_capital": result.final_capital,
             "tick_counts": result.tick_counts,
             "bar_counts": result.bar_counts,
+            "data_type": args.data_type,
         },
     }
 
@@ -155,7 +160,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run deterministic alpha backtest")
     parser.add_argument("--strategy", required=True)
     parser.add_argument("--symbols", nargs="+", required=True)
-    parser.add_argument("--data-path", default="data/futures_ticks")
+    parser.add_argument("--data-type", choices=["ticks", "bars"], default="bars")
+    parser.add_argument("--data-path", default="data/futures_klines")
     parser.add_argument("--symbol-data-paths", default="")
     parser.add_argument("--start", default=None)
     parser.add_argument("--end", default=None)

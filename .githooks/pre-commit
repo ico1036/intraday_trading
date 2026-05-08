@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# Repository pre-commit hook.
+#
+# Activate once per clone:
+#     git config core.hooksPath .githooks
+#
+# Runs scripts/governance/check.py against the staged diff. Aborts the
+# commit on any violation (exit 1).
+
+set -e
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "$REPO_ROOT"
+
+if ! command -v uv >/dev/null 2>&1; then
+  echo "[pre-commit] uv not found on PATH; skipping governance check." >&2
+  echo "[pre-commit] install uv or run 'python scripts/governance/check.py --staged --json' manually." >&2
+  exit 0
+fi
+
+uv run python scripts/governance/check.py --staged

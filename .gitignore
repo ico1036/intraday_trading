@@ -91,8 +91,8 @@ logs/
 *.mov
 *.mkv
 *.pdf
-data/
-datasets/
+/data/
+/datasets/
 checkpoints/
 models/
 
@@ -113,6 +113,7 @@ cache/
 
 # Local development
 *.local
+.nicegui/
 *.png
 !docs/assets/*.png
 !docs/site/assets/*.png
@@ -124,8 +125,6 @@ tests/test_strategy_*.py
 # so cross-run belief is reviewable in PRs.
 archive/*
 !archive/.gitkeep
-
-
 
 
 

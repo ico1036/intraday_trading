@@ -34,6 +34,24 @@ class FakeTickLoader:
             yield t
 
 
+class FakeBarLoader:
+    """테스트용 prebuilt bar loader."""
+
+    def __init__(self, bars: list[Candle]):
+        self._bars = sorted(bars, key=lambda c: c.timestamp)
+
+    def iter_bars(self, start_time=None, end_time=None):
+        for bar in self._bars:
+            if start_time and bar.timestamp < start_time:
+                continue
+            if end_time and bar.timestamp > end_time:
+                continue
+            yield bar
+
+    def estimate_total_rows(self, start_time=None, end_time=None):
+        return sum(1 for _ in self.iter_bars(start_time, end_time))
+
+
 def make_trade(
     symbol: str,
     price: float,
@@ -540,6 +558,53 @@ class TestPortfolioOrderExecution:
         opened = [t for t in runner._trade_log if t["action"] == "OPEN_LONG"]
         assert opened[0]["fee"] == pytest.approx(50000.0 * 0.01 * 0.002)
 
+    def test_weight_order_uses_leverage_for_long_short_notional(self):
+        """weight 주문은 leverage를 반영해 롱/숏 노출을 만든다."""
+        from intraday.backtest.multi_tick_runner import PortfolioTickBacktestRunner
+
+        base = datetime(2025, 3, 1, 9, 0, 0)
+        loaders = {
+            "BTCUSDT": FakeTickLoader([
+                make_trade("BTC", 50000.0, 0.1, base + timedelta(seconds=i))
+                for i in range(121)
+            ]),
+            "ETHUSDT": FakeTickLoader([
+                make_trade("ETH", 3000.0, 0.5, base + timedelta(seconds=i))
+                for i in range(121)
+            ]),
+        }
+        strategy = WeightedPortfolioStrategy(
+            symbols=["BTCUSDT", "ETHUSDT"],
+            weights={"BTCUSDT": 0.5, "ETHUSDT": -0.5},
+        )
+
+        runner = PortfolioTickBacktestRunner(
+            strategy=strategy,
+            data_loaders=loaders,
+            bar_type=CandleType.TIME,
+            bar_size=60,
+            initial_capital=10000.0,
+            position_size_pct=1.0,
+            leverage=3,
+            maker_fee_rate=0.0,
+            taker_fee_rate=0.0,
+        )
+
+        runner.run()
+
+        opened = [t for t in runner._trade_log if t["action"].startswith("OPEN")]
+        btc_open = next(t for t in opened if t["symbol"] == "BTCUSDT")
+        eth_open = next(t for t in opened if t["symbol"] == "ETHUSDT")
+
+        assert btc_open["action"] == "OPEN_LONG"
+        assert eth_open["action"] == "OPEN_SHORT"
+        assert btc_open["quantity"] == pytest.approx(10000.0 * 0.5 * 3 / 50000.0)
+        assert eth_open["quantity"] == pytest.approx(10000.0 * 0.5 * 3 / 3000.0)
+
+        weights = {row["symbol"]: row for row in runner._weight_events}
+        assert weights["BTCUSDT"]["target_weight"] == pytest.approx(1.5)
+        assert weights["ETHUSDT"]["target_weight"] == pytest.approx(-1.5)
+
     def test_weight_sum_exceed_raises(self):
         """weight 합이 1 초과면 실행 단계에서 실패"""
         from intraday.backtest.multi_tick_runner import PortfolioTickBacktestRunner
@@ -655,6 +720,52 @@ class TestPortfolioFuturesExecution:
         opened = [t for t in runner._trade_log if t["action"] == "OPEN_LONG"]
         assert opened[0]["timestamp"] == base + timedelta(seconds=61)
         assert opened[0]["price"] == 51000.0
+
+    def test_prebuilt_bar_orders_execute_on_next_bar_open(self):
+        """분봉 데이터에서는 현재 bar 신호가 다음 bar open에 체결된다."""
+        from intraday.backtest.multi_tick_runner import PortfolioTickBacktestRunner
+
+        base = datetime(2025, 3, 1, 9, 0, 0)
+        bars = [
+            Candle(
+                timestamp=base,
+                open=100.0,
+                high=105.0,
+                low=99.0,
+                close=104.0,
+                volume=10.0,
+                quote_volume=1000.0,
+                trade_count=10,
+            ),
+            Candle(
+                timestamp=base + timedelta(minutes=1),
+                open=110.0,
+                high=120.0,
+                low=109.0,
+                close=119.0,
+                volume=10.0,
+                quote_volume=1100.0,
+                trade_count=10,
+            ),
+        ]
+
+        runner = PortfolioTickBacktestRunner(
+            strategy=FixedLongOncePortfolioStrategy("BTCUSDT", quantity=2.0),
+            data_loaders={"BTCUSDT": FakeBarLoader(bars)},
+            bar_type=CandleType.TIME,
+            bar_size=60,
+            initial_capital=10000.0,
+            maker_fee_rate=0.0,
+            taker_fee_rate=0.0,
+        )
+
+        result = runner.run()
+
+        opened = [t for t in runner._trade_log if t["action"] == "OPEN_LONG"]
+        assert len(opened) == 1
+        assert opened[0]["timestamp"] == base + timedelta(minutes=1)
+        assert opened[0]["price"] == pytest.approx(110.0)
+        assert result.final_capital == pytest.approx(10018.0)
 
 
 class TestResultOutput:

@@ -5,13 +5,16 @@ Compact intraday alpha research repo.
 ## Core Paths
 
 - `AGENT.md`: markdown operating manual for alpha exploration agents.
+- `AUTORESEARCH.md`: loop contract used by automated agents.
 - `CLAUDE.md`: Claude Code entry instructions; mirrors the same workflow.
 - `AGENTS.md`: compact first-read context for coding agents.
+- `scripts/governance/check.py`: workflow guard (editable surface + universe).
 - `docs/MANUAL_BACKTEST.md`: manual strategy + backtest path.
 - `docs/ALPHA_ARTIFACT_CONTRACT.md`: saved alpha artifact contract.
 - `src/intraday/strategies/multi/_alpha_template.py`: strategy template.
 - `src/intraday/backtest/multi_tick_runner.py`: portfolio tick backtest runner.
-- `scripts/agent/run_v2.py`: legacy staged single-agent research loop.
+- `scripts/tools/backtest.py`: deterministic backtest CLI.
+- `scripts/tools/verify_artifact.py`: deterministic artifact validator.
 - `scripts/run_portfolio_forward_test.py`: portfolio forward test runner.
 
 ## Setup
@@ -19,7 +22,43 @@ Compact intraday alpha research repo.
 ```bash
 uv sync
 cp .env.example .env
+git config core.hooksPath .githooks
 ```
+
+The last command activates the repo-local pre-commit hook
+(`.githooks/pre-commit`), which runs `scripts/governance/check.py` on every
+commit and aborts on editable-surface or universe-consistency violations.
+
+## Universe
+
+The default trading universe is the 7-symbol list declared in each run's
+`archive/<run_id>/splits.json` under `"universe"`:
+
+    BTCUSDT, ETHUSDT, SOLUSDT, BNBUSDT, XRPUSDT, DOGEUSDT, ADAUSDT
+
+All alphas use a picking-and-weighting contract: receive the run's
+`symbols`, return target weights via `PortfolioOrder`. The governance
+check ensures every alpha's `manifest.json` `symbols` matches the run's
+`universe`.
+
+## Governance
+
+Run the workflow check at any time:
+
+```bash
+uv run python scripts/governance/check.py --json
+uv run python scripts/governance/check.py --staged   # for the pre-commit case
+```
+
+Two checks run:
+
+- `editable_surface`: only allow-listed paths may change vs the baseline
+  (default `HEAD`). The whitelist lives in `scripts/governance/check.py`.
+- `universe`: every alpha manifest's `symbols` must equal its run's
+  declared universe.
+
+`AGENT.md` lists forbidden actions explicitly. The hook + governance
+script enforce them at the repository level.
 
 ## Manual Backtest
 
@@ -45,14 +84,23 @@ Read `AGENT.md`, implement one independent alpha, backtest it into
 Exploration is breadth-first. Do not refine prior winners during alpha
 generation; selection and composite construction are separate phases.
 
-The older v2 staged loop remains in `scripts/agent/run_v2.py`, but it is no
-longer the default path for new exploration work.
-
 Deterministic commands for any agent runtime:
 
 ```bash
 uv run python scripts/tools/backtest.py ... --json
 uv run python scripts/tools/verify_artifact.py archive/<run_id>/alphas/<alpha_id> --json
+uv run python scripts/tools/validate_is_os.py --alpha-dir archive/<run_id>/alphas/<alpha_id> --json
+```
+
+Store exploration runs as `archive/<run_id>/alphas/<alpha_id>/{is,os}/`.
+Keep fixed periods in `archive/<run_id>/splits.json`.
+OS validation writes `validation.json` warning labels only; do not revise a
+strategy from OS results.
+
+The default backtest data path is 1m futures bars:
+
+```bash
+uv run python scripts/tools/backtest.py --data-type bars --data-path data/futures_klines ...
 ```
 
 ## Tests

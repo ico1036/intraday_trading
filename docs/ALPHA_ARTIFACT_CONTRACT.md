@@ -29,6 +29,41 @@ files:
 Forward runs may also keep compatibility files such as `portfolio_nav.parquet`,
 but readers must prefer the core files above.
 
+For alpha exploration, store fixed in-sample and out-of-sample runs under one
+alpha directory:
+
+```text
+archive/<run_id>/alphas/<alpha_id>/
+  is/
+    weights.parquet
+    metrics.json
+    ...
+  os/
+    weights.parquet
+    metrics.json
+    ...
+  validation.json
+```
+
+The fixed split file lives at:
+
+```text
+archive/<run_id>/splits.json
+```
+
+Example:
+
+```json
+{
+  "is": {"start": "2025-03-01 00:00:00", "end": "2025-03-07 23:59:59"},
+  "os": {"start": "2025-03-08 00:00:00", "end": "2025-03-14 23:59:59"}
+}
+```
+
+The agent may inspect IS during development. OS is run after strategy code is
+frozen and is used only to write warning labels in `validation.json`; it must not
+drive strategy repair.
+
 ## `weights.parquet`
 
 This is the primary alpha product.
@@ -75,6 +110,20 @@ Flat top-level metrics used for ranking/filtering:
 
 `summary.json` can contain richer run metadata, but `metrics.json` stays flat
 so ranking many alphas is cheap.
+
+## `validation.json`
+
+`scripts/tools/validate_is_os.py` compares `is/metrics.json` and
+`os/metrics.json` and writes `validation.json`.
+
+Warnings are labels, not failures. Initial flags:
+
+- `RETURN_COLLAPSE`
+- `SHARPE_COLLAPSE`
+- `SHARPE_SIGN_FLIP`
+- `DRAWDOWN_EXPANSION`
+- `WIN_RATE_DRIFT`
+- `OS_TRADE_COUNT_TOO_LOW`
 
 ## Composite Workflow
 

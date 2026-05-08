@@ -312,6 +312,9 @@ class PortfolioTickBacktestRunner:
     def tick_counts(self) -> dict[str, int]:
         return self._tick_counts.copy()
 
+    def _alpha_id(self) -> str:
+        return str(getattr(self.strategy, "alpha_id", self.strategy.__class__.__name__))
+
     def _merge_ticks(
         self,
         start_time: Optional[datetime] = None,
@@ -336,6 +339,25 @@ class PortfolioTickBacktestRunner:
 
         for _ts, _i, symbol, trade in merged:
             yield (symbol, trade)
+
+    def _merge_bars(
+        self,
+        start_time: Optional[datetime] = None,
+        end_time: Optional[datetime] = None,
+    ) -> Iterator[tuple[str, Candle]]:
+        """Merge symbol bar streams by timestamp."""
+
+        def _tagged_iter(symbol: str):
+            loader = self.data_loaders[symbol]
+            for i, candle in enumerate(loader.iter_bars(start_time, end_time)):
+                yield (candle.timestamp, i, symbol, candle)
+
+        merged = heapq.merge(*[_tagged_iter(sym) for sym in self._symbols])
+        for _ts, _i, symbol, candle in merged:
+            yield (symbol, candle)
+
+    def _uses_bar_loaders(self) -> bool:
+        return all(callable(getattr(loader, "iter_bars", None)) for loader in self.data_loaders.values())
 
     def _estimate_loader_rows(
         self,
@@ -408,8 +430,9 @@ class PortfolioTickBacktestRunner:
 
         기본 동작:
         - quantity가 주어진 경우 해당 수량 사용
-        - quantity가 0 이하이고 weight가 주어진 경우, 현재 자본 * position_size_pct * weight 로 수량 산정
-        - weight는 0~1 사이이며 현재 가격으로 계산
+        - quantity가 0 이하이고 weight가 주어진 경우,
+          현재 자본 * position_size_pct * weight * leverage 로 수량 산정
+        - weight는 0~1 사이의 전략 내 배분 비중이며, 실제 노출은 leverage까지 반영
         """
         if order.quantity > 0:
             return order.quantity
@@ -420,8 +443,13 @@ class PortfolioTickBacktestRunner:
         if not (0 < order.weight <= 1):
             raise ValueError(f"Invalid order weight for {symbol}: {order.weight}")
 
-        position_value = self._capital * self.position_size_pct * order.weight
+        position_value = self._capital * self.position_size_pct * order.weight * self.leverage
         return position_value / price if price > 0 else 0.0
+
+    def _target_weight(self, order: Order) -> float | None:
+        if order.weight is None:
+            return None
+        return float(order.weight) * self.position_size_pct * self.leverage
 
     def _record_weight_event(
         self,
@@ -440,9 +468,10 @@ class PortfolioTickBacktestRunner:
             sign = 1.0 if order.side == Side.BUY else -1.0
             target_qty = sign * qty
             target_notional = target_qty * price
+            scaled_weight = self._target_weight(order)
             target_weight = (
-                sign * float(order.weight)
-                if order.weight is not None
+                sign * scaled_weight
+                if scaled_weight is not None
                 else target_notional / self._capital if self._capital else 0.0
             )
         except ValueError:
@@ -452,7 +481,7 @@ class PortfolioTickBacktestRunner:
 
         self._weight_events.append({
             "timestamp": timestamp,
-            "alpha_id": self.strategy.__class__.__name__,
+            "alpha_id": self._alpha_id(),
             "symbol": symbol,
             "target_weight": target_weight,
             "target_notional": target_notional,
@@ -572,6 +601,17 @@ class PortfolioTickBacktestRunner:
             "fee": 0.0,
         })
         return True
+
+    def _liquidate_if_needed_in_bar(
+        self,
+        symbol: str,
+        candle: Candle,
+    ) -> bool:
+        pos = self._position.get(symbol)
+        if pos is None or pos.liquidation_price is None:
+            return False
+        price = candle.low if pos.side == "LONG" else candle.high
+        return self._liquidate_if_needed(symbol, price, candle.timestamp)
 
     def _execute_order(
         self,
@@ -732,6 +772,9 @@ class PortfolioTickBacktestRunner:
         end_time: Optional[datetime] = None,
     ) -> PortfolioTickResult:
         """백테스트 실행"""
+        if self._uses_bar_loaders():
+            return self._run_bars(start_time=start_time, end_time=end_time)
+
         if not self._logger.handlers:
             logging.basicConfig(
                 level=logging.INFO,
@@ -787,7 +830,7 @@ class PortfolioTickBacktestRunner:
             self._execute_pending_order(symbol, trade.price, trade.timestamp)
 
             if total_ticks % 10000 == 0:
-                self._print_progress(total_ticks)
+                self._print_progress(total_ticks, unit="ticks")
 
             # 심볼별 캔들 빌드
             completed = self._candle_builders[symbol].update(trade)
@@ -836,7 +879,95 @@ class PortfolioTickBacktestRunner:
         self._last_result = self._compute_result()
         return self._last_result
 
-    def _print_progress(self, total_ticks: int) -> None:
+    def _run_bars(
+        self,
+        start_time: Optional[datetime] = None,
+        end_time: Optional[datetime] = None,
+    ) -> PortfolioTickResult:
+        """Run from prebuilt bars. Signals use current bar; fills occur next bar open."""
+        if not self._logger.handlers:
+            logging.basicConfig(
+                level=logging.INFO,
+                format="%(asctime)s | %(levelname)s | %(message)s",
+            )
+
+        self._logger.info("[PortfolioBars] Starting portfolio-symbol backtest...")
+        self._logger.info("[PortfolioBars] Symbols: %s", ", ".join(self._symbols))
+        self._logger.info("[PortfolioBars] Initial Capital: $%.2f", self.initial_capital)
+
+        self._capital = self.initial_capital
+        self._equity_points = []
+        self._equity_timestamps = []
+        self._trade_log = []
+        self._weight_events = []
+        self._event_log = []
+        self._pending_orders = {}
+        self._last_result = None
+        self._tick_counts = {sym: 0 for sym in self._symbols}
+        self._bar_counts = {sym: 0 for sym in self._symbols}
+        self._wall_start_ts = time.perf_counter()
+        self._total_ticks_target = 0
+        for loader in self.data_loaders.values():
+            self._total_ticks_target += self._estimate_loader_rows(loader, start_time, end_time)
+        self._latest_candles = {}
+        self._latest_prices = {}
+        self._position = _MultiPosition()
+        self._start_time = None
+        self._end_time = None
+
+        total_bars = 0
+        for symbol, candle in self._merge_bars(start_time, end_time):
+            if self._start_time is None:
+                self._start_time = candle.timestamp
+            self._end_time = candle.timestamp
+
+            self._tick_counts[symbol] += 1
+            self._bar_counts[symbol] += 1
+            total_bars += 1
+
+            self._latest_prices[symbol] = candle.open
+            self._execute_pending_order(symbol, candle.open, candle.timestamp)
+            self._liquidate_if_needed_in_bar(symbol, candle)
+
+            self._latest_prices[symbol] = candle.close
+            self._latest_candles[symbol] = candle
+            self._execute_strategy(symbol, candle, candle.timestamp)
+
+            unrealized = self._position.unrealized_pnl(self._latest_prices)
+            self._equity_points.append(self._capital + unrealized)
+            self._equity_timestamps.append(candle.timestamp)
+
+            if total_bars % 10000 == 0:
+                self._print_progress(total_bars, unit="bars")
+
+        elapsed = time.perf_counter() - self._wall_start_ts
+        self._logger.info("[PortfolioBars] Completed! Bars: %s, Symbols: %s", f"{total_bars:,}", len(self._symbols))
+        self._logger.info("[PortfolioBars] Completed in %.2fs", elapsed)
+
+        for sym in list(self._position.all_symbols):
+            price = self._latest_prices.get(sym, 0)
+            if price > 0:
+                close_qty = self._position.get_qty(sym)
+                pnl = self._position.close(sym, price, self._end_time or datetime.now())
+                fee = price * close_qty * self.taker_fee_rate
+                self._capital += pnl - fee
+                self._trade_log.append({
+                    "timestamp": self._end_time,
+                    "symbol": sym,
+                    "action": "CLOSE_FINAL",
+                    "price": price,
+                    "pnl": pnl,
+                    "fee": fee,
+                })
+
+        self._equity_points.append(self._capital)
+        if self._end_time is not None:
+            self._equity_timestamps.append(self._end_time)
+
+        self._last_result = self._compute_result()
+        return self._last_result
+
+    def _print_progress(self, total_ticks: int, *, unit: str = "ticks") -> None:
         """진행 상황 로그"""
         elapsed = time.perf_counter() - self._wall_start_ts
         speed = total_ticks / elapsed if elapsed > 0 else 0.0
@@ -846,20 +977,24 @@ class PortfolioTickBacktestRunner:
             remaining = self._total_ticks_target - total_ticks
             eta_sec = remaining / speed if speed > 0 else 0.0
             self._logger.info(
-                "[PortfolioTick] Progress: %.2f%% (%s/%s ticks) | symbols=%d | speed=%d ticks/s | eta=%s",
+                "[PortfolioTick] Progress: %.2f%% (%s/%s %s) | symbols=%d | speed=%d %s/s | eta=%s",
                 pct,
                 f"{total_ticks:,}",
                 f"{self._total_ticks_target:,}",
+                unit,
                 len(self._symbols),
                 int(speed),
+                unit,
                 str(timedelta(seconds=int(eta_sec))),
             )
         else:
             self._logger.info(
-                "[PortfolioTick] Progress: %s ticks | symbols=%d | speed=%d ticks/s",
+                "[PortfolioTick] Progress: %s %s | symbols=%d | speed=%d %s/s",
                 f"{total_ticks:,}",
+                unit,
                 len(self._symbols),
                 int(speed),
+                unit,
             )
 
     def _compute_result(self) -> PortfolioTickResult:
@@ -959,6 +1094,7 @@ class PortfolioTickBacktestRunner:
             "artifact_version": 1,
             "run_type": "backtest",
             "strategy_name": self.strategy.__class__.__name__,
+            "alpha_id": self._alpha_id(),
             "symbols": self._symbols,
             "bar_type": self.bar_type.value,
             "bar_size": self.bar_size,
@@ -974,7 +1110,7 @@ class PortfolioTickBacktestRunner:
         manifest = {
             "artifact_version": 1,
             "run_type": "backtest",
-            "alpha_id": self.strategy.__class__.__name__,
+            "alpha_id": self._alpha_id(),
             "strategy_name": self.strategy.__class__.__name__,
             "symbols": self._symbols,
             "generated_at": generated_at.isoformat(),
