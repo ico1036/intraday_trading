@@ -42,6 +42,16 @@ is `weights.parquet`. During generation, optimize only against the fixed IS
 target in `archive/<run_id>/splits.json`; do not run or inspect OS until a
 strategy is frozen.
 
+`IS_PASS` requires all of:
+
+- `is_sharpe >= splits.json.target.threshold`
+- every gate in `splits.json.quality_gates` (currently `min_trades`,
+  `min_turnover`)
+- artifact is valid (`scripts/tools/verify_artifact.py`)
+
+Default thresholds for the active run: Sharpe ≥ 0.6, trades ≥ 100,
+turnover ≥ 10x. The gates exist to drop flukes and passive holds.
+
 Exploration is breadth-first. Do not refine winners during alpha generation.
 Bad performance is archived, not repaired. Repair only broken code, broken
 tests, or invalid artifact output.

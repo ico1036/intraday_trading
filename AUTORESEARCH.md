@@ -25,11 +25,19 @@ universe consistency. Run it after every attempt; the pre-commit hook in
 ## Objective
 
 Explore independent long/short portfolio alphas until the fixed in-sample
-target is reached:
+target plus all declared quality gates are satisfied. The active run sets
+its own threshold and gates in `archive/<run_id>/splits.json`. The current
+default for new runs is:
 
 ```text
-IS Sharpe >= 1.0
+IS Sharpe >= 0.6
+total_trades >= 100
+turnover >= 10x
 ```
+
+`turnover = sum(|price * quantity|) / initial_capital` from the trades
+ledger. The gates filter out single-trade flukes and effectively-passive
+strategies (buy-and-hold has ~14 trades and ~1x turnover at this sizing).
 
 During generation, do not run, inspect, or optimize against OS. OS is reserved
 for one frozen-strategy validation pass after an alpha is selected.
@@ -115,10 +123,15 @@ alpha_id,status,strategy,idea,is_return,is_sharpe,is_trades,is_max_drawdown,is_w
 Status values:
 
 ```text
-IS_PASS   IS Sharpe >= target and artifact is valid
-IS_FAIL   artifact is valid but IS Sharpe is below target
+IS_PASS   IS Sharpe >= target.threshold AND all quality_gates AND artifact is valid
+IS_FAIL   artifact is valid but Sharpe or any quality_gate is not satisfied
 INVALID   code, test, artifact, or weight contract failed
 ```
+
+Quality gates live in `archive/<run_id>/splits.json` under
+`"quality_gates"`. The governance check (`scripts/governance/check.py
+--only quality`) computes them from `trades.parquet`,
+`equity_curve.parquet`, and `metrics.json`.
 
 ## Policy
 

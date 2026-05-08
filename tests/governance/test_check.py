@@ -9,8 +9,10 @@ import pytest
 from scripts.governance.check import (
     ALLOWED_GLOBS,
     HARD_DENY,
+    _compute_turnover,
     _is_alpha_strategy_path,
     _match_any,
+    check_quality,
     check_universe,
 )
 
@@ -127,6 +129,98 @@ def test_universe_invalid_manifest_flagged(tmp_path: Path):
     res = check_universe(archive_root=tmp_path)
     assert len(res.violations) == 1
     assert res.violations[0]["reason"] == "invalid manifest.json"
+
+
+# ----- quality gates -----------------------------------------------------
+
+
+def _write_split(
+    split_dir: Path,
+    *,
+    total_trades: int,
+    initial_capital: float = 10000.0,
+    notional_total: float = 200_000.0,
+    n_trades: int = 4,
+) -> None:
+    import pandas as pd
+
+    split_dir.mkdir(parents=True, exist_ok=True)
+    (split_dir / "metrics.json").write_text(
+        json.dumps({"sharpe": 1.0, "total_trades": total_trades})
+    )
+    eq = pd.DataFrame({"timestamp": [pd.Timestamp("2026-01-01")], "equity": [initial_capital]})
+    eq.to_parquet(split_dir / "equity_curve.parquet")
+    per = float(notional_total) / max(n_trades, 1)
+    rows = []
+    for i in range(n_trades):
+        rows.append({"timestamp": pd.Timestamp("2026-01-01"), "symbol": "BTCUSDT",
+                     "action": "OPEN_LONG", "price": per, "quantity": 1.0, "fee": 0.0, "pnl": 0.0})
+    pd.DataFrame(rows).to_parquet(split_dir / "trades.parquet")
+
+
+def _write_run_with_gates(run_dir: Path, gates: dict, universe=None) -> None:
+    payload: dict = {"quality_gates": gates}
+    if universe is not None:
+        payload["universe"] = universe
+    (run_dir / "splits.json").parent.mkdir(parents=True, exist_ok=True)
+    (run_dir / "splits.json").write_text(json.dumps(payload))
+
+
+def test_compute_turnover_basic(tmp_path: Path):
+    _write_split(
+        tmp_path / "is",
+        total_trades=4,
+        initial_capital=10000.0,
+        notional_total=200_000.0,
+        n_trades=4,
+    )
+    assert _compute_turnover(tmp_path / "is") == pytest.approx(20.0)
+
+
+def test_quality_pass_when_above_thresholds(tmp_path: Path):
+    run = tmp_path / "run_q1"
+    _write_run_with_gates(run, {"min_trades": 100, "min_turnover": 10.0})
+    _write_split(run / "alphas/a1/is", total_trades=500, notional_total=500_000.0)
+    res = check_quality(archive_root=tmp_path)
+    assert res.violations == []
+    assert any("a1/is" in p for p in res.inspected)
+
+
+def test_quality_fail_min_trades(tmp_path: Path):
+    run = tmp_path / "run_q2"
+    _write_run_with_gates(run, {"min_trades": 100, "min_turnover": 10.0})
+    _write_split(run / "alphas/a1/is", total_trades=14, notional_total=500_000.0)
+    res = check_quality(archive_root=tmp_path)
+    gates = [v["gate"] for v in res.violations]
+    assert "min_trades" in gates
+
+
+def test_quality_fail_min_turnover(tmp_path: Path):
+    run = tmp_path / "run_q3"
+    _write_run_with_gates(run, {"min_trades": 100, "min_turnover": 10.0})
+    # 9x turnover only: 90_000 notional with capital 10_000
+    _write_split(run / "alphas/a1/is", total_trades=500, notional_total=90_000.0)
+    res = check_quality(archive_root=tmp_path)
+    gates = [v["gate"] for v in res.violations]
+    assert "min_turnover" in gates
+
+
+def test_quality_skipped_when_run_has_no_gates(tmp_path: Path):
+    run = tmp_path / "run_q4"
+    (run / "splits.json").parent.mkdir(parents=True, exist_ok=True)
+    (run / "splits.json").write_text(json.dumps({"target": {"threshold": 1.0}}))
+    _write_split(run / "alphas/a1/is", total_trades=1, notional_total=0.0)
+    res = check_quality(archive_root=tmp_path)
+    assert res.violations == []
+    assert res.inspected == []
+
+
+def test_quality_target_alpha_dir(tmp_path: Path):
+    run = tmp_path / "run_q5"
+    _write_run_with_gates(run, {"min_trades": 100})
+    _write_split(run / "alphas/a1/is", total_trades=50, notional_total=200_000.0)
+    res = check_quality(target_alpha_dir=run / "alphas/a1")
+    assert any(v["gate"] == "min_trades" for v in res.violations)
 
 
 # ----- end-to-end CLI ----------------------------------------------------

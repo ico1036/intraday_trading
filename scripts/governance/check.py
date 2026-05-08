@@ -205,9 +205,137 @@ def check_universe(*, archive_root: Path | None = None) -> UniverseCheckResult:
     return res
 
 
+# ----- quality gates ------------------------------------------------------
+
+
+@dataclass
+class QualityCheckResult:
+    violations: list[dict] = field(default_factory=list)
+    inspected: list[str] = field(default_factory=list)
+
+
+def _load_quality_gates_for_run(run_dir: Path) -> dict:
+    splits_path = run_dir / "splits.json"
+    if not splits_path.exists():
+        return {}
+    try:
+        data = json.loads(splits_path.read_text())
+    except json.JSONDecodeError:
+        return {}
+    gates = data.get("quality_gates")
+    return gates if isinstance(gates, dict) else {}
+
+
+def _compute_turnover(split_dir: Path) -> float | None:
+    """Total absolute notional traded divided by initial equity."""
+    trades_path = split_dir / "trades.parquet"
+    equity_path = split_dir / "equity_curve.parquet"
+    if not trades_path.exists() or not equity_path.exists():
+        return None
+    import pandas as pd  # local import keeps the script light
+
+    try:
+        trades = pd.read_parquet(trades_path)
+        equity = pd.read_parquet(equity_path)
+    except Exception:
+        return None
+    if len(equity) == 0 or "equity" not in equity.columns:
+        return None
+    initial_capital = float(equity["equity"].iloc[0])
+    if initial_capital <= 0:
+        return None
+    if "price" not in trades.columns or "quantity" not in trades.columns:
+        return None
+    notional = (trades["price"].astype(float) * trades["quantity"].astype(float)).abs().sum()
+    return float(notional) / initial_capital
+
+
+def _apply_quality_gates(split_dir: Path, gates: dict) -> list[dict]:
+    violations: list[dict] = []
+    metrics_path = split_dir / "metrics.json"
+    if not metrics_path.exists():
+        return [{"gate": "_meta", "reason": "metrics.json missing"}]
+    try:
+        metrics = json.loads(metrics_path.read_text())
+    except json.JSONDecodeError:
+        return [{"gate": "_meta", "reason": "metrics.json invalid"}]
+
+    if "min_trades" in gates:
+        threshold = float(gates["min_trades"])
+        actual = metrics.get("total_trades")
+        if actual is None or float(actual) < threshold:
+            violations.append(
+                {
+                    "gate": "min_trades",
+                    "value": actual,
+                    "threshold": threshold,
+                    "reason": f"total_trades={actual} < {threshold}",
+                }
+            )
+
+    if "min_turnover" in gates:
+        threshold = float(gates["min_turnover"])
+        actual = _compute_turnover(split_dir)
+        if actual is None or actual < threshold:
+            shown = None if actual is None else round(actual, 4)
+            violations.append(
+                {
+                    "gate": "min_turnover",
+                    "value": shown,
+                    "threshold": threshold,
+                    "reason": f"turnover={shown} < {threshold}",
+                }
+            )
+
+    return violations
+
+
+def check_quality(
+    *, archive_root: Path | None = None, target_alpha_dir: Path | None = None
+) -> QualityCheckResult:
+    res = QualityCheckResult()
+    archive_root = archive_root or (REPO_ROOT / "archive")
+    if not archive_root.exists():
+        return res
+
+    targets: list[tuple[Path, Path]] = []  # (run_dir, split_dir)
+    if target_alpha_dir is not None:
+        alpha_dir = Path(target_alpha_dir).resolve()
+        run_dir = alpha_dir.parent.parent
+        for split in ("is", "os"):
+            split_dir = alpha_dir / split
+            if split_dir.exists():
+                targets.append((run_dir, split_dir))
+    else:
+        for run_dir in sorted(p for p in archive_root.iterdir() if p.is_dir()):
+            alphas_dir = run_dir / "alphas"
+            if not alphas_dir.exists():
+                continue
+            for alpha_dir in sorted(p for p in alphas_dir.iterdir() if p.is_dir()):
+                for split in ("is", "os"):
+                    split_dir = alpha_dir / split
+                    if split_dir.exists():
+                        targets.append((run_dir, split_dir))
+
+    for run_dir, split_dir in targets:
+        gates = _load_quality_gates_for_run(run_dir)
+        if not gates:
+            continue
+        try:
+            rel = split_dir.relative_to(REPO_ROOT).as_posix()
+        except ValueError:
+            rel = split_dir.as_posix()
+        res.inspected.append(rel)
+        for v in _apply_quality_gates(split_dir, gates):
+            v["path"] = rel
+            res.violations.append(v)
+
+    return res
+
+
 # ----- CLI ----------------------------------------------------------------
 
-CHECK_NAMES = ("editable_surface", "universe")
+CHECK_NAMES = ("editable_surface", "universe", "quality")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -227,6 +355,11 @@ def main(argv: list[str] | None = None) -> int:
         choices=CHECK_NAMES,
         action="append",
         help="Run only the named check. May be repeated. Default: all.",
+    )
+    parser.add_argument(
+        "--alpha-dir",
+        default=None,
+        help="Run quality check against a single alpha directory (e.g., archive/<run>/alphas/<alpha>).",
     )
     parser.add_argument(
         "--json", action="store_true", help="Emit JSON output."
@@ -263,6 +396,17 @@ def main(argv: list[str] | None = None) -> int:
         if u.violations:
             out["ok"] = False
 
+    if "quality" in selected:
+        target_dir = Path(args.alpha_dir) if args.alpha_dir else None
+        q = check_quality(target_alpha_dir=target_dir)
+        out["checks"]["quality"] = {
+            "ok": not q.violations,
+            "inspected_count": len(q.inspected),
+            "violations": q.violations,
+        }
+        if q.violations:
+            out["ok"] = False
+
     if args.json:
         print(json.dumps(out, indent=2, default=str))
     else:
@@ -294,6 +438,16 @@ def _emit_human(out: dict) -> None:
                 print(f"    - {v['path']}  ({v['reason']}){detail}")
         else:
             print("  ok: all manifests match declared run universe")
+    q = out["checks"].get("quality")
+    if q is not None:
+        print(f"[quality] inspected {q['inspected_count']} alpha split(s)")
+        if q["violations"]:
+            print(f"  VIOLATIONS ({len(q['violations'])}):")
+            for v in q["violations"]:
+                gate = v.get("gate", "?")
+                print(f"    - {v['path']}  [{gate}] {v.get('reason', '')}")
+        else:
+            print("  ok: all alphas pass declared quality_gates")
     print(f"\nresult: {'OK' if out['ok'] else 'FAIL'}")
 
 
