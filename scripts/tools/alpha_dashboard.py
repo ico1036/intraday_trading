@@ -40,6 +40,7 @@ from alpha_dashboard_lib import (  # noqa: E402  (path injection above)
     _is_pass_eligible,
     _missing,
     _series_downsample as _lib_series_downsample,
+    classify_alpha,
     compute_drawdown_metrics,
     compute_net_pnl_bps,
     compute_turnover,
@@ -47,6 +48,30 @@ from alpha_dashboard_lib import (  # noqa: E402  (path injection above)
 
 
 DEFAULT_RUN_DIR = Path("archive")
+# metrics.json stores `sharpe` as the daily-resampled return series multiplied
+# by sqrt(252). The dashboard displays raw daily Sharpe everywhere, so we divide
+# the stored value by SQRT_252 at every formatting site below.
+import math as _math
+SQRT_252 = _math.sqrt(252)
+
+
+def _fmt_sharpe_daily(value: Any) -> str:
+    """Display the daily (un-annualized) Sharpe.
+
+    Stored value is annualized = daily_mean/daily_std * sqrt(252); we divide
+    back by sqrt(252) before formatting so the dashboard shows raw daily.
+    """
+    if value is None:
+        return "-"
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return "-"
+    if v != v:  # NaN
+        return "-"
+    return _fmt_num(v / SQRT_252)
+
+
 MAX_LINE_POINTS = 2000
 # Members in the composite "hairball" chart are faded grey overlays — full
 # 2000-point resolution is wasted there. Drop to 250pt to cut JSON payload
@@ -56,6 +81,14 @@ METRIC_COLUMNS = [
     "run_id",
     "alpha_id",
     "status",
+    "category",
+    "is_period_start",
+    "is_period_end",
+    "is_period_days",
+    "os_period_start",
+    "os_period_end",
+    "os_period_days",
+    "generated_at",
     "is_sharpe",
     "is_return",
     "is_max_dd",
@@ -72,17 +105,14 @@ METRIC_COLUMNS = [
 TABLE_COLUMNS = [
     ("run_id", "run", "left"),
     ("alpha_id", "alpha_id", "left"),
-    ("status", "status", "left"),
-    ("is_sharpe_fmt", "IS NetSh", "right"),
+    ("category", "Category", "left"),
+    ("backtest_period_fmt", "Backtest Period (start~end, days)", "left"),
+    ("generated_at_fmt", "Generated At", "left"),
+    ("is_sharpe_fmt", "IS Sharpe(daily)", "right"),
     ("is_return_fmt", "IS ret", "right"),
     ("is_max_dd_fmt", "IS DD", "right"),
     ("is_pnl_bps_fmt", "IS bps", "right"),
     ("is_trades", "IS tr", "right"),
-    ("os_sharpe_fmt", "OS NetSh", "right"),
-    ("os_return_fmt", "OS ret", "right"),
-    ("os_max_dd_fmt", "OS DD", "right"),
-    ("os_pnl_bps_fmt", "OS bps", "right"),
-    ("os_trades", "OS tr", "right"),
     ("flags", "flags", "left"),
 ]
 VALIDATION_RULES = {
@@ -202,6 +232,11 @@ def load_index(run_dir: Path) -> pd.DataFrame:
         for alpha_d in sorted((r / "alphas").iterdir()):
             if not alpha_d.is_dir():
                 continue
+            # Skip alphas whose IS metrics.json is missing — they were either
+            # deleted by quality_gate enforcement or never finished. Showing
+            # them as half-empty rows is misleading.
+            if not (alpha_d / "is" / "metrics.json").exists():
+                continue
             is_m = read_json(alpha_d / "is" / "metrics.json")
             os_m = read_json(alpha_d / "os" / "metrics.json")
 
@@ -222,18 +257,63 @@ def load_index(run_dir: Path) -> pd.DataFrame:
             v = read_json(alpha_d / "validation.json")
             flags = ",".join(v.get("flags", []) or []) if v else ""
 
-            # Cold-start optimisation: max_drawdown is already in metrics.json
-            # (engine writes it from the same equity curve we'd reload). DD
-            # duration is only used on the detail page → compute lazily there.
-            # Per-trade bps requires reading trades.parquet, so only do it for
-            # IS_PASS alphas (the rest will display "-" in the bps column).
+            # Backtest period (start, end, days) per split, taken from splits.json
+            is_split = (splits.get("is") or {}) if isinstance(splits, dict) else {}
+            os_split = (splits.get("os") or {}) if isinstance(splits, dict) else {}
+            is_period_start = is_split.get("start")
+            is_period_end = is_split.get("end")
+            os_period_start = os_split.get("start")
+            os_period_end = os_split.get("end")
+            is_period_days = _duration_days(is_period_start, is_period_end)
+            os_period_days = _duration_days(os_period_start, os_period_end)
+
+            # Alpha generation timestamp from manifest.json (prefer IS, fall back OS)
+            is_manifest = read_json(alpha_d / "is" / "manifest.json")
+            os_manifest = read_json(alpha_d / "os" / "manifest.json")
+            generated_at = (
+                (is_manifest or {}).get("generated_at")
+                or (os_manifest or {}).get("generated_at")
+            )
+
+            # All trade-level stats are persisted into metrics.json at backtest
+            # write time (see scripts/tools/backtest.py:_persist_display_metrics)
+            # so the dashboard is purely read-only.
             is_dd = is_m.get("max_drawdown") if is_m else None
             is_dd_dur = None
-            if is_pass:
-                is_bps_simple, is_bps_w, _ = net_pnl_per_trade_bps(r, alpha_d.name, "is")
-            else:
-                is_bps_simple = is_bps_w = None
-            os_bps_simple = os_bps_w = os_dd = os_dd_dur = None
+            is_bps_simple = is_m.get("pnl_bps_simple") if is_m else None
+            is_bps_w = is_m.get("pnl_bps_notional_weighted") if is_m else None
+            os_bps_simple = os_m.get("pnl_bps_simple") if os_m else None
+            os_bps_w = os_m.get("pnl_bps_notional_weighted") if os_m else None
+            os_dd = os_m.get("max_drawdown") if os_m else None
+            os_dd_dur = None
+
+            # Extended trade-level metrics (Tier 1+2). Same field for IS and OS.
+            def _g(m, k):
+                return m.get(k) if m else None
+            extra = {
+                "is_t_stat": _g(is_m, "t_stat"),
+                "is_per_trade_sharpe": _g(is_m, "per_trade_sharpe"),
+                "is_calmar": _g(is_m, "calmar"),
+                "is_win_rate_trades": _g(is_m, "trade_win_rate"),
+                "is_avg_win_bps": _g(is_m, "avg_win_bps"),
+                "is_avg_loss_bps": _g(is_m, "avg_loss_bps"),
+                "is_win_loss_ratio": _g(is_m, "win_loss_ratio"),
+                "is_profit_factor_trades": _g(is_m, "profit_factor_trades"),
+                "is_largest_win_bps": _g(is_m, "largest_win_bps"),
+                "is_largest_loss_bps": _g(is_m, "largest_loss_bps"),
+                "is_round_trips": _g(is_m, "round_trips"),
+                "os_t_stat": _g(os_m, "t_stat"),
+                "os_per_trade_sharpe": _g(os_m, "per_trade_sharpe"),
+                "os_calmar": _g(os_m, "calmar"),
+                "os_win_rate_trades": _g(os_m, "trade_win_rate"),
+                "os_avg_win_bps": _g(os_m, "avg_win_bps"),
+                "os_avg_loss_bps": _g(os_m, "avg_loss_bps"),
+                "os_win_loss_ratio": _g(os_m, "win_loss_ratio"),
+                "os_profit_factor_trades": _g(os_m, "profit_factor_trades"),
+                "os_largest_win_bps": _g(os_m, "largest_win_bps"),
+                "os_largest_loss_bps": _g(os_m, "largest_loss_bps"),
+                "os_round_trips": _g(os_m, "round_trips"),
+            }
 
             rows.append(
                 {
@@ -262,6 +342,15 @@ def load_index(run_dir: Path) -> pd.DataFrame:
                     "th_sharpe": target_threshold,
                     "th_trades": min_trades,
                     "th_turnover": min_turnover,
+                    "is_period_start": is_period_start,
+                    "is_period_end": is_period_end,
+                    "is_period_days": is_period_days,
+                    "os_period_start": os_period_start,
+                    "os_period_end": os_period_end,
+                    "os_period_days": os_period_days,
+                    "generated_at": generated_at,
+                    "category": classify_alpha(is_m, os_m)[0],
+                    **extra,
                 }
             )
     if not rows:
@@ -619,6 +708,40 @@ def add_styles() -> None:
     )
 
 
+def _fmt_period_days(value: Any) -> str:
+    if value is None:
+        return "-"
+    try:
+        return f"{int(value)}"
+    except (TypeError, ValueError):
+        return "-"
+
+
+def _fmt_period_range(start: Any, end: Any, days: Any) -> str:
+    """Format a backtest split as 'YYYY-MM-DD ~ YYYY-MM-DD (Nd)'."""
+    if start is None or end is None:
+        return "-"
+    s = str(start)[:10]
+    e = str(end)[:10]
+    try:
+        d_int = int(days) if days is not None else None
+    except (TypeError, ValueError):
+        d_int = None
+    suffix = f" ({d_int}d)" if d_int is not None else ""
+    return f"{s} ~ {e}{suffix}"
+
+
+def _fmt_generated_at(value: Any) -> str:
+    """Render manifest.generated_at as a short YYYY-MM-DD HH:MM."""
+    if value is None or value == "":
+        return "-"
+    try:
+        dt = datetime.fromisoformat(str(value))
+        return dt.strftime("%Y-%m-%d %H:%M")
+    except Exception:
+        return str(value)[:16]
+
+
 def display_rows(df: pd.DataFrame) -> list[dict[str, Any]]:
     rows = []
     cols = [col for col in METRIC_COLUMNS if col in df.columns]
@@ -626,14 +749,24 @@ def display_rows(df: pd.DataFrame) -> list[dict[str, Any]]:
         row = dict(raw)
         row["os_return_fmt"] = _fmt_pct(raw.get("os_return"))
         row["is_return_fmt"] = _fmt_pct(raw.get("is_return"))
-        row["os_sharpe_fmt"] = _fmt_num(raw.get("os_sharpe"))
-        row["is_sharpe_fmt"] = _fmt_num(raw.get("is_sharpe"))
+        row["os_sharpe_fmt"] = _fmt_sharpe_daily(raw.get("os_sharpe"))
+        row["is_sharpe_fmt"] = _fmt_sharpe_daily(raw.get("is_sharpe"))
         row["os_trades"] = _fmt_int(raw.get("os_trades"))
         row["is_trades"] = _fmt_int(raw.get("is_trades"))
         row["is_max_dd_fmt"] = _fmt_pct(raw.get("is_max_dd"))
         row["os_max_dd_fmt"] = _fmt_pct(raw.get("os_max_dd"))
         row["is_pnl_bps_fmt"] = _fmt_bps(raw.get("is_pnl_bps"))
         row["os_pnl_bps_fmt"] = _fmt_bps(raw.get("os_pnl_bps"))
+        row["is_period_days_fmt"] = _fmt_period_days(raw.get("is_period_days"))
+        row["os_period_days_fmt"] = _fmt_period_days(raw.get("os_period_days"))
+        # Combined backtest period spans IS_start through OS_end (or IS_end if no OS)
+        bt_start = raw.get("is_period_start")
+        bt_end = raw.get("os_period_end") or raw.get("is_period_end")
+        bt_days_is = raw.get("is_period_days") or 0
+        bt_days_os = raw.get("os_period_days") or 0
+        bt_days_total = (bt_days_is + bt_days_os) if (bt_days_is or bt_days_os) else None
+        row["backtest_period_fmt"] = _fmt_period_range(bt_start, bt_end, bt_days_total)
+        row["generated_at_fmt"] = _fmt_generated_at(raw.get("generated_at"))
         rows.append(row)
     return rows
 
@@ -867,12 +1000,15 @@ def main() -> None:
                     df = state["df"]
                     with ui.row().classes("w-full gap-2"):
                         metric_card("Alphas", str(len(df)))
-                        metric_card("IS_PASS", str((df["status"] == "IS_PASS").sum()))
+                        sub_n = int((df["category"] == "SUBMITTABLE").sum()) if "category" in df.columns else 0
+                        norm_n = int((df["category"] == "NORMAL").sum()) if "category" in df.columns else 0
+                        metric_card("✅ Submittable", str(sub_n))
+                        metric_card("⚪ Normal", str(norm_n))
 
                     with ui.row().classes("w-full items-end gap-3"):
                         search_input = ui.input("Search").props("clearable dense").classes("w-96")
-                        status_values = sorted(str(v) for v in df["status"].dropna().unique().tolist())
-                        status_filter = ui.select(status_values, multiple=True, label="Status").classes("w-48")
+                        category_values = sorted(str(v) for v in df["category"].dropna().unique().tolist()) if "category" in df.columns else []
+                        status_filter = ui.select(category_values, multiple=True, label="Category").classes("w-48")
                         sort_select = ui.select(
                             [
                                 "is_sharpe", "is_return", "is_max_dd", "is_pnl_bps", "is_trades",
@@ -881,7 +1017,7 @@ def main() -> None:
                             value="is_sharpe",
                             label="Sort",
                         ).classes("w-48")
-                        min_is_sharpe = ui.number("Min IS Sharpe", value=None, step=0.1).classes("w-40")
+                        min_is_sharpe = ui.number("Min IS Sharpe(daily)", value=None, step=0.01).classes("w-40")
                         min_trades = ui.number("Min trades", value=0, min=0, step=1).classes("w-40")
 
                     rows_container = ui.column().classes("w-full")
@@ -895,10 +1031,13 @@ def main() -> None:
                             mask = state["search_text"].str.contains(query, regex=False, na=False)
                             view = view[mask]
                         if status_filter.value:
-                            view = view[view["status"].isin(status_filter.value)]
+                            view = view[view["category"].isin(status_filter.value)]
                         if min_is_sharpe.value is not None:
                             is_sharpe = pd.to_numeric(view["is_sharpe"], errors="coerce")
-                            view = view[is_sharpe >= float(min_is_sharpe.value)]
+                            # Filter input is in daily Sharpe; stored is_sharpe is
+                            # annualized (×sqrt(252)). Compare on annualized value
+                            # so the user-entered daily threshold matches display.
+                            view = view[is_sharpe >= float(min_is_sharpe.value) * SQRT_252]
                         if min_trades.value:
                             is_trades = pd.to_numeric(view["is_trades"], errors="coerce").fillna(0)
                             os_trades = pd.to_numeric(view["os_trades"], errors="coerce").fillna(0)
@@ -952,7 +1091,7 @@ def main() -> None:
                                     "dir_name": c["dir_name"],
                                     "method": c["method"],
                                     "n_members": c["n_members"],
-                                    "is_sharpe_fmt": _fmt_num(c["is_sharpe"]),
+                                    "is_sharpe_fmt": _fmt_sharpe_daily(c["is_sharpe"]),
                                     "is_return_fmt": _fmt_pct(c["is_return"]),
                                     "is_drawdown_fmt": _fmt_pct(c["is_drawdown"]),
                                     "is_trades_fmt": _fmt_int(c["is_trades"]),
@@ -1008,25 +1147,90 @@ def main() -> None:
             is_dd_pct, is_dd_dur, is_peak_ts, is_recov_ts = drawdown_metrics(detail_run_dir, alpha_id, "is")
             os_dd_pct, os_dd_dur, os_peak_ts, os_recov_ts = drawdown_metrics(detail_run_dir, alpha_id, "os")
 
-            ui.label("Core 4 metrics — net of fees (1-min backtest)").classes("section-title")
+            # ---------- Section: Status header ----------
             with ui.row().classes("gap-2 w-full"):
-                metric_card("Status", str(selected.get("status", "-")))
-                metric_card("IS Net Sharpe", _fmt_num(selected.get("is_sharpe")))
-                metric_card("IS Net return", _fmt_pct(selected.get("is_return")))
-                metric_card("IS Max DD", _fmt_pct(is_dd_pct))
-                metric_card("IS DD duration", _fmt_duration_days(is_dd_dur))
-                metric_card("IS Net bps/trade", _fmt_bps(is_bps_simple))
-                metric_card("IS bps (notional-w)", _fmt_bps(is_bps_w))
+                metric_card("Category", str(selected.get("category", "-")))
                 metric_card("IS Trades", _fmt_int(selected.get("is_trades", 0)))
-            with ui.row().classes("gap-2 w-full"):
-                metric_card("OS Net Sharpe", _fmt_num(selected.get("os_sharpe")))
-                metric_card("OS Net return", _fmt_pct(selected.get("os_return")))
-                metric_card("OS Max DD", _fmt_pct(os_dd_pct))
-                metric_card("OS DD duration", _fmt_duration_days(os_dd_dur))
-                metric_card("OS Net bps/trade", _fmt_bps(os_bps_simple))
-                metric_card("OS bps (notional-w)", _fmt_bps(os_bps_w))
                 metric_card("OS Trades", _fmt_int(selected.get("os_trades", 0)))
                 metric_card("Turnover IS/OS", f"{_fmt_turnover(is_turnover)} / {_fmt_turnover(os_turnover)}")
+
+            # ---------- Section: Returns ----------
+            ui.label("Returns").classes("section-title")
+            with ui.row().classes("gap-2 w-full"):
+                metric_card("IS Net return", _fmt_pct(selected.get("is_return")))
+                metric_card("IS bps/trade",        _fmt_bps(is_bps_simple))
+                metric_card("IS bps (notional-w)", _fmt_bps(is_bps_w))
+                metric_card("OS Net return", _fmt_pct(selected.get("os_return")))
+                metric_card("OS bps/trade",        _fmt_bps(os_bps_simple))
+                metric_card("OS bps (notional-w)", _fmt_bps(os_bps_w))
+
+            # ---------- Section: Risk-Adjusted ----------
+            ui.label("Risk-Adjusted").classes("section-title")
+            with ui.row().classes("gap-2 w-full"):
+                metric_card("IS Sharpe(daily)", _fmt_sharpe_daily(selected.get("is_sharpe")))
+                metric_card("IS per-trade Sharpe", _fmt_num(selected.get("is_per_trade_sharpe")))
+                metric_card("IS Calmar", _fmt_num(selected.get("is_calmar")))
+                metric_card("OS Sharpe(daily)", _fmt_sharpe_daily(selected.get("os_sharpe")))
+                metric_card("OS per-trade Sharpe", _fmt_num(selected.get("os_per_trade_sharpe")))
+                metric_card("OS Calmar", _fmt_num(selected.get("os_calmar")))
+
+            # ---------- Section: Drawdown ----------
+            ui.label("Drawdown").classes("section-title")
+            with ui.row().classes("gap-2 w-full"):
+                metric_card("IS Max DD", _fmt_pct(is_dd_pct))
+                metric_card("IS DD duration", _fmt_duration_days(is_dd_dur))
+                metric_card("OS Max DD", _fmt_pct(os_dd_pct))
+                metric_card("OS DD duration", _fmt_duration_days(os_dd_dur))
+
+            # ---------- Section: Statistical Confidence ----------
+            ui.label("Statistical Confidence").classes("section-title")
+            with ui.row().classes("gap-2 w-full"):
+                metric_card("IS t-stat", _fmt_num(selected.get("is_t_stat")))
+                metric_card("IS Profit Factor", _fmt_num(selected.get("is_profit_factor_trades")))
+                metric_card("IS Round trips", _fmt_int(selected.get("is_round_trips")))
+                metric_card("OS t-stat", _fmt_num(selected.get("os_t_stat")))
+                metric_card("OS Profit Factor", _fmt_num(selected.get("os_profit_factor_trades")))
+                metric_card("OS Round trips", _fmt_int(selected.get("os_round_trips")))
+
+            # ---------- Section: Distribution ----------
+            ui.label("Distribution").classes("section-title")
+            with ui.row().classes("gap-2 w-full"):
+                metric_card("IS Win rate (trades)", _fmt_pct(selected.get("is_win_rate_trades")))
+                metric_card("IS Avg win", _fmt_bps(selected.get("is_avg_win_bps")))
+                metric_card("IS Avg loss", _fmt_bps(selected.get("is_avg_loss_bps")))
+                metric_card("IS W/L ratio", _fmt_num(selected.get("is_win_loss_ratio")))
+                metric_card("IS Largest win",  _fmt_bps(selected.get("is_largest_win_bps")))
+                metric_card("IS Largest loss", _fmt_bps(selected.get("is_largest_loss_bps")))
+            with ui.row().classes("gap-2 w-full"):
+                metric_card("OS Win rate (trades)", _fmt_pct(selected.get("os_win_rate_trades")))
+                metric_card("OS Avg win", _fmt_bps(selected.get("os_avg_win_bps")))
+                metric_card("OS Avg loss", _fmt_bps(selected.get("os_avg_loss_bps")))
+                metric_card("OS W/L ratio", _fmt_num(selected.get("os_win_loss_ratio")))
+                metric_card("OS Largest win",  _fmt_bps(selected.get("os_largest_win_bps")))
+                metric_card("OS Largest loss", _fmt_bps(selected.get("os_largest_loss_bps")))
+
+            # ---------- Section: Overfit Check (OS / IS ratio) ----------
+            def _ratio(os_v, is_v):
+                try:
+                    if os_v is None or is_v is None or float(is_v) == 0:
+                        return None
+                    return float(os_v) / float(is_v)
+                except Exception:
+                    return None
+
+            sharpe_degr = _ratio(selected.get("os_sharpe"), selected.get("is_sharpe"))
+            bps_degr = _ratio(os_bps_simple, is_bps_simple)
+            pf_degr = _ratio(
+                selected.get("os_profit_factor_trades"),
+                selected.get("is_profit_factor_trades"),
+            )
+            ts_degr = _ratio(selected.get("os_t_stat"), selected.get("is_t_stat"))
+            ui.label("Overfit Check (OS / IS)").classes("section-title")
+            with ui.row().classes("gap-2 w-full"):
+                metric_card("Sharpe degr", _fmt_num(sharpe_degr))
+                metric_card("bps degr",    _fmt_num(bps_degr))
+                metric_card("PF degr",     _fmt_num(pf_degr))
+                metric_card("t-stat degr", _fmt_num(ts_degr))
             with ui.grid(columns=2).classes("w-full gap-3"):
                 ui.plotly(equity_figure(detail_run_dir, alpha_id)).classes("w-full dense-panel")
                 ui.plotly(drawdown_figure(detail_run_dir, alpha_id)).classes("w-full dense-panel")
@@ -1079,7 +1283,7 @@ def main() -> None:
 
             ui.label("Core 4 metrics — net of fees (1-min backtest)").classes("section-title")
             with ui.row().classes("gap-2 w-full"):
-                metric_card("Net Sharpe", _fmt_num(metrics.get("sharpe")))
+                metric_card("Sharpe(daily)", _fmt_sharpe_daily(metrics.get("sharpe")))
                 metric_card("Net return", _fmt_pct(metrics.get("total_return")))
                 metric_card("Max DD", _fmt_pct(comp_dd_pct))
                 metric_card("DD duration", _fmt_duration_days(comp_dd_dur))
@@ -1120,7 +1324,7 @@ def main() -> None:
                         {
                             "alpha_id": str(m["alpha_id"]),
                             "run": str(m["run"]),
-                            "is_sharpe_fmt": _fmt_num(m.get("is_sharpe")),
+                            "is_sharpe_fmt": _fmt_sharpe_daily(m.get("is_sharpe")),
                             "is_total_return_fmt": _fmt_pct(m.get("is_total_return")),
                             "is_total_trades_fmt": _fmt_int(m.get("is_total_trades")),
                             "is_gross_mean_fmt": _fmt_num(m.get("is_gross_mean")),

@@ -1,6 +1,11 @@
 # Claude Code Instructions
 
-Read `AGENT.md` before generating alphas.
+For any quant research, alpha generation, composite alpha construction, or
+ad-hoc analysis task: read `RESEARCH.md` first. It is the project's research
+philosophy — task-agnostic principles that apply regardless of which workflow
+follows.
+
+Read `AGENT.md` before generating individual alphas.
 Read `archive/<run_id>/splits.json` before attempts. Use IS for development;
 run OS only after strategy code is frozen.
 

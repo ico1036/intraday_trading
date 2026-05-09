@@ -159,6 +159,11 @@ def run_backtest(args: argparse.Namespace) -> dict[str, Any]:
     runner.save_report(output_dir)
     verification = verify_artifact(output_dir)
 
+    # Compute display-only summary metrics that the dashboard previously
+    # recomputed on every render. Persist into metrics.json so the dashboard
+    # is read-only and the cost is paid once at write time.
+    pnl_bps_simple, pnl_bps_w = _persist_display_metrics(output_dir)
+
     metrics = {
         "profit_factor": result.profit_factor,
         "total_return": result.total_return,
@@ -166,12 +171,16 @@ def run_backtest(args: argparse.Namespace) -> dict[str, Any]:
         "total_trades": result.total_trades,
         "win_rate": result.win_rate,
         "sharpe": result.sharpe_ratio,
+        "pnl_bps_simple": pnl_bps_simple,
+        "pnl_bps_notional_weighted": pnl_bps_w,
         "per_symbol": result.get_symbol_breakdown(),
     }
 
     quality_report = _enforce_quality_gates(output_dir, enforce=args.enforce_quality)
 
-    overall_ok = verification["ok"] and quality_report["ok"]
+    reject_report = _enforce_reject_rules(output_dir, enforce=args.enforce_quality)
+
+    overall_ok = verification["ok"] and quality_report["ok"] and reject_report["ok"]
     return {
         "ok": overall_ok,
         "artifact_dir": str(output_dir) if quality_report["kept"] else None,
@@ -303,6 +312,114 @@ def _preflight_governance(
     return report
 
 
+def _persist_display_metrics(output_dir: Path) -> tuple[float | None, float | None]:
+    """Compute per-trade statistics and merge them into metrics.json.
+
+    Returns (simple_avg_bps, notional_weighted_avg_bps) for backwards
+    compatibility with the caller signature. The full stats dict (t-stat,
+    per-trade Sharpe, win_rate, profit_factor, win/loss avg, largest W/L,
+    Calmar etc.) is also persisted so the dashboard is purely read-only.
+    """
+    metrics_path = output_dir / "metrics.json"
+    trades_path = output_dir / "trades.parquet"
+    if not metrics_path.exists():
+        return (None, None)
+    try:
+        _here = Path(__file__).resolve().parent
+        if str(_here) not in sys.path:
+            sys.path.insert(0, str(_here))
+        from alpha_dashboard_lib import compute_trade_stats  # noqa: E402
+        import pandas as _pd
+    except Exception:
+        return (None, None)
+
+    try:
+        existing = json.loads(metrics_path.read_text())
+    except Exception:
+        return (None, None)
+
+    # Trade-level stats from trades.parquet
+    stats = {}
+    if trades_path.exists():
+        try:
+            trades_df = _pd.read_parquet(trades_path)
+            stats = compute_trade_stats(trades_df)
+        except Exception:
+            stats = {}
+
+    simple = stats.get("mean_bps")
+    weighted = stats.get("mean_bps_notional_weighted")
+
+    # Calmar = total_return / |max_drawdown|, using existing engine values
+    total_return = existing.get("total_return")
+    max_dd = existing.get("max_drawdown")
+    calmar = None
+    try:
+        if total_return is not None and max_dd is not None and float(max_dd) != 0:
+            calmar = float(total_return) / abs(float(max_dd))
+    except Exception:
+        calmar = None
+
+    # Persist (kept ``pnl_bps_simple`` / ``pnl_bps_notional_weighted`` keys for
+    # back-compat with already-built dashboards / index caches).
+    existing["pnl_bps_simple"] = simple
+    existing["pnl_bps_notional_weighted"] = weighted
+    existing["per_trade_sharpe"] = stats.get("per_trade_sharpe")
+    existing["t_stat"] = stats.get("t_stat")
+    existing["pnl_bps_std"] = stats.get("std_bps")
+    existing["round_trips"] = stats.get("n_round_trips")
+    existing["trade_win_rate"] = stats.get("win_rate")
+    existing["avg_win_bps"] = stats.get("avg_win_bps")
+    existing["avg_loss_bps"] = stats.get("avg_loss_bps")
+    existing["win_loss_ratio"] = stats.get("win_loss_ratio")
+    existing["profit_factor_trades"] = stats.get("profit_factor")
+    existing["largest_win_bps"] = stats.get("largest_win_bps")
+    existing["largest_loss_bps"] = stats.get("largest_loss_bps")
+    existing["calmar"] = calmar
+    metrics_path.write_text(json.dumps(existing, indent=2, default=str))
+    return (simple, weighted)
+
+
+def _enforce_reject_rules(output_dir: Path, *, enforce: bool) -> dict:
+    """Apply user-defined reject rules R1-R4 once both IS and OS exist.
+
+    Only fires after the OS run (when sibling IS metrics is available). If
+    the alpha trips any reject rule, the entire alpha directory (both IS
+    and OS) is removed — these alphas are not worth keeping per user policy.
+    """
+    report = {"ok": True, "kept": True, "category": None, "reason": None}
+    if output_dir.name != "os":
+        return report  # only evaluate after OS leg
+    is_metrics_path = output_dir.parent / "is" / "metrics.json"
+    os_metrics_path = output_dir / "metrics.json"
+    if not is_metrics_path.exists() or not os_metrics_path.exists():
+        return report  # incomplete, skip
+    try:
+        is_m = json.loads(is_metrics_path.read_text())
+        os_m = json.loads(os_metrics_path.read_text())
+    except Exception:
+        return report
+    try:
+        _here = Path(__file__).resolve().parent
+        if str(_here) not in sys.path:
+            sys.path.insert(0, str(_here))
+        from alpha_dashboard_lib import classify_alpha  # noqa: E402
+    except Exception:
+        return report
+    category, reason = classify_alpha(is_m, os_m)
+    report["category"] = category
+    report["reason"] = reason
+    if category == "REJECT":
+        report["ok"] = False
+        if enforce:
+            try:
+                shutil.rmtree(output_dir.parent, ignore_errors=True)
+                report["kept"] = False
+            except Exception:
+                pass
+    return report
+
+
 def _enforce_quality_gates(output_dir: Path, *, enforce: bool) -> dict:
     """Apply run quality_gates; delete artifact dir on failure when enforce=True.
 
@@ -331,7 +448,14 @@ def _enforce_quality_gates(output_dir: Path, *, enforce: bool) -> dict:
     report["ok"] = False
     report["violations"] = violations
     if enforce:
-        shutil.rmtree(output_dir, ignore_errors=True)
+        # Delete the entire alpha directory (parent of split) on quality gate
+        # failure so the dashboard never shows a partial / orphan alpha row.
+        # output_dir = archive/<run>/alphas/<alpha>/<split>
+        try:
+            alpha_dir = output_dir.resolve().parent
+            shutil.rmtree(alpha_dir, ignore_errors=True)
+        except Exception:
+            shutil.rmtree(output_dir, ignore_errors=True)
         report["kept"] = False
     return report
 

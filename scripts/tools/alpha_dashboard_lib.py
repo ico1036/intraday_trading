@@ -197,6 +197,137 @@ def compute_net_pnl_bps(
     return (simple, weighted, n)
 
 
+def compute_trade_stats(trades_df: pd.DataFrame) -> dict:
+    """Compute per-round-trip statistics from trades.parquet.
+
+    Returns a dict of:
+      n_round_trips, mean_bps, std_bps, per_trade_sharpe, t_stat,
+      win_rate, avg_win_bps, avg_loss_bps, win_loss_ratio,
+      profit_factor, largest_win_bps, largest_loss_bps,
+      mean_bps_notional_weighted
+
+    All values None when trades_df is empty or malformed. ``per_trade_sharpe``
+    is mean/std (raw, not annualized). ``t_stat`` = per_trade_sharpe × sqrt(N).
+    """
+    import math
+    empty = {
+        "n_round_trips": 0,
+        "mean_bps": None,
+        "std_bps": None,
+        "per_trade_sharpe": None,
+        "t_stat": None,
+        "win_rate": None,
+        "avg_win_bps": None,
+        "avg_loss_bps": None,
+        "win_loss_ratio": None,
+        "profit_factor": None,
+        "largest_win_bps": None,
+        "largest_loss_bps": None,
+        "mean_bps_notional_weighted": None,
+    }
+    if trades_df is None or trades_df.empty or "action" not in trades_df.columns:
+        return empty
+    df = trades_df.sort_values(["symbol", "timestamp"]).reset_index(drop=True)
+    opens = df[df["action"].astype(str).str.startswith("OPEN")].reset_index(drop=True)
+    closes = df[df["action"].astype(str).str.startswith("CLOSE")].reset_index(drop=True)
+    n = min(len(opens), len(closes))
+    if n == 0:
+        return empty
+    opens = opens.iloc[:n]
+    closes = closes.iloc[:n]
+    if not (opens["symbol"].values == closes["symbol"].values).all():
+        empty["n_round_trips"] = n
+        return empty
+    open_fee = opens["fee"].astype(float).values
+    close_fee = closes["fee"].astype(float).values
+    gross = closes["pnl"].astype(float).values
+    net = gross - open_fee - close_fee
+    notional = (opens["price"].astype(float) * opens["quantity"].astype(float)).values
+    valid = notional > 0
+    if not valid.any():
+        empty["n_round_trips"] = n
+        return empty
+    bps = (net[valid] / notional[valid]) * 10000.0
+    n_v = int(len(bps))
+    mean_bps = float(bps.mean())
+    std_bps = float(bps.std(ddof=1)) if n_v >= 2 else 0.0
+    per_trade_sharpe = mean_bps / std_bps if std_bps > 0 else None
+    t_stat = (per_trade_sharpe * math.sqrt(n_v)) if per_trade_sharpe is not None else None
+    weighted = float((net[valid].sum() / notional[valid].sum()) * 10000.0)
+    wins = bps[bps > 0]
+    losses = bps[bps < 0]
+    win_rate = float(len(wins) / n_v)
+    avg_win = float(wins.mean()) if len(wins) else None
+    avg_loss = float(losses.mean()) if len(losses) else None  # negative
+    wl_ratio = (avg_win / abs(avg_loss)) if (avg_win is not None and avg_loss not in (None, 0)) else None
+    sum_win = float(wins.sum()) if len(wins) else 0.0
+    sum_loss = float(abs(losses.sum())) if len(losses) else 0.0
+    profit_factor = (sum_win / sum_loss) if sum_loss > 0 else None
+    largest_win = float(bps.max())
+    largest_loss = float(bps.min())
+    return {
+        "n_round_trips": n_v,
+        "mean_bps": mean_bps,
+        "std_bps": std_bps,
+        "per_trade_sharpe": per_trade_sharpe,
+        "t_stat": t_stat,
+        "win_rate": win_rate,
+        "avg_win_bps": avg_win,
+        "avg_loss_bps": avg_loss,
+        "win_loss_ratio": wl_ratio,
+        "profit_factor": profit_factor,
+        "largest_win_bps": largest_win,
+        "largest_loss_bps": largest_loss,
+        "mean_bps_notional_weighted": weighted,
+    }
+
+
+def classify_alpha(is_m: dict | None, os_m: dict | None) -> tuple[str, str]:
+    """Classify an alpha as SUBMITTABLE / NORMAL / REJECT / INCOMPLETE.
+
+    Uses the user-defined post-OS criteria (see memory:
+    alpha_acceptance_criteria.md). Reject rules R1-R4 fire on any one
+    failure → REJECT. Submittable requires all S1-S7 to pass. Otherwise
+    NORMAL.
+    """
+    if not is_m or not os_m:
+        return ("INCOMPLETE", "missing IS or OS metrics")
+
+    is_bps = is_m.get("pnl_bps_simple") or 0
+    os_bps = os_m.get("pnl_bps_simple") or 0
+    os_t = os_m.get("t_stat") or 0
+    is_sh = is_m.get("sharpe") or 0
+    os_sh = os_m.get("sharpe") or 0
+    os_pf = os_m.get("profit_factor_trades") or 0
+    os_dd_abs = abs(os_m.get("max_drawdown") or 0)
+    is_n = int(is_m.get("total_trades") or 0)
+
+    sh_degr = (os_sh / is_sh) if is_sh not in (None, 0) else 0
+    bps_degr = (os_bps / is_bps) if is_bps not in (None, 0) else 0
+
+    # Reject — any single rule trips
+    if (is_bps is None or os_bps is None) or is_bps <= 0 or os_bps <= 0:
+        return ("REJECT", "R1: bps ≤ 0")
+    if os_t < 1.5:
+        return ("REJECT", "R2: OS t-stat < 1.5")
+    if sh_degr < 0.4:
+        return ("REJECT", "R3: Sharpe degr < 0.4")
+    if is_n < 100:
+        return ("REJECT", "R4: IS trades < 100")
+
+    # Submittable — all 7 conditions pass
+    if (os_t > 2.5
+        and os_bps > 2.0
+        and sh_degr > 0.7
+        and bps_degr > 0.6
+        and os_dd_abs < 0.12
+        and os_pf > 1.3
+        and is_n > 500):
+        return ("SUBMITTABLE", "S1-S7 ✓")
+
+    return ("NORMAL", "between")
+
+
 def compute_turnover(pivot: pd.DataFrame) -> float | None:
     """Sum of |Δw| across all rebalances; first row's |w| counts vs. an implicit zero start."""
     if pivot is None or pivot.empty:
