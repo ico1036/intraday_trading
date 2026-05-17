@@ -11,8 +11,8 @@ from unittest.mock import MagicMock, AsyncMock, patch
 import pandas as pd
 import pytest
 
-from intraday.client import AggTrade
-from intraday.candle_builder import CandleBuilder, Candle, CandleType
+from intraday.candle_builder import Candle, CandleType
+from intraday.klines_client import Kline
 from intraday.strategies.multi import PortfolioMomentum, PairTradingStrategy
 from intraday.multi_forward_runner import (
     PortfolioForwardRunner,
@@ -46,64 +46,42 @@ class FixedLongOnceForwardStrategy:
         )
 
 
+def _kline(ts: datetime, close: float, **kwargs) -> Kline:
+    """Test helper: build a closed kline at ``ts`` with constant OHLC=close."""
+    return Kline(
+        timestamp=ts, open=kwargs.get("open", close),
+        high=kwargs.get("high", close), low=kwargs.get("low", close), close=close,
+        volume=kwargs.get("volume", 10.0),
+        quote_volume=kwargs.get("quote_volume", close * 10.0),
+        trade_count=kwargs.get("trade_count", 100),
+        taker_buy_volume=kwargs.get("taker_buy_volume", 5.0),
+        taker_buy_quote_volume=kwargs.get("taker_buy_quote_volume", close * 5.0),
+        is_closed=True,
+    )
+
+
 class TestSymbolState:
     """심볼별 상태 관리 테스트"""
 
     def test_init(self):
-        """초기화"""
-        state = SymbolState(
-            symbol="BTCUSDT",
-            candle_type=CandleType.TIME,
-            candle_size=300,  # 5분봉
-        )
-
+        state = SymbolState(symbol="BTCUSDT")
         assert state.symbol == "BTCUSDT"
         assert state.last_price == 0.0
         assert state.candle_count == 0
-        assert state.candle_builder is not None
+        assert state.last_candle is None
 
-    def test_update_price(self):
-        """가격 업데이트"""
-        state = SymbolState(
-            symbol="BTCUSDT",
-            candle_type=CandleType.TIME,
-            candle_size=300,
-        )
+    def test_on_kline_close_updates_price_and_history(self):
+        state = SymbolState(symbol="BTCUSDT")
+        for i, close in enumerate([50000, 50100, 50200, 49900, 50050]):
+            ts = datetime(2026, 1, 1) + timedelta(minutes=i)
+            state.on_kline_close(Candle(
+                timestamp=ts, open=close, high=close, low=close, close=close,
+                volume=10.0, quote_volume=close * 10.0,
+                trade_count=100, buy_volume=5.0, sell_volume=5.0,
+            ))
 
-        trade = AggTrade(
-            timestamp=datetime.now(),
-            symbol="BTCUSDT",
-            price=50000,
-            quantity=0.1,
-            is_buyer_maker=False,
-        )
-
-        state.on_trade(trade)
-
-        assert state.last_price == 50000
-        assert state.tick_count == 1
-
-    def test_price_history(self):
-        """가격 히스토리 추적"""
-        state = SymbolState(
-            symbol="BTCUSDT",
-            candle_type=CandleType.TIME,
-            candle_size=300,
-        )
-
-        now = datetime.now()
-        prices = [50000, 50100, 50200, 49900, 50050]
-
-        for i, price in enumerate(prices):
-            trade = AggTrade(
-                timestamp=now + timedelta(seconds=i),
-                symbol="BTCUSDT",
-                price=price,
-                quantity=0.1,
-                is_buyer_maker=False,
-            )
-            state.on_trade(trade)
-
+        assert state.last_price == 50050
+        assert state.candle_count == 5
         history = state.get_price_history()
         assert len(history) == 5
         assert history.iloc[-1] == 50050
@@ -170,16 +148,7 @@ class TestPortfolioForwardRunner:
             initial_capital=10000,
         )
 
-        trade = AggTrade(
-            timestamp=datetime.now(),
-            symbol="BTCUSDT",
-            price=50000,
-            quantity=0.1,
-            is_buyer_maker=False,
-        )
-
-        runner.on_trade("BTCUSDT", trade)
-
+        runner.on_kline_close("BTCUSDT", _kline(datetime.now(), 50000))
         assert runner.symbol_states["BTCUSDT"].last_price == 50000
 
     def test_rebalance_check(self):
@@ -224,25 +193,8 @@ class TestPortfolioForwardRunner:
             initial_capital=10000,
         )
 
-        # BTC 가격 설정
-        trade_btc = AggTrade(
-            timestamp=datetime.now(),
-            symbol="BTCUSDT",
-            price=50000,
-            quantity=0.1,
-            is_buyer_maker=False,
-        )
-        runner.on_trade("BTCUSDT", trade_btc)
-
-        # ETH 가격 설정
-        trade_eth = AggTrade(
-            timestamp=datetime.now(),
-            symbol="ETHUSDT",
-            price=3000,
-            quantity=1.0,
-            is_buyer_maker=False,
-        )
-        runner.on_trade("ETHUSDT", trade_eth)
+        runner.on_kline_close("BTCUSDT", _kline(datetime.now(), 50000))
+        runner.on_kline_close("ETHUSDT", _kline(datetime.now(), 3000))
 
         prices = runner.get_current_prices()
         assert prices["BTCUSDT"] == 50000
@@ -271,6 +223,83 @@ class TestPortfolioForwardRunner:
         assert "positions" in report
         assert "symbols" in report
 
+    def test_runner_rejects_unsupported_candle_size(self):
+        """candle_size must map to a Binance kline interval."""
+        strategy = PortfolioMomentum(symbols=["BTCUSDT"], lookback_minutes=5, top_n=1, bottom_n=0)
+        with pytest.raises(ValueError, match="unsupported candle size"):
+            PortfolioForwardRunner(
+                strategy=strategy,
+                symbols=["BTCUSDT"],
+                candle_type=CandleType.TIME,
+                candle_size=137,  # not a Binance interval
+            )
+
+    def test_on_kline_close_drives_rebalance(self):
+        """Feeding closed klines via on_kline_close triggers the rebalance path."""
+        strategy = PortfolioMomentum(
+            symbols=["BTCUSDT", "ETHUSDT"],
+            lookback_minutes=1,
+            top_n=1,
+            bottom_n=0,
+        )
+        runner = PortfolioForwardRunner(
+            strategy=strategy,
+            symbols=["BTCUSDT", "ETHUSDT"],
+            candle_type=CandleType.TIME,
+            candle_size=60,
+            rebalance_minutes=1,
+        )
+        runner._start_time = datetime(2026, 5, 17, 0, 0, 0)
+        runner._last_rebalance_time = runner._start_time - timedelta(minutes=2)
+
+        # Replay two closed klines (one per symbol) — symbol_states should
+        # receive the candle and candle_count should increment.
+        ts = datetime(2026, 5, 17, 0, 1, 0)
+        for sym, close in [("BTCUSDT", 80_000.0), ("ETHUSDT", 2_500.0)]:
+            kline = Kline(
+                timestamp=ts, open=close, high=close, low=close, close=close,
+                volume=10.0, quote_volume=close * 10.0, trade_count=100,
+                taker_buy_volume=5.0, taker_buy_quote_volume=close * 5.0,
+            )
+            runner.on_kline_close(sym, kline)
+
+        assert runner.symbol_states["BTCUSDT"].candle_count == 1
+        assert runner.symbol_states["ETHUSDT"].candle_count == 1
+        assert runner.symbol_states["BTCUSDT"].last_candle is not None
+        assert runner.symbol_states["BTCUSDT"].last_candle.quote_volume == 800_000.0
+
+    def test_auto_save_loop_persists_to_disk(self, tmp_path):
+        """auto_save_output_dir set → _auto_save_loop writes save_report to disk."""
+        strategy = PortfolioMomentum(
+            symbols=["BTCUSDT", "ETHUSDT"],
+            lookback_minutes=60,
+            top_n=1,
+            bottom_n=1,
+        )
+        runner = PortfolioForwardRunner(
+            strategy=strategy,
+            symbols=["BTCUSDT", "ETHUSDT"],
+            candle_type=CandleType.TIME,
+            candle_size=300,
+            initial_capital=10000,
+            rebalance_minutes=10,
+            run_id="autosave_test",
+            auto_save_interval_seconds=0.05,
+            auto_save_output_dir=str(tmp_path),
+        )
+
+        client = AsyncMock()
+        client.connect = AsyncMock()
+        client.stop = AsyncMock()
+
+        with patch("intraday.multi_forward_runner.BinanceKlineStreamClient", return_value=client):
+            asyncio.run(runner.run(duration_seconds=0.25))
+
+        run_dir = tmp_path / "autosave_test"
+        assert run_dir.exists(), "save_report should have created the run directory mid-run"
+        assert (run_dir / "summary.json").exists()
+        assert (run_dir / "portfolio_nav.parquet").exists()
+
     def test_run_stops_on_duration(self):
         """duration으로 종료 시 정상 stop 보장"""
         strategy = PortfolioMomentum(
@@ -291,9 +320,9 @@ class TestPortfolioForwardRunner:
 
         client = AsyncMock()
         client.connect = AsyncMock()
-        client.disconnect = AsyncMock()
+        client.stop = AsyncMock()
 
-        with patch("intraday.multi_forward_runner.BinanceAggTradeClient", return_value=client):
+        with patch("intraday.multi_forward_runner.BinanceKlineStreamClient", return_value=client):
             asyncio.run(runner.run(duration_seconds=0.2))
 
         assert not runner._running
@@ -319,13 +348,14 @@ class TestPortfolioForwardRunner:
 
         client = AsyncMock()
         client.connect = AsyncMock()
-        client.disconnect = AsyncMock()
+        client.stop = AsyncMock()
 
-        with patch("intraday.multi_forward_runner.BinanceAggTradeClient", return_value=client):
+        with patch("intraday.multi_forward_runner.BinanceKlineStreamClient", return_value=client):
             asyncio.run(runner.run(duration_seconds=0))
 
         assert not runner._running
-        assert client.disconnect.await_count == 2
+        # Kline runner uses a single combined-stream client; one stop call.
+        assert client.stop.await_count == 1
 
     def test_rebalance_updates_last_time_for_momentum(self):
         """momentum 파이프라인에서도 리밸런스 타임스탬프가 갱신되는지 확인"""
@@ -526,22 +556,13 @@ class TestPortfolioForwardRunner:
         runner._start_time = base
         runner._last_rebalance_time = base - timedelta(minutes=2)
 
-        for i in range(61):
-            runner.on_trade(
-                "BTCUSDT",
-                AggTrade(
-                    timestamp=base + timedelta(seconds=i),
-                    symbol="BTCUSDT",
-                    price=100.0,
-                    quantity=1.0,
-                    is_buyer_maker=False,
-                ),
-            )
+        open_ts = base + timedelta(seconds=60)
+        runner.on_kline_close("BTCUSDT", _kline(open_ts, 100.0))
 
         opened = [t for t in runner.trade_log if t["action"] == "OPEN_LONG"]
         assert opened == [
             {
-                "timestamp": base + timedelta(seconds=60),
+                "timestamp": open_ts,
                 "symbol": "BTCUSDT",
                 "action": "OPEN_LONG",
                 "price": 100.0,
@@ -550,17 +571,8 @@ class TestPortfolioForwardRunner:
             }
         ]
 
-        close_ts = base + timedelta(seconds=61)
-        runner.on_trade(
-            "BTCUSDT",
-            AggTrade(
-                timestamp=close_ts,
-                symbol="BTCUSDT",
-                price=120.0,
-                quantity=1.0,
-                is_buyer_maker=False,
-            ),
-        )
+        close_ts = base + timedelta(seconds=120)
+        runner.on_kline_close("BTCUSDT", _kline(close_ts, 120.0))
         runner.close_all_positions(timestamp=close_ts)
         runner._record_nav(close_ts)
         saved = runner.save_report(tmp_path)
@@ -578,7 +590,7 @@ class TestPortfolioForwardRunner:
         metrics = pd.read_json(saved["metrics"], typ="series")
 
         assert len(weights) == 1
-        assert weights.iloc[0]["timestamp"] == pd.Timestamp(base + timedelta(seconds=60))
+        assert weights.iloc[0]["timestamp"] == pd.Timestamp(open_ts)
         assert weights.iloc[0]["symbol"] == "BTCUSDT"
         assert weights.iloc[0]["target_qty"] == pytest.approx(2.0)
         assert weights.iloc[0]["target_notional"] == pytest.approx(200.0)

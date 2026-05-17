@@ -1,0 +1,269 @@
+/*
+ * Alpha Dashboard styles.
+ *
+ * Tokens lifted from the open-design "coinbase" system — fintech blue on
+ * white, modest radius, system fonts. Loaded by alpha_dashboard.add_styles().
+ */
+
+:root {
+    --brand: #0052ff;
+    --brand-hover: #578bfa;
+    --brand-link: #0667d0;
+    --bg: #f7f7f7;
+    --surface: #ffffff;
+    --surface-alt: #eef0f3;
+    --text: #0a0b0d;
+    --muted: #5b616e;
+    --border: rgba(91, 97, 110, 0.2);
+    --border-strong: rgba(91, 97, 110, 0.35);
+    --positive: #16a34a;
+    --negative: #dc2626;
+    --r-sm: 8px;
+    --r-md: 12px;
+    --r-lg: 16px;
+    --shadow-1: 0 1px 2px rgba(10, 11, 13, 0.04);
+    --shadow-2: 0 4px 12px rgba(10, 11, 13, 0.06);
+}
+
+body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+                 "Helvetica Neue", Arial, system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+}
+
+.page-wrap { max-width: 1500px; margin: 0 auto; padding: 16px; box-sizing: border-box; }
+
+.metric-card {
+    flex: 1 1 145px; min-width: 145px;
+    padding: 12px 14px;
+    border-radius: var(--r-md);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    box-shadow: var(--shadow-1);
+}
+.metric-label {
+    color: var(--muted); font-size: 12px; font-weight: 600;
+    letter-spacing: 0.02em; text-transform: uppercase;
+}
+.metric-value { font-size: 22px; font-weight: 700; color: var(--text); margin-top: 2px; }
+
+.section-title {
+    font-size: 14px; font-weight: 700; color: var(--text);
+    letter-spacing: 0.04em; text-transform: uppercase;
+    margin-top: 6px;
+}
+
+/* Card rows must wrap on narrow screens — NiceGUI rows default to nowrap. */
+.page-wrap .nicegui-row { flex-wrap: wrap; }
+
+/* Quasar tables: scroll inside their own box, never blow out the page. */
+.q-table__container {
+    overflow-x: auto; max-width: 100%;
+    border-radius: var(--r-md);
+    border: 1px solid var(--border);
+    background: var(--surface);
+}
+.q-table th {
+    font-size: 11px; color: var(--muted); font-weight: 700;
+    letter-spacing: 0.04em; text-transform: uppercase;
+}
+.q-table td { font-size: 13px; white-space: nowrap; color: var(--text); }
+.q-table tbody tr { cursor: pointer; }
+.q-table tbody tr:hover { background: var(--surface-alt); }
+
+.dense-panel {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--r-md); padding: 14px;
+    box-shadow: var(--shadow-1);
+}
+.mini-card {
+    border-radius: var(--r-sm); padding: 10px 12px;
+    box-shadow: none; border: 1px solid var(--border);
+    background: var(--surface);
+}
+.mini-value { color: var(--text); font-size: 13px; font-weight: 600; }
+
+.validation-table .q-table__top,
+.validation-table .q-table__bottom { display: none; }
+.validation-table .q-table td { height: 30px; padding: 4px 8px; }
+.validation-table .q-table th { height: 28px; padding: 4px 8px; }
+
+.path-text {
+    color: var(--muted); font-size: 12px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    word-break: break-all;
+}
+.note-text { color: var(--muted); font-size: 12px; line-height: 1.45; }
+
+/* Tabs: brand accent on active. */
+.q-tab--active { color: var(--brand) !important; }
+.q-tab__indicator { background: var(--brand) !important; }
+
+/* Buttons: pill radius, brand on primary. */
+.q-btn { border-radius: var(--r-sm); text-transform: none; font-weight: 600; }
+a { color: var(--brand-link); }
+
+/* Page header — used by index/login/detail pages. */
+.page-header { display: flex; flex-direction: column; gap: 2px; margin-bottom: 4px; }
+.page-title { font-size: 22px; font-weight: 700; color: var(--text); letter-spacing: -0.01em; }
+.page-subtitle { font-size: 12px; color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+
+/* Accent variants for count cards at the top of the alpha index. */
+.metric-card-accent { border-left: 3px solid var(--brand); }
+.metric-card-positive { border-left: 3px solid var(--positive); }
+.metric-card-positive .metric-value { color: var(--positive); }
+.metric-card-muted { border-left: 3px solid var(--muted); }
+.metric-card-muted .metric-value { color: var(--muted); }
+
+/* LIVE badge — green pill with a quiet pulse so the eye picks it up
+   but doesn't get nagged. */
+.badge-live {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 3px 10px;
+    border-radius: 999px;
+    background: rgba(22, 163, 74, 0.12);
+    color: var(--positive);
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+}
+.badge-live::before {
+    content: ""; width: 7px; height: 7px; border-radius: 50%;
+    background: var(--positive);
+    box-shadow: 0 0 0 0 rgba(22, 163, 74, 0.6);
+    animation: live-pulse 1.8s ease-out infinite;
+}
+@keyframes live-pulse {
+    0%   { box-shadow: 0 0 0 0 rgba(22, 163, 74, 0.55); }
+    70%  { box-shadow: 0 0 0 8px rgba(22, 163, 74, 0); }
+    100% { box-shadow: 0 0 0 0 rgba(22, 163, 74, 0); }
+}
+
+/* Centered auth card for the login screen. */
+.auth-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--r-lg);
+    padding: 28px 24px;
+    box-shadow: var(--shadow-2);
+    width: 100%;
+    max-width: 360px;
+    margin: 48px auto 0;
+}
+
+/* Top navigation — sticky header across authenticated pages. */
+.nav-bar {
+    background: var(--surface) !important;
+    border-bottom: 1px solid var(--border);
+    color: var(--text) !important;
+    box-shadow: var(--shadow-1);
+    padding: 0 14px;
+}
+.nav-bar .nav-inner {
+    display: flex; align-items: center; gap: 12px;
+    width: 100%; max-width: 1500px; margin: 0 auto;
+    min-height: 50px;
+}
+.nav-brand {
+    font-size: 15px; font-weight: 700; letter-spacing: -0.01em;
+    color: var(--text);
+}
+.nav-brand .nav-mark { color: var(--brand); margin-right: 6px; }
+
+/* Section panel — wraps each detail-page section as a card with a
+   prominent header. */
+.section-panel {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--r-md);
+    padding: 14px;
+    box-shadow: var(--shadow-1);
+}
+.section-panel .section-title {
+    margin: 0 0 10px 0;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border);
+}
+
+/* Tone modifiers — used by metric_card(value, tone='positive'/'negative'). */
+.metric-value-positive { color: var(--positive); }
+.metric-value-negative { color: var(--negative); }
+.metric-value-muted    { color: var(--muted); }
+
+/* Mobile alpha card list — only shown on phones; the q-table above
+   is hidden in the same media query. */
+.alpha-card-list { display: none; flex-direction: column; gap: 8px; }
+.alpha-card-list .alpha-row {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--r-md); padding: 12px; cursor: pointer;
+    transition: border-color 0.15s, box-shadow 0.15s;
+}
+.alpha-card-list .alpha-row:active { box-shadow: var(--shadow-2); border-color: var(--brand); }
+.alpha-card-list .alpha-row .row-head {
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    margin-bottom: 8px;
+}
+.alpha-card-list .alpha-row .row-title {
+    font-weight: 700; font-size: 13px; color: var(--text);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.alpha-card-list .alpha-row .row-cat {
+    font-size: 10px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase;
+    padding: 2px 8px; border-radius: 999px; background: var(--surface-alt); color: var(--muted);
+}
+.alpha-card-list .alpha-row .row-stats {
+    display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px 12px;
+    font-size: 12px;
+}
+.alpha-card-list .alpha-row .stat-label {
+    font-size: 9px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase;
+    color: var(--muted); display: block; margin-bottom: 1px;
+}
+.alpha-card-list .alpha-row .stat-value { font-weight: 600; color: var(--text); }
+.alpha-card-list .alpha-row .stat-value.pos { color: var(--positive); }
+.alpha-card-list .alpha-row .stat-value.neg { color: var(--negative); }
+
+/* Footer */
+.app-footer {
+    margin-top: 28px; padding: 14px 0;
+    border-top: 1px solid var(--border);
+    display: flex; flex-wrap: wrap; gap: 16px;
+    align-items: center; justify-content: space-between;
+    color: var(--muted); font-size: 11px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.app-footer .footer-dot { color: var(--border-strong); }
+
+/* CSS Grid: items default to min-width: auto which expands to fit the
+   Plotly chart's intrinsic width (often 700px+), blowing past the
+   viewport on phones. Force min-width: 0 on every grid child so the
+   cell honors the column width instead. */
+.chart-grid > * { min-width: 0; }
+.chart-host { min-width: 0; min-height: 280px; overflow: hidden; }
+.chart-host .js-plotly-plot,
+.chart-host .plot-container,
+.chart-host .main-svg { max-width: 100% !important; }
+.chart-host .js-plotly-plot { width: 100% !important; }
+
+/* ---- Tablet breakpoint (<= 900px): collapse 2-col chart grid to 1-col ---- */
+@media (max-width: 900px) {
+    .chart-grid { grid-template-columns: 1fr !important; }
+}
+
+/* ---- Phone breakpoint (<= 640px) ---- */
+@media (max-width: 640px) {
+    .page-wrap { padding: 12px; }
+    .metric-card { flex: 1 1 calc(50% - 8px); min-width: 0; }
+    .q-table td, .q-table th { font-size: 12px; padding: 6px 8px; }
+    .section-title { font-size: 13px; }
+    .metric-value { font-size: 18px; }
+    /* Phones: give charts more vertical room since they're full-width. */
+    .chart-host { min-height: 320px; }
+    .js-plotly-plot, .plot-container { width: 100% !important; }
+    /* Swap the wide table for a tidy stack of clickable cards. */
+    .alpha-table { display: none !important; }
+    .alpha-card-list { display: flex !important; }
+}

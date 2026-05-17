@@ -1,7 +1,7 @@
 """
 포트폴리오 Forward Test 러너
 
-실시간 aggTrade 스트림 기반으로 포트폴리오 전략의 Paper Trade/Forward Test를 실행하고
+Binance kline 스트림(WS) + REST warmup 기반으로 포트폴리오 전략을 paper-trade.
 실행 메타·리밸런싱 이벤트·가중치·NAV를 영구 로그로 남깁니다.
 """
 
@@ -15,8 +15,14 @@ from typing import Any, Optional, Union
 
 import pandas as pd
 
-from .client import BinanceAggTradeClient, AggTrade
-from .candle_builder import CandleBuilder, Candle, CandleType
+from .candle_builder import Candle, CandleType
+from .klines_client import (
+    BinanceKlineStreamClient,
+    BinanceKlinesClient,
+    Kline,
+    kline_to_candle,
+    seconds_to_binance_interval,
+)
 from .strategies.multi.momentum import PortfolioMomentum
 from .strategies.multi.pair import PairTradingStrategy
 from .backtest.multi_runner import PortfolioPosition
@@ -24,36 +30,25 @@ from .strategy import MarketState, Order, OrderType, PortfolioOrder, Side
 
 
 class SymbolState:
-    """심볼별 tick/candle 상태"""
+    """Per-symbol state driven by closed klines."""
 
     MAX_PRICE_HISTORY = 10_000
 
-    def __init__(
-        self,
-        symbol: str,
-        candle_type: CandleType = CandleType.TIME,
-        candle_size: float = 300.0,
-    ):
+    def __init__(self, symbol: str):
         self.symbol = symbol
-        self.candle_builder = CandleBuilder(candle_type, candle_size)
         self.last_price: float = 0.0
-        self.tick_count = 0
         self.candle_count = 0
         self._price_history: deque = deque(maxlen=self.MAX_PRICE_HISTORY)
         self._price_timestamps: deque = deque(maxlen=self.MAX_PRICE_HISTORY)
         self.last_candle: Optional[Candle] = None
 
-    def on_trade(self, trade: AggTrade) -> Optional[Candle]:
-        self.last_price = trade.price
-        self.tick_count += 1
-        self._price_history.append(trade.price)
-        self._price_timestamps.append(trade.timestamp)
-
-        completed = self.candle_builder.update(trade)
-        if completed:
-            self.candle_count += 1
-            self.last_candle = completed
-        return completed
+    def on_kline_close(self, candle: Candle) -> Candle:
+        self.last_price = candle.close
+        self.candle_count += 1
+        self.last_candle = candle
+        self._price_history.append(candle.close)
+        self._price_timestamps.append(candle.timestamp)
+        return candle
 
     def get_price_history(self) -> pd.Series:
         if not self._price_history:
@@ -76,6 +71,8 @@ class PortfolioForwardRunner:
         run_id: Optional[str] = None,
         close_on_stop: bool = False,
         auto_save_interval_seconds: Optional[float] = None,
+        auto_save_output_dir: Optional[str | Path] = None,
+        warmup_bars: int = 0,
     ):
         self.strategy = strategy
         self.symbols = [s.upper() for s in symbols]
@@ -89,10 +86,18 @@ class PortfolioForwardRunner:
         self.run_id = run_id or datetime.now().strftime("%Y%m%d_%H%M%S")
         self.close_on_stop = close_on_stop
         self.auto_save_interval_seconds = auto_save_interval_seconds
+        self.auto_save_output_dir = (
+            Path(auto_save_output_dir) if auto_save_output_dir is not None else None
+        )
+
+        self.warmup_bars = max(0, int(warmup_bars))
+        if candle_type != CandleType.TIME:
+            raise ValueError("kline forward runner only supports CandleType.TIME")
+        # Validate up front so wrong candle_size fails fast at construction.
+        self._kline_interval = seconds_to_binance_interval(candle_size)
 
         self.symbol_states: dict[str, SymbolState] = {
-            symbol: SymbolState(symbol, candle_type, candle_size)
-            for symbol in self.symbols
+            symbol: SymbolState(symbol) for symbol in self.symbols
         }
 
         self.position = PortfolioPosition()
@@ -106,24 +111,121 @@ class PortfolioForwardRunner:
         self.nav_events: list[dict[str, Any]] = []  # NAV 시계열
 
         self._running = False
-        self._clients: dict[str, BinanceAggTradeClient] = {}
+        self._clients: dict[str, BinanceKlineStreamClient] = {}
         self._last_rebalance_time: Optional[datetime] = None
         self._start_time: Optional[datetime] = None
         self._auto_save_last_at: Optional[datetime] = None
         self._rebalance_seq = 0
         self._last_daily_weight_date: Optional[str] = None
+        # When True, on_kline_close updates SymbolState + advances strategy
+        # state via a dry-run generate_order call, but skips order execution
+        # — used during REST warmup to seed `_current_date`/`_qv_today`
+        # without forging trades at past timestamps.
+        self._warming_up = False
+
+    # ----- resume mode -----
+    def load_existing_state(self, output_dir: str | Path) -> None:
+        """Prepend prior persisted state from ``output_dir/<run_id>/*.parquet``.
+
+        Used when restarting on top of an existing forward dir so the chart
+        keeps continuity (no gap between prior run and the new run).
+        Falls back silently when the files are missing or empty.
+        """
+        run_dir = Path(output_dir) / self.run_id
+        if not run_dir.is_dir():
+            return
+
+        def _load_rows(name: str) -> list[dict[str, Any]]:
+            path = run_dir / name
+            if not path.exists():
+                return []
+            try:
+                df = pd.read_parquet(path)
+            except Exception as exc:  # noqa: BLE001
+                print(f"[Resume] failed to read {name}: {exc}")
+                return []
+            return df.to_dict("records")
+
+        prior_nav = _load_rows("portfolio_nav.parquet") or _load_rows("equity_curve.parquet")
+        prior_trades = _load_rows("trades.parquet")
+        prior_weights = _load_rows("weights.parquet")
+        prior_events = _load_rows("events.parquet")
+
+        self.nav_events = prior_nav + self.nav_events
+        self.trade_log = prior_trades + self.trade_log
+        self.weight_events = prior_weights + self.weight_events
+        # events.parquet stores rebalance + execution mixed; keep them all in
+        # rebalance_events for simplicity (save_report writes the union).
+        self.rebalance_events = prior_events + self.rebalance_events
+
+        # Restore capital from the last prior NAV entry so subsequent
+        # `_record_nav` calls don't reset the equity curve back to
+        # `initial_capital` and create a visible jump in the chart.
+        if prior_nav:
+            last = prior_nav[-1]
+            equity = last.get("equity")
+            capital = last.get("capital")
+            if isinstance(capital, (int, float)) and capital > 0:
+                self.capital = float(capital)
+            elif isinstance(equity, (int, float)) and equity > 0:
+                self.capital = float(equity)
+
+        print(
+            f"[Resume] loaded prior state from {run_dir}: "
+            f"nav={len(prior_nav)} trades={len(prior_trades)} "
+            f"weights={len(prior_weights)} events={len(prior_events)} "
+            f"→ capital=${self.capital:,.2f}"
+        )
 
     # ----- data ingestion / scheduling -----
-    def on_trade(self, symbol: str, trade: AggTrade) -> None:
+    def on_kline_close(self, symbol: str, kline: Kline) -> None:
+        """WS callback: a closed kline arrived for ``symbol``."""
         symbol = symbol.upper()
         if symbol not in self.symbol_states:
             return
+        candle = kline_to_candle(symbol, kline, self.candle_size)
+        self.symbol_states[symbol].on_kline_close(candle)
+        if self._warming_up:
+            self._advance_strategy_state(symbol, candle, candle.timestamp)
+        else:
+            self._on_candle_complete(symbol, candle, candle.timestamp)
 
-        state = self.symbol_states[symbol]
-        completed_candle = state.on_trade(trade)
+    def _advance_strategy_state(self, symbol: str, candle: Candle, timestamp: datetime) -> None:
+        """During warmup, run the strategy on each candle but discard orders.
 
-        if completed_candle:
-            self._on_candle_complete(symbol, completed_candle, trade.timestamp)
+        The strategy still updates its internal qv/day accumulators, so by
+        the time live klines arrive, ``_current_date`` and ``_qv_today``
+        are primed and the first live close fires a real basket.
+        """
+        panel = self._build_panel()
+        if panel is None:
+            return
+        state = MarketState(
+            timestamp=timestamp,
+            mid_price=candle.close,
+            imbalance=candle.volume_imbalance,
+            spread=0.0,
+            spread_bps=0.0,
+            best_bid=candle.close,
+            best_ask=candle.close,
+            best_bid_qty=candle.buy_volume,
+            best_ask_qty=candle.sell_volume,
+            position_side=None,
+            position_qty=0.0,
+            open=candle.open,
+            high=candle.high,
+            low=candle.low,
+            close=candle.close,
+            volume=candle.volume,
+            vwap=candle.vwap,
+            symbol=symbol,
+            panel=panel,
+            positions={},
+        )
+        try:
+            self.strategy.generate_order(state)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[Warmup] strategy.generate_order failed for {symbol}: {exc}")
 
     def _on_candle_complete(self, symbol: str, candle: Candle, timestamp: datetime) -> None:
         if self.should_rebalance(timestamp):
@@ -367,11 +469,13 @@ class PortfolioForwardRunner:
                 continue
             c = st.last_candle
             panel[sym] = {
+                "timestamp": c.timestamp,
                 "open": c.open,
                 "high": c.high,
                 "low": c.low,
                 "close": c.close,
                 "volume": c.volume,
+                "quote_volume": c.quote_volume,
                 "vwap": c.vwap,
                 "volume_imbalance": c.volume_imbalance,
                 "trade_count": c.trade_count,
@@ -755,7 +859,6 @@ class PortfolioForwardRunner:
             "symbols": {
                 sym: {
                     "price": st.last_price,
-                    "ticks": st.tick_count,
                     "candles": st.candle_count,
                 }
                 for sym, st in self.symbol_states.items()
@@ -789,16 +892,16 @@ class PortfolioForwardRunner:
         print("=" * 60)
 
         client_tasks: list[asyncio.Task] = []
-        for symbol in self.symbols:
-            client = BinanceAggTradeClient(symbol.lower())
-            self._clients[symbol] = client
-
-            def make_callback(sym):
-                def cb(trade):
-                    self.on_trade(sym, trade)
-                return cb
-
-            client_tasks.append(asyncio.create_task(client.connect(on_trade=make_callback(symbol))))
+        # REST warmup: prepend the last ``warmup_bars`` closed klines so the
+        # strategy state is non-empty before the live stream starts.
+        if self.warmup_bars > 0:
+            await self._kline_warmup(self.warmup_bars)
+        stream = BinanceKlineStreamClient(
+            symbols=self.symbols,
+            interval=self._kline_interval,
+        )
+        self._clients["__kline_stream__"] = stream
+        client_tasks.append(asyncio.create_task(stream.connect(on_kline_close=self.on_kline_close)))
 
         status_task = asyncio.create_task(self._status_printer())
         timer_task = (
@@ -857,6 +960,43 @@ class PortfolioForwardRunner:
 
             self._record_nav(datetime.now())
 
+    async def _kline_warmup(self, bars: int) -> None:
+        """Fetch ``bars`` recent closed klines per symbol via REST and feed
+        them through :meth:`on_kline_close` to seed strategy state."""
+        self._warming_up = True
+        client = BinanceKlinesClient()
+        interval = self._kline_interval
+        print(f"[Warmup] REST fetching {bars} {interval} bars for {len(self.symbols)} symbols...")
+        # Bound concurrency so we don't hammer Binance.
+        sem = asyncio.Semaphore(20)
+
+        async def fetch(symbol: str) -> tuple[str, list[Kline]]:
+            async with sem:
+                try:
+                    klines = await client.fetch_klines(symbol, interval, limit=bars + 1)
+                    return symbol, klines
+                except Exception as exc:  # noqa: BLE001
+                    print(f"[Warmup] {symbol}: {exc}")
+                    return symbol, []
+
+        results = await asyncio.gather(*(fetch(s) for s in self.symbols))
+
+        # Replay closed klines in chronological order to mirror the live
+        # stream's ordering semantics.
+        per_ts: dict[datetime, list[tuple[str, Kline]]] = {}
+        for symbol, klines in results:
+            # Last kline is the still-open current bar — drop it.
+            for k in klines[:-1]:
+                per_ts.setdefault(k.timestamp, []).append((symbol, k))
+
+        for ts in sorted(per_ts.keys()):
+            for symbol, kline in per_ts[ts]:
+                self.on_kline_close(symbol, kline)
+
+        total = sum(len(v) for v in per_ts.values())
+        print(f"[Warmup] replayed {total} closed klines across {len(per_ts)} timestamps.")
+        self._warming_up = False
+
     async def _auto_save_loop(self) -> None:
         while self._running:
             await asyncio.sleep(self.auto_save_interval_seconds)
@@ -865,6 +1005,11 @@ class PortfolioForwardRunner:
             self._auto_save_last_at = datetime.now()
             self._record_nav(self._auto_save_last_at)
             self._record_daily_weight(self._auto_save_last_at)
+            if self.auto_save_output_dir is not None:
+                try:
+                    self.save_report(self.auto_save_output_dir)
+                except Exception as exc:  # don't kill the loop on transient I/O errors
+                    print(f"[PortfolioForward][Heartbeat] save_report failed: {exc}")
             print(f"[PortfolioForward][Heartbeat] run={self.run_id} len(logs)={len(self.nav_events)}")
 
     async def _stop_after(self, seconds: float) -> None:
@@ -873,7 +1018,7 @@ class PortfolioForwardRunner:
     async def stop(self) -> None:
         self._running = False
         for client in self._clients.values():
-            await client.disconnect()
+            await client.stop()
 
     # ----- persistence -----
     def _to_parquet_safe(self, rows: list[dict[str, Any]], path: Path) -> None:

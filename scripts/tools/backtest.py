@@ -381,24 +381,31 @@ def _persist_display_metrics(output_dir: Path) -> tuple[float | None, float | No
 
 
 def _enforce_reject_rules(output_dir: Path, *, enforce: bool) -> dict:
-    """Apply user-defined reject rules R1-R4 once both IS and OS exist.
+    """Apply user-defined reject rules and delete the alpha dir on failure.
 
-    Only fires after the OS run (when sibling IS metrics is available). If
-    the alpha trips any reject rule, the entire alpha directory (both IS
-    and OS) is removed — these alphas are not worth keeping per user policy.
+    - After IS run: applies IS-only reject (R1-IS bps ≤ 0, R2-IS t-stat < 1.5,
+      R4 IS trades < 100). Deletes the alpha dir if any fires — there is no
+      point holding incomplete alphas that already fail an IS-side rule.
+    - After OS run: applies the full IS+OS rules (R1-R4 plus degradation
+      checks), again deleting the entire alpha dir on failure.
     """
     report = {"ok": True, "kept": True, "category": None, "reason": None}
-    if output_dir.name != "os":
-        return report  # only evaluate after OS leg
     is_metrics_path = output_dir.parent / "is" / "metrics.json"
-    os_metrics_path = output_dir / "metrics.json"
-    if not is_metrics_path.exists() or not os_metrics_path.exists():
-        return report  # incomplete, skip
+    os_metrics_path = output_dir.parent / "os" / "metrics.json"
+
+    if not is_metrics_path.exists():
+        return report  # nothing to evaluate yet
     try:
         is_m = json.loads(is_metrics_path.read_text())
-        os_m = json.loads(os_metrics_path.read_text())
     except Exception:
         return report
+    os_m = None
+    if os_metrics_path.exists():
+        try:
+            os_m = json.loads(os_metrics_path.read_text())
+        except Exception:
+            os_m = None
+
     try:
         _here = Path(__file__).resolve().parent
         if str(_here) not in sys.path:
@@ -406,6 +413,7 @@ def _enforce_reject_rules(output_dir: Path, *, enforce: bool) -> dict:
         from alpha_dashboard_lib import classify_alpha  # noqa: E402
     except Exception:
         return report
+
     category, reason = classify_alpha(is_m, os_m)
     report["category"] = category
     report["reason"] = reason

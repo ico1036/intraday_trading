@@ -78,6 +78,23 @@ This file is the *why* and *how to think*. The other files are the *what to do*.
 
 -
 
+### Explore–exploit budget (neighborhood-aware breadth)
+
+Pure breadth ignores signal; pure exploitation collapses into refinement.
+The loop should do both:
+
+- **Search near confirmed wins.** A successful idea_family is a clue
+  about *where* alpha lives — adjacent cells (different transform,
+  horizon, exit, universe shape) are higher-prior than random ones.
+- **Don't dig too deep.** Neighborhood exploration has a shallow
+  ceiling; past it, signal degrades into refinement of one idea.
+- **Use confirmed clues to raise discovery probability.** Prior wins
+  are not just trophies — they reshape the prior over the search
+  space for the next attempt.
+- **Always reserve capacity for unverified theories.** Without this
+  reserve, the search collapses around the first lucky neighborhood
+  and never finds an unrelated source of edge.
+
 ### Pre-registration & frozen IS
 
 <!-- decide hypothesis BEFORE looking at OS; OS labels distribution shift

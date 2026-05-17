@@ -174,6 +174,36 @@ class _MultiPosition:
             return (price - pos.entry_price) * pos.quantity
         return (pos.entry_price - price) * pos.quantity
 
+    def partial_close(self, symbol: str, price: float, qty: float, ts: datetime) -> float:
+        """Close ``qty`` units of an existing position, realizing PnL on
+        that portion. Remaining qty keeps original entry_price. If the
+        requested qty meets or exceeds current qty, the position is fully
+        closed and removed."""
+        pos = self._positions.get(symbol)
+        if pos is None or qty <= 0:
+            return 0.0
+        close_qty = min(qty, pos.quantity)
+        if pos.side == "LONG":
+            pnl = (price - pos.entry_price) * close_qty
+        else:
+            pnl = (pos.entry_price - price) * close_qty
+        remaining = pos.quantity - close_qty
+        if remaining <= 0:
+            self._positions.pop(symbol)
+        else:
+            pos.quantity = remaining
+        return pnl
+
+    def add(self, symbol: str, price: float, qty: float, ts: datetime) -> None:
+        """Increase an existing position by ``qty`` units, updating the
+        entry_price to a quantity-weighted average."""
+        pos = self._positions.get(symbol)
+        if pos is None or qty <= 0:
+            return
+        new_qty = pos.quantity + qty
+        pos.entry_price = (pos.entry_price * pos.quantity + price * qty) / new_qty
+        pos.quantity = new_qty
+
     def has(self, symbol: str) -> bool:
         return symbol in self._positions
 
@@ -406,11 +436,16 @@ class PortfolioTickBacktestRunner:
         panel = {}
         for sym, candle in self._latest_candles.items():
             panel[sym] = {
+                "timestamp": candle.timestamp,
                 "open": candle.open,
                 "high": candle.high,
                 "low": candle.low,
                 "close": candle.close,
                 "volume": candle.volume,
+                "quote_volume": candle.quote_volume,
+                "trade_count": candle.trade_count,
+                "buy_volume": candle.buy_volume,
+                "sell_volume": candle.sell_volume,
                 "vwap": candle.vwap,
                 "volume_imbalance": candle.volume_imbalance,
             }
@@ -524,11 +559,25 @@ class PortfolioTickBacktestRunner:
         price: float,
         timestamp: datetime,
     ) -> None:
+        """Execute the pending order at the next bar arrival.
+
+        The signal-vs-execution boundary uses strict ``<`` so that orders
+        queued earlier in a bar event (step 4 of one symbol's processing)
+        can fire at a later bar event sharing the same timestamp. This is
+        required for daily-bar backtests where every same-day bar shares
+        a midnight UTC timestamp: without it, the very first symbol's
+        emission overwrites pending orders for every other symbol on the
+        same day, and those symbols never trade.
+
+        Within a single bar event there is no self-trigger risk because
+        ``_execute_pending_order`` (step 1) is always called BEFORE
+        ``_execute_strategy`` (step 4) which sets new pending.
+        """
         pending = self._pending_orders.get(symbol)
         if pending is None:
             return
         order, signal_ts = pending
-        if timestamp <= signal_ts:
+        if timestamp < signal_ts:
             return
         self._pending_orders.pop(symbol, None)
         self._execute_order(symbol, order, price, timestamp)
@@ -620,91 +669,143 @@ class PortfolioTickBacktestRunner:
         price: float,
         timestamp: datetime,
     ) -> None:
-        """단일 심볼에 주문 실행"""
+        """Execute a single-symbol order targeting a notional weight.
+
+        Semantics:
+          - close-marker (weight=None, quantity=0): close existing position
+            on the matching side, no new position opened.
+          - weight-based BUY/SELL: rebalance to a target qty derived from
+            ``weight × capital × leverage / price``. The transition between
+            current and target position is executed as a DELTA trade — only
+            the difference is bought / sold, paying fee on the delta.
+            * no position → open at target qty
+            * opposite side → close all + open at target (direction flip)
+            * same side, target > current → add the missing qty
+            * same side, target < current → partial close to target qty
+        """
         is_market = order.order_type == OrderType.MARKET
         fee_rate = self.taker_fee_rate if is_market else self.maker_fee_rate
 
-        if order.side == Side.BUY:
-            if self._position.has(symbol) and self._position.get_side(symbol) == "SHORT":
-                # 숏 청산 후 롱
-                close_qty = self._position.get_qty(symbol)
-                pnl = self._position.close(symbol, price, timestamp)
-                fee = price * close_qty * fee_rate
-                self._capital += pnl - fee
-                self._trade_log.append({
-                    "timestamp": timestamp,
-                    "symbol": symbol,
-                    "action": "CLOSE_SHORT",
-                    "price": price,
-                    "pnl": pnl,
-                    "fee": fee,
-                })
+        is_close_marker = (order.weight is None) and (order.quantity == 0)
+        current_side = self._position.get_side(symbol) if self._position.has(symbol) else None
 
-            quantity = self._resolve_order_quantity(symbol, order, price)
-            if quantity <= 0:
+        # ---- close-marker: close existing matching-side position only ----
+        if is_close_marker:
+            if current_side is None:
                 return
-            notional = price * quantity
-            if not self._position.has(symbol):
-                fee = notional * fee_rate
-                self._capital -= fee
-                self._position.open(
-                    symbol,
-                    "LONG",
-                    price,
-                    quantity,
-                    timestamp,
-                    liquidation_price=self._liquidation_price(price, "LONG"),
-                    margin=self._margin(price, quantity),
-                )
-                self._trade_log.append({
-                    "timestamp": timestamp,
-                    "symbol": symbol,
-                    "action": "OPEN_LONG",
-                    "price": price,
-                    "quantity": quantity,
-                    "fee": fee,
-                })
-
-        elif order.side == Side.SELL:
-            if self._position.has(symbol) and self._position.get_side(symbol) == "LONG":
-                # 롱 청산 후 숏
-                close_qty = self._position.get_qty(symbol)
-                pnl = self._position.close(symbol, price, timestamp)
-                fee = price * close_qty * fee_rate
-                self._capital += pnl - fee
-                self._trade_log.append({
-                    "timestamp": timestamp,
-                    "symbol": symbol,
-                    "action": "CLOSE_LONG",
-                    "price": price,
-                    "pnl": pnl,
-                    "fee": fee,
-                })
-
-            quantity = self._resolve_order_quantity(symbol, order, price)
-            if quantity <= 0:
+            closes_long = (order.side == Side.SELL and current_side == "LONG")
+            closes_short = (order.side == Side.BUY and current_side == "SHORT")
+            if not (closes_long or closes_short):
                 return
-            notional = price * quantity
-            if not self._position.has(symbol):
-                fee = notional * fee_rate
-                self._capital -= fee
-                self._position.open(
-                    symbol,
-                    "SHORT",
-                    price,
-                    quantity,
-                    timestamp,
-                    liquidation_price=self._liquidation_price(price, "SHORT"),
-                    margin=self._margin(price, quantity),
-                )
-                self._trade_log.append({
-                    "timestamp": timestamp,
-                    "symbol": symbol,
-                    "action": "OPEN_SHORT",
-                    "price": price,
-                    "quantity": quantity,
-                    "fee": fee,
-                })
+            self._close_existing(symbol, price, timestamp, fee_rate, current_side)
+            return
+
+        # ---- weight-based target order ----
+        target_side = "LONG" if order.side == Side.BUY else "SHORT"
+        target_qty = self._resolve_order_quantity(symbol, order, price)
+        if target_qty <= 0:
+            return
+
+        # No prior position: simple open at target.
+        if current_side is None:
+            self._open_at_target(symbol, target_side, price, target_qty, timestamp, fee_rate)
+            return
+
+        # Direction flip: close all of current side, then open new fully.
+        if current_side != target_side:
+            self._close_existing(symbol, price, timestamp, fee_rate, current_side)
+            target_qty = self._resolve_order_quantity(symbol, order, price)
+            if target_qty <= 0:
+                return
+            self._open_at_target(symbol, target_side, price, target_qty, timestamp, fee_rate)
+            return
+
+        # Same side: trade only the delta to reach target qty.
+        current_qty = self._position.get_qty(symbol)
+        delta = target_qty - current_qty
+        if abs(delta) < 1e-12:
+            return
+        if delta > 0:
+            # Increase position by ``delta`` (BUY for LONG, SELL for SHORT).
+            notional = price * delta
+            fee = notional * fee_rate
+            self._capital -= fee
+            self._position.add(symbol, price, delta, timestamp)
+            self._trade_log.append({
+                "timestamp": timestamp,
+                "symbol": symbol,
+                "action": "OPEN_LONG" if target_side == "LONG" else "OPEN_SHORT",
+                "price": price,
+                "quantity": delta,
+                "fee": fee,
+            })
+        else:
+            # Reduce position by |delta| via partial close.
+            close_qty = -delta
+            pnl = self._position.partial_close(symbol, price, close_qty, timestamp)
+            fee = price * close_qty * fee_rate
+            self._capital += pnl - fee
+            self._trade_log.append({
+                "timestamp": timestamp,
+                "symbol": symbol,
+                "action": "CLOSE_LONG" if target_side == "LONG" else "CLOSE_SHORT",
+                "price": price,
+                "pnl": pnl,
+                "quantity": close_qty,
+                "fee": fee,
+            })
+
+    def _open_at_target(
+        self,
+        symbol: str,
+        target_side: str,
+        price: float,
+        target_qty: float,
+        timestamp: datetime,
+        fee_rate: float,
+    ) -> None:
+        notional = price * target_qty
+        fee = notional * fee_rate
+        self._capital -= fee
+        self._position.open(
+            symbol,
+            target_side,
+            price,
+            target_qty,
+            timestamp,
+            liquidation_price=self._liquidation_price(price, target_side),
+            margin=self._margin(price, target_qty),
+        )
+        self._trade_log.append({
+            "timestamp": timestamp,
+            "symbol": symbol,
+            "action": "OPEN_LONG" if target_side == "LONG" else "OPEN_SHORT",
+            "price": price,
+            "quantity": target_qty,
+            "fee": fee,
+        })
+
+    def _close_existing(
+        self,
+        symbol: str,
+        price: float,
+        timestamp: datetime,
+        fee_rate: float,
+        current_side: str,
+    ) -> None:
+        """Close a held position, realize PnL into capital, log the close."""
+        close_qty = self._position.get_qty(symbol)
+        pnl = self._position.close(symbol, price, timestamp)
+        fee = price * close_qty * fee_rate
+        self._capital += pnl - fee
+        self._trade_log.append({
+            "timestamp": timestamp,
+            "symbol": symbol,
+            "action": "CLOSE_LONG" if current_side == "LONG" else "CLOSE_SHORT",
+            "price": price,
+            "pnl": pnl,
+            "fee": fee,
+        })
 
     def _execute_strategy(
         self,

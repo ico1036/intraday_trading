@@ -1,22 +1,28 @@
 """
-Binance REST API Klines Client
+Binance Klines Client — REST history fetch + WebSocket live stream.
 
-REST API를 통해 과거 캔들 데이터를 가져옵니다.
-WebSocket 연결 전 전략 웜업에 사용됩니다.
+For bar-frequency strategies (minute/hour/daily), use this instead of
+aggTrade. Binance already provides aggregated klines so we skip the
+candle-builder reconstruction entirely.
 """
 
+import asyncio
+import json
+import ssl
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import List
+from typing import AsyncIterator, Awaitable, Callable, List, Optional
 
 import aiohttp
+import websockets
+from websockets.asyncio.client import connect as ws_connect
 
 from .candle_builder import Candle
 
 
 @dataclass
 class Kline:
-    """Binance Kline 데이터"""
+    """Binance Kline 데이터 (REST + WS 공통)."""
 
     timestamp: datetime
     open: float
@@ -24,6 +30,68 @@ class Kline:
     low: float
     close: float
     volume: float
+    quote_volume: float = 0.0
+    trade_count: int = 0
+    taker_buy_volume: float = 0.0
+    taker_buy_quote_volume: float = 0.0
+    is_closed: bool = True
+
+
+# ---------------------------------------------------------------------------
+# candle_size_seconds → Binance interval string
+# ---------------------------------------------------------------------------
+
+_INTERVAL_BY_SECONDS = {
+    60: "1m",
+    180: "3m",
+    300: "5m",
+    900: "15m",
+    1800: "30m",
+    3600: "1h",
+    7200: "2h",
+    14400: "4h",
+    21600: "6h",
+    28800: "8h",
+    43200: "12h",
+    86400: "1d",
+    259200: "3d",
+    604800: "1w",
+}
+
+
+def seconds_to_binance_interval(seconds: float) -> str:
+    """Return the Binance kline interval string for ``seconds``.
+
+    Raises ValueError when ``seconds`` does not match a supported interval
+    — the caller is expected to either pick a supported size or fall back
+    to the aggTrade-based runner.
+    """
+    key = int(seconds)
+    if key not in _INTERVAL_BY_SECONDS:
+        raise ValueError(
+            f"unsupported candle size for kline source: {seconds}s. "
+            f"supported: {sorted(_INTERVAL_BY_SECONDS.keys())}"
+        )
+    return _INTERVAL_BY_SECONDS[key]
+
+
+def kline_to_candle(symbol: str, kline: Kline, bar_size: float) -> Candle:
+    """Convert a :class:`Kline` to the canonical :class:`Candle` shape used
+    by the rest of the framework."""
+    buy_volume = kline.taker_buy_volume
+    sell_volume = max(0.0, kline.volume - buy_volume)
+    return Candle(
+        timestamp=kline.timestamp,
+        open=kline.open,
+        high=kline.high,
+        low=kline.low,
+        close=kline.close,
+        volume=kline.volume,
+        quote_volume=kline.quote_volume,
+        trade_count=int(kline.trade_count),
+        buy_volume=buy_volume,
+        sell_volume=sell_volume,
+    )
 
 
 class BinanceKlinesClient:
@@ -78,7 +146,8 @@ class BinanceKlinesClient:
         for item in data:
             # Binance Kline format:
             # [0] Open time, [1] Open, [2] High, [3] Low, [4] Close,
-            # [5] Volume, [6] Close time, ...
+            # [5] Volume, [6] Close time, [7] Quote asset volume,
+            # [8] Number of trades, [9] Taker buy base, [10] Taker buy quote, [11] Ignore
             kline = Kline(
                 timestamp=datetime.fromtimestamp(item[0] / 1000, tz=timezone.utc),
                 open=float(item[1]),
@@ -86,6 +155,11 @@ class BinanceKlinesClient:
                 low=float(item[3]),
                 close=float(item[4]),
                 volume=float(item[5]),
+                quote_volume=float(item[7]) if len(item) > 7 else 0.0,
+                trade_count=int(item[8]) if len(item) > 8 else 0,
+                taker_buy_volume=float(item[9]) if len(item) > 9 else 0.0,
+                taker_buy_quote_volume=float(item[10]) if len(item) > 10 else 0.0,
+                is_closed=True,
             )
             klines.append(kline)
 
@@ -213,3 +287,86 @@ class BinanceKlinesClient:
             close=klines[-1].close,
             volume=sum(k.volume for k in klines),
         )
+
+
+class BinanceKlineStreamClient:
+    """USDT-M futures kline WebSocket combined-stream client.
+
+    Subscribes to ``<sym>@kline_<interval>`` streams for many symbols on a
+    single WebSocket. Yields only *closed* klines (Binance sets ``k.x``=true
+    on the final tick of each bar).
+    """
+
+    BASE_URL = "wss://fstream.binance.com/stream"
+
+    def __init__(self, symbols: List[str], interval: str):
+        if not symbols:
+            raise ValueError("symbols must not be empty")
+        self.symbols = [s.lower() for s in symbols]
+        self.interval = interval
+        self._running = False
+
+    @property
+    def url(self) -> str:
+        streams = "/".join(f"{s}@kline_{self.interval}" for s in self.symbols)
+        return f"{self.BASE_URL}?streams={streams}"
+
+    @staticmethod
+    def _parse_kline_event(payload: dict) -> Optional[tuple[str, Kline]]:
+        """Return ``(symbol, kline)`` for a closed kline tick, else ``None``."""
+        k = payload.get("k") or {}
+        if not k.get("x"):
+            return None
+        symbol = payload.get("s") or k.get("s")
+        if not symbol:
+            return None
+        kline = Kline(
+            timestamp=datetime.fromtimestamp(int(k["t"]) / 1000, tz=timezone.utc),
+            open=float(k["o"]),
+            high=float(k["h"]),
+            low=float(k["l"]),
+            close=float(k["c"]),
+            volume=float(k["v"]),
+            quote_volume=float(k.get("q", 0.0)),
+            trade_count=int(k.get("n", 0)),
+            taker_buy_volume=float(k.get("V", 0.0)),
+            taker_buy_quote_volume=float(k.get("Q", 0.0)),
+            is_closed=True,
+        )
+        return symbol.upper(), kline
+
+    async def connect(
+        self,
+        on_kline_close: Callable[[str, Kline], None | Awaitable[None]],
+        on_error: Optional[Callable[[Exception], None]] = None,
+    ) -> None:
+        """Connect and stream until :meth:`stop` is called.
+
+        Reconnects on disconnect, mirroring :class:`BinanceAggTradeClient`.
+        """
+        self._running = True
+        async for ws in ws_connect(self.url):
+            if not self._running:
+                break
+            try:
+                async for message in ws:
+                    if not self._running:
+                        break
+                    payload = json.loads(message).get("data") or {}
+                    result = self._parse_kline_event(payload)
+                    if result is None:
+                        continue
+                    symbol, kline = result
+                    if asyncio.iscoroutinefunction(on_kline_close):
+                        await on_kline_close(symbol, kline)
+                    else:
+                        on_kline_close(symbol, kline)
+            except Exception as exc:  # noqa: BLE001
+                if on_error is not None:
+                    on_error(exc)
+                if not self._running:
+                    break
+                continue
+
+    async def stop(self) -> None:
+        self._running = False
