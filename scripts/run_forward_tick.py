@@ -157,6 +157,11 @@ def main() -> int:
 
     universe, is_start = _load_universe_and_is_start(args.run_id)
     end_ts = args.as_of if " " in args.as_of else f"{args.as_of} 23:59"
+    # IS/OS cutoff for the IC z-score overfit detector. Use splits.json's
+    # is.end so backtest.py's compute_ic can split per-bar IC into IS and
+    # OS sub-blocks for the Welch z-score.
+    splits = json.loads(_splits_path(args.run_id).read_text())
+    is_end = (splits.get("is") or {}).get("end")
     out_dir = _forward_dir(args.run_id, args.alpha_id)
 
     # Optional: refresh the daily kline cache for the universe up to as-of.
@@ -202,6 +207,8 @@ def main() -> int:
         "--no-enforce-governance",
         "--json",
     ]
+    if is_end:
+        cmd.extend(["--is-end", is_end])
     if args.fixed_aum_sizing:
         cmd.append("--fixed-aum-sizing")
     if args.strategy_params:

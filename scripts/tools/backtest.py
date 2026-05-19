@@ -163,7 +163,9 @@ def run_backtest(args: argparse.Namespace) -> dict[str, Any]:
     # Compute display-only summary metrics that the dashboard previously
     # recomputed on every render. Persist into metrics.json so the dashboard
     # is read-only and the cost is paid once at write time.
-    pnl_bps_simple, pnl_bps_w = _persist_display_metrics(output_dir)
+    pnl_bps_simple, pnl_bps_w = _persist_display_metrics(
+        output_dir, is_end=getattr(args, "is_end", None)
+    )
     _compute_split_metrics(output_dir, getattr(args, "is_end", None))
 
     metrics = {
@@ -314,7 +316,7 @@ def _preflight_governance(
     return report
 
 
-def _persist_display_metrics(output_dir: Path) -> tuple[float | None, float | None]:
+def _persist_display_metrics(output_dir: Path, is_end: str | None = None) -> tuple[float | None, float | None]:
     """Compute per-trade statistics and merge them into metrics.json.
 
     Returns (simple_avg_bps, notional_weighted_avg_bps) for backwards
@@ -387,14 +389,14 @@ def _persist_display_metrics(output_dir: Path) -> tuple[float | None, float | No
     if weights_path.exists():
         try:
             weights_df = _pd.read_parquet(weights_path)
-            ic_stats = compute_ic(weights_df)
+            ic_stats = compute_ic(weights_df, is_end=is_end)
         except Exception:
             ic_stats = {}
-    existing["ic_mean"] = ic_stats.get("ic_mean")
-    existing["ic_std"] = ic_stats.get("ic_std")
-    existing["ic_ir"] = ic_stats.get("ic_ir")
-    existing["ic_hit_rate"] = ic_stats.get("ic_hit_rate")
-    existing["ic_bars"] = ic_stats.get("ic_bars")
+    for key in ("ic_mean", "ic_std", "ic_ir", "ic_hit_rate", "ic_bars",
+                "ic_mean_is", "ic_std_is", "ic_bars_is",
+                "ic_mean_os", "ic_std_os", "ic_bars_os",
+                "ic_z"):
+        existing[key] = ic_stats.get(key)
 
     metrics_path.write_text(json.dumps(existing, indent=2, default=str))
     return (simple, weighted)

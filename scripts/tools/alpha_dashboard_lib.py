@@ -204,6 +204,7 @@ def compute_ic(
     weights_df: pd.DataFrame,
     data_path: Path | str = Path("data/futures_klines_daily"),
     bar_size_sec: float = 86400.0,
+    is_end: str | "pd.Timestamp" | None = None,
 ) -> dict:
     """Information Coefficient over the alpha's emit history.
 
@@ -216,13 +217,29 @@ def compute_ic(
       ic_hit_rate   — share of bars where sign(IC_t) == sign(ic_mean)
       ic_bars       — number of rebalance timestamps with ≥2 valid pairs
 
-    All None when weights_df is empty / malformed / lacks variance.
-    Sign of ic_mean is informative but irrelevant for SUBMITTABLE gates
-    (a negative IC alpha can be deployed flipped).
+    When ``is_end`` is supplied, also returns IS/OS sub-blocks plus a
+    Welch z-score testing whether the IS and OS IC means differ. A
+    small |z| says the alpha's edge is stationary across the split,
+    so |z| is the overfit detector (large |z| ⇒ IS≠OS ⇒ overfit
+    suspect).
+
+      ic_mean_is, ic_std_is, ic_bars_is
+      ic_mean_os, ic_std_os, ic_bars_os
+      ic_z          — (mean_IS - mean_OS) / sqrt(var_IS/n_IS + var_OS/n_OS)
+
+    All values None when weights_df is empty / malformed / lacks
+    variance, or when either side of the split has fewer than 2 bars.
+    Sign of ic_mean is informative but irrelevant for SUBMITTABLE
+    gates (a negative IC alpha can be deployed flipped).
     """
     import math
-    empty = {"ic_mean": None, "ic_std": None, "ic_ir": None,
-             "ic_hit_rate": None, "ic_bars": 0}
+    empty = {
+        "ic_mean": None, "ic_std": None, "ic_ir": None,
+        "ic_hit_rate": None, "ic_bars": 0,
+        "ic_mean_is": None, "ic_std_is": None, "ic_bars_is": 0,
+        "ic_mean_os": None, "ic_std_os": None, "ic_bars_os": 0,
+        "ic_z": None,
+    }
     if weights_df is None or weights_df.empty:
         return empty
     needed = {"timestamp", "symbol", "target_weight"}
@@ -270,12 +287,10 @@ def compute_ic(
     closes = pd.DataFrame(close_by_sym).sort_index()
     next_ret = closes.pct_change().shift(-1)  # ret_{t+1} aligned at t
 
-    # Per-rebalance-timestamp Spearman across the symbols that have both a
-    # weight and a defined next-bar return.
-    ic_per_bar: list[float] = []
+    # Per-rebalance-timestamp Spearman + remember the timestamp it was
+    # observed on, so we can split into IS / OS sub-blocks below.
+    ic_records: list[tuple[pd.Timestamp, float]] = []
     for ts, grp in w.groupby("timestamp"):
-        # snap weight ts to nearest available kline ts (timestamps usually
-        # already match; this is a defensive shim).
         if ts not in next_ret.index:
             nearest = next_ret.index.asof(ts)
             if pd.isna(nearest):
@@ -289,26 +304,58 @@ def compute_ic(
             continue
         if joined["w"].nunique() < 2 or joined["r"].nunique() < 2:
             continue
-        ic = joined["w"].rank().corr(joined["r"].rank())  # spearman = pearson of ranks
+        ic = joined["w"].rank().corr(joined["r"].rank())
         if pd.notna(ic):
-            ic_per_bar.append(float(ic))
+            ic_records.append((ts, float(ic)))
 
-    if not ic_per_bar:
+    if not ic_records:
         return empty
-    arr = pd.Series(ic_per_bar)
-    mean = float(arr.mean())
-    std = float(arr.std(ddof=1)) if len(arr) > 1 else 0.0
+    ic_series = pd.Series([v for _, v in ic_records],
+                          index=pd.to_datetime([t for t, _ in ic_records]))
+    mean = float(ic_series.mean())
+    std = float(ic_series.std(ddof=1)) if len(ic_series) > 1 else 0.0
     bars_per_year = max(1.0, (365 * 86400) / max(bar_size_sec, 1.0))
     ic_ir = (mean / std * math.sqrt(bars_per_year)) if std > 0 else None
     sign = 1 if mean >= 0 else -1
-    hit = float(((arr * sign) > 0).mean())
-    return {
+    hit = float(((ic_series * sign) > 0).mean())
+
+    out = {
         "ic_mean": mean,
         "ic_std": std,
         "ic_ir": ic_ir,
         "ic_hit_rate": hit,
-        "ic_bars": int(len(arr)),
+        "ic_bars": int(len(ic_series)),
+        "ic_mean_is": None, "ic_std_is": None, "ic_bars_is": 0,
+        "ic_mean_os": None, "ic_std_os": None, "ic_bars_os": 0,
+        "ic_z": None,
     }
+
+    if is_end is not None:
+        try:
+            cutoff = pd.Timestamp(is_end)
+        except Exception:
+            return out
+        is_ic = ic_series[ic_series.index <= cutoff]
+        os_ic = ic_series[ic_series.index > cutoff]
+        if len(is_ic) >= 2 and len(os_ic) >= 2:
+            mu_is = float(is_ic.mean())
+            mu_os = float(os_ic.mean())
+            var_is = float(is_ic.var(ddof=1))
+            var_os = float(os_ic.var(ddof=1))
+            n_is = len(is_ic)
+            n_os = len(os_ic)
+            denom = math.sqrt(var_is / n_is + var_os / n_os) if (var_is + var_os) > 0 else 0.0
+            z = (mu_is - mu_os) / denom if denom > 0 else None
+            out.update({
+                "ic_mean_is": mu_is,
+                "ic_std_is": math.sqrt(var_is) if var_is > 0 else 0.0,
+                "ic_bars_is": int(n_is),
+                "ic_mean_os": mu_os,
+                "ic_std_os": math.sqrt(var_os) if var_os > 0 else 0.0,
+                "ic_bars_os": int(n_os),
+                "ic_z": z,
+            })
+    return out
 
 
 def compute_trade_stats(trades_df: pd.DataFrame) -> dict:
@@ -428,15 +475,20 @@ def classify_alpha(is_m: dict | None, os_m: dict | None = None) -> tuple[str, st
     abs_ic = abs(float(ic_mean))
     abs_ir = abs(float(ic_ir))
 
-    # Sign-agnostic SUBMITTABLE gates (cross-asset academic conventions):
-    #   |IC| > 0.03   — "weak but real" edge (>= 0.05 is healthy)
-    #   |IC_IR| > 1.5 — IC stable over time (Sharpe-equivalent threshold)
-    #   trades > 500  — enough sample to trust the IC estimate
-    if abs_ic > 0.03 and abs_ir > 1.5 and n > 500:
-        return ("SUBMITTABLE",
-                f"|IC|={abs_ic:.3f} |IC_IR|={abs_ir:.2f} trades={n}")
-    return ("NORMAL",
-            f"|IC|={abs_ic:.3f} |IC_IR|={abs_ir:.2f} trades={n}")
+    # Sign-agnostic SUBMITTABLE gates:
+    #   |IC|    > 0.03 — "weak but real" edge (≥0.05 is healthy)
+    #   |IC_IR| > 1.5  — IC stable across bars (within-window stationarity)
+    #   |IC_z|  < 2.0  — IS↔OS IC means agree (Welch test): overfit guard
+    #   trades  > 500  — sample sufficiency
+    z = m.get("ic_z")
+    abs_z = abs(float(z)) if z is not None else None
+    parts = f"|IC|={abs_ic:.3f} |IR|={abs_ir:.2f} trades={n}"
+    if abs_z is not None:
+        parts += f" |z|={abs_z:.2f}"
+    z_ok = (abs_z is None) or (abs_z < 2.0)
+    if abs_ic > 0.03 and abs_ir > 1.5 and n > 500 and z_ok:
+        return ("SUBMITTABLE", parts)
+    return ("NORMAL", parts)
 
 
 def is_ensemble_candidate(
