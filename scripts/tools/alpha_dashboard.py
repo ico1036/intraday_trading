@@ -389,6 +389,73 @@ def _detailed_signature(run_dir: Path) -> list[list]:
     return sig
 
 
+def _apply_corr_dedup_to_index(
+    df: pd.DataFrame, run_dir: Path, tau: float = 0.7
+) -> pd.DataFrame:
+    """Demote SUBMITTABLE clones to NORMAL after pairwise |ρ| dedup.
+
+    Reads each SUBMITTABLE alpha's equity_curve.parquet (forward > flat
+    > is), resamples to daily returns, then greedy-dedups in order of
+    descending |IC_IR|: the first alpha is kept and any later candidate
+    whose max |ρ| with the already-kept set is ≥ τ gets its category
+    downgraded to "NORMAL". Original rows are untouched, only the
+    category column changes.
+    """
+    if df is None or df.empty or "category" not in df.columns:
+        return df
+    sub = df[df["category"] == "SUBMITTABLE"]
+    if len(sub) < 2:
+        return df
+
+    ret_cols: dict[str, pd.Series] = {}
+    score: dict[str, float] = {}
+    for _, row in sub.iterrows():
+        aid = row["alpha_id"]
+        run_id = row["run_id"]
+        ad = run_dir / run_id / "alphas" / aid
+        eq_p = None
+        for cand in (
+            ad / "forward" / "equity_curve.parquet",
+            ad / "equity_curve.parquet",
+            ad / "is" / "equity_curve.parquet",
+        ):
+            if cand.exists():
+                eq_p = cand
+                break
+        if eq_p is None:
+            continue
+        try:
+            eq = pd.read_parquet(eq_p, columns=["timestamp", "equity"])
+            eq["timestamp"] = pd.to_datetime(eq["timestamp"])
+            eq = eq.set_index("timestamp").sort_index()
+            d = (eq["equity"].resample("1D").last().dropna()
+                 .pct_change().dropna())
+            if len(d) < 30:
+                continue
+            ret_cols[aid] = d
+            m = read_metrics_for_split(ad, "is") or {}
+            score[aid] = abs(float(m.get("ic_ir") or 0))
+        except Exception:
+            continue
+
+    if len(ret_cols) < 2:
+        return df
+
+    ret_panel = pd.DataFrame(ret_cols)
+    ordered = sorted(score.items(), key=lambda kv: -kv[1])
+    cands = [(aid, {}) for aid, _ in ordered]
+    from alpha_dashboard_lib import apply_correlation_gate as _gate
+    kept = set(_gate(cands, ret_panel, tau=tau))
+
+    # Demote everyone in sub but not in kept; leave alphas with no equity
+    # curve as SUBMITTABLE because we cannot judge them.
+    out = df.copy()
+    mask = (out["category"] == "SUBMITTABLE") & out["alpha_id"].isin(ret_cols)
+    demote = mask & ~out["alpha_id"].isin(kept)
+    out.loc[demote, "category"] = "NORMAL"
+    return out
+
+
 def _persistent_cache_paths(run_dir: Path) -> tuple[Path, Path]:
     import hashlib
     h = hashlib.md5(str(run_dir.resolve()).encode()).hexdigest()[:8]
@@ -581,6 +648,13 @@ def load_index(run_dir: Path) -> pd.DataFrame:
         )
     else:
         result = pd.DataFrame(rows)
+
+    # Population-level correlation gate: keep an alpha as SUBMITTABLE only
+    # if its daily equity returns correlate < τ with everything already
+    # in the pool. τ = 0.7 collapses near-duplicate strategies that share
+    # the same factor and only differ in concentration or direction.
+    result = _apply_corr_dedup_to_index(result, run_dir, tau=0.7)
+
     _INDEX_CACHE[str(key)] = (now, result.copy())
     try:
         result.to_parquet(cache_pq, index=False)
