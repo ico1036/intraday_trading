@@ -178,52 +178,59 @@ def parse_args() -> argparse.Namespace:
 def _hangang_temp_cached(epoch_bucket: int) -> tuple[float | None, str]:
     """Fetch Han River water temperature (Celsius).
 
-    Source: Seoul OpenAPI ``WPOSInformationTime`` sample endpoint, which
-    publishes the Han River water-quality automatic-measurement-network
-    readings (수질 자동측정망). We use the ``/sample/`` route on purpose
-    — it works without an auth key, returns 5 freshest rows, and the
-    payload's ``WATT`` field is the actual water temperature in °C.
+    Primary: Seoul OpenAPI ``WPOSInformationTime`` sample endpoint
+    (수질 자동측정망 ``WATT`` field). The /sample/ route works
+    without auth, but the upstream has been timing out for days.
 
-    The earlier hangang.life/ivlis endpoints all proxy a now-dead cache
-    layer that has returned ``CACHE GET FAILED`` for days.
+    Fallback: scrape ``hangang.ivlis.kr`` — a Korean hobbyist Han-River
+    weather page. The current ``temperature-value`` element renders the
+    temp as e.g. ``18.5도``.
 
     Returns (temp_c, status_msg); ``temp_c`` is None on any failure.
     Cache key is a 5-minute bucket so we hit the API at most every 5 min.
     """
-    del epoch_bucket  # only used as cache key
-    url = "http://openapi.seoul.go.kr:8088/sample/json/WPOSInformationTime/1/5/"
+    del epoch_bucket
+    import urllib.request
+
+    seoul_url = "http://openapi.seoul.go.kr:8088/sample/json/WPOSInformationTime/1/5/"
     try:
-        import urllib.request
-        req = urllib.request.Request(url, headers={"User-Agent": "jw-capital/1.0"})
+        req = urllib.request.Request(seoul_url, headers={"User-Agent": "jw-capital/1.0"})
         with urllib.request.urlopen(req, timeout=3) as resp:
             data = json.loads(resp.read())
+        payload = data.get("WPOSInformationTime") or {}
+        rows = payload.get("row") or []
+        result = payload.get("RESULT") or {}
+        if (not result.get("CODE") or result["CODE"] == "INFO-000") and rows:
+            rows.sort(key=lambda r: (r.get("YMD") or "", r.get("HR") or ""), reverse=True)
+            for r in rows:
+                watt = r.get("WATT")
+                if watt in (None, "", "-"):
+                    continue
+                try:
+                    return (float(watt),
+                            f"seoul ({r.get('MSRSTN_NM') or 'station'} {r.get('HR') or ''})")
+                except (TypeError, ValueError):
+                    continue
+    except Exception:
+        pass  # fall through to ivlis scrape
+
+    fallback_url = "https://hangang.ivlis.kr/"
+    try:
+        req = urllib.request.Request(fallback_url, headers={"User-Agent": "jw-capital/1.0"})
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            html = resp.read().decode("utf-8", errors="ignore")
     except Exception as exc:
         return (None, f"api error: {type(exc).__name__}")
 
-    payload = data.get("WPOSInformationTime") or {}
-    result = payload.get("RESULT") or {}
-    if result.get("CODE") and result["CODE"] != "INFO-000":
-        return (None, str(result.get("MESSAGE", "unknown"))[:60])
-
-    rows = payload.get("row") or []
-    if not rows:
-        return (None, "no rows returned")
-
-    # Pick the freshest (YMD, HR) row that has a numeric WATT. Fields are
-    # strings; an empty/"-" reading means the station didn't report.
-    def _key(r):
-        return (r.get("YMD") or "", r.get("HR") or "")
-
-    rows = sorted(rows, key=_key, reverse=True)
-    for r in rows:
-        watt = r.get("WATT")
-        if watt in (None, "", "-"):
-            continue
+    import re
+    # Page renders the temp as e.g. "18.5도" inside a temperature-value div.
+    m = re.search(r"(\d+(?:\.\d+)?)\s*도", html)
+    if m:
         try:
-            return (float(watt), f"ok ({r.get('MSRSTN_NM') or 'station'} {r.get('HR') or ''})")
-        except (TypeError, ValueError):
-            continue
-    return (None, "no usable WATT field")
+            return (float(m.group(1)), "ivlis")
+        except ValueError:
+            pass
+    return (None, "no temp parsed")
 
 
 def hangang_temp() -> tuple[float | None, str]:
