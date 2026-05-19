@@ -286,68 +286,61 @@ def compute_trade_stats(trades_df: pd.DataFrame) -> dict:
 
 
 def classify_alpha(is_m: dict | None, os_m: dict | None = None) -> tuple[str, str]:
-    """Classify SUBMITTABLE / NORMAL / REJECT / INCOMPLETE.
+    """Classify SUBMITTABLE / NORMAL / INCOMPLETE.
+
+    Sign-agnostic: we only care whether the signal is healthier than
+    noise. A strong negative edge can be flipped to a long signal at
+    deployment time, so |t-stat|, |bps|, and PF distance from 1 are
+    the right gates. REJECT is no longer produced — failing signals
+    just stay NORMAL until the user decides what to do with them.
 
     Two modes:
-      - IS-only (os_m falsy): checks IS-side mirrors of the rule set. Used when
-        OS validation is deferred to the user.
-      - Full (both is_m and os_m): checks the original R1-R4 reject and S1-S7
-        submittable rules using OS data + OS/IS degradations.
+      - IS-only (os_m falsy): IS-side gates only.
+      - Full: adds OS-side gates + IS↔OS degradation checks (both
+        ratios use absolute values so a sign flip across windows is
+        still treated as consistent).
     """
     if not is_m:
         return ("INCOMPLETE", "missing IS metrics")
 
-    is_bps = is_m.get("pnl_bps_simple") or 0
-    is_t = is_m.get("t_stat") or 0
-    is_pf = is_m.get("profit_factor_trades") or 0
+    is_bps = abs(is_m.get("pnl_bps_simple") or 0)
+    is_t = abs(is_m.get("t_stat") or 0)
+    is_pf_raw = is_m.get("profit_factor_trades") or 0
+    is_pf_edge = max(is_pf_raw, 1.0 / is_pf_raw) if is_pf_raw > 0 else 0
     is_dd_abs = abs(is_m.get("max_drawdown") or 0)
     is_n = int(is_m.get("total_trades") or 0)
-    is_sh = is_m.get("sharpe") or 0
+    is_sh = abs(is_m.get("sharpe") or 0)
 
     # ---------- IS-only path ----------
     if not os_m:
-        if is_bps is None or is_bps <= 0:
-            return ("REJECT", "R1-IS: IS bps ≤ 0")
-        if is_t < 1.5:
-            return ("REJECT", "R2-IS: IS t-stat < 1.5")
-        if is_n < 100:
-            return ("REJECT", "R4: IS trades < 100")
         if (is_t > 2.5
             and is_bps > 2.0
             and is_dd_abs < 0.12
-            and is_pf > 1.3
+            and is_pf_edge > 1.3
             and is_n > 500):
-            return ("SUBMITTABLE", "IS S1-S5/S7 ✓ (OS pending)")
-        return ("NORMAL", "between (IS-only)")
+            return ("SUBMITTABLE", "IS signal healthy (sign-agnostic)")
+        return ("NORMAL", "below IS gates")
 
     # ---------- Full IS + OS path ----------
-    os_bps = os_m.get("pnl_bps_simple") or 0
-    os_t = os_m.get("t_stat") or 0
-    os_sh = os_m.get("sharpe") or 0
-    os_pf = os_m.get("profit_factor_trades") or 0
+    os_bps = abs(os_m.get("pnl_bps_simple") or 0)
+    os_t = abs(os_m.get("t_stat") or 0)
+    os_sh = abs(os_m.get("sharpe") or 0)
+    os_pf_raw = os_m.get("profit_factor_trades") or 0
+    os_pf_edge = max(os_pf_raw, 1.0 / os_pf_raw) if os_pf_raw > 0 else 0
     os_dd_abs = abs(os_m.get("max_drawdown") or 0)
-    sh_degr = (os_sh / is_sh) if is_sh not in (None, 0) else 0
-    bps_degr = (os_bps / is_bps) if is_bps not in (None, 0) else 0
-
-    if (is_bps is None or os_bps is None) or is_bps <= 0 or os_bps <= 0:
-        return ("REJECT", "R1: bps ≤ 0")
-    if os_t < 1.5:
-        return ("REJECT", "R2: OS t-stat < 1.5")
-    if sh_degr < 0.4:
-        return ("REJECT", "R3: Sharpe degr < 0.4")
-    if is_n < 100:
-        return ("REJECT", "R4: IS trades < 100")
+    sh_degr = (os_sh / is_sh) if is_sh > 0 else 0
+    bps_degr = (os_bps / is_bps) if is_bps > 0 else 0
 
     if (os_t > 2.5
         and os_bps > 2.0
         and sh_degr > 0.7
         and bps_degr > 0.6
         and os_dd_abs < 0.12
-        and os_pf > 1.3
+        and os_pf_edge > 1.3
         and is_n > 500):
-        return ("SUBMITTABLE", "S1-S7 ✓")
+        return ("SUBMITTABLE", "IS+OS signal healthy (sign-agnostic)")
 
-    return ("NORMAL", "between")
+    return ("NORMAL", "below SUBMITTABLE gates")
 
 
 def is_ensemble_candidate(
