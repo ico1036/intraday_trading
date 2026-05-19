@@ -9,11 +9,9 @@ file I/O caches, builds Plotly figures, and renders NiceGUI pages.
 from __future__ import annotations
 
 import argparse
-import hmac
 import html
 import json
 import os
-import secrets
 import subprocess
 import sys
 from datetime import datetime
@@ -176,52 +174,6 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-# ---- auth (in-app login, replaces ngrok basic-auth) ----------------------
-
-_SECRET_PATH = Path.home() / ".intraday_dashboard_secret"
-_PUBLIC_PATHS = {"/login"}
-
-
-def _load_storage_secret() -> str:
-    """Persist a cookie-signing secret across restarts so user sessions
-    survive a dashboard restart. Generated on first run."""
-    if not _SECRET_PATH.exists():
-        _SECRET_PATH.write_text(secrets.token_urlsafe(48))
-        try:
-            _SECRET_PATH.chmod(0o600)
-        except OSError:
-            pass
-    return _SECRET_PATH.read_text().strip()
-
-
-def _load_credentials() -> tuple[str, str]:
-    """Read DASH_USER / DASH_PASS from env. Fail loudly if missing —
-    we never want a default credential to ship in code."""
-    user = os.environ.get("DASH_USER")
-    pw = os.environ.get("DASH_PASS")
-    if not user or not pw:
-        raise SystemExit(
-            "DASH_USER and DASH_PASS env vars must be set before launching "
-            "the dashboard (in-app login replaced ngrok basic-auth)."
-        )
-    return user, pw
-
-
-def _check_credentials(user: str, pw: str, expected_user: str, expected_pw: str) -> bool:
-    """Constant-time credential comparison."""
-    return hmac.compare_digest(user, expected_user) and hmac.compare_digest(pw, expected_pw)
-
-
-def _require_auth() -> bool:
-    """Page-level guard. Returns True if the user is authenticated.
-    If not, navigates to /login and returns False — caller should return
-    immediately so no page content is rendered."""
-    if app.storage.user.get("auth"):
-        return True
-    ui.navigate.to("/login")
-    return False
-
-
 @lru_cache(maxsize=1)
 def _hangang_temp_cached(epoch_bucket: int) -> tuple[float | None, str]:
     """Fetch Han River water temperature (Celsius).
@@ -346,15 +298,12 @@ def discover_live_alphas(run_dir: Path) -> list[dict[str, Any]]:
 
 
 def render_top_nav() -> None:
-    """Sticky top navigation shown on every authenticated page."""
+    """Sticky top navigation shown on every page."""
     with ui.header(elevated=False).classes("nav-bar"):
         with ui.row().classes("nav-inner"):
             with ui.link(target="/").classes("nav-brand").style("text-decoration: none;"):
                 ui.html('<span class="nav-mark">◆</span>JW Capital', sanitize=False)
             ui.element("div").style("flex: 1")
-            ui.button("Logout", on_click=lambda: ui.navigate.to("/logout")).props(
-                "flat dense color=primary no-caps"
-            )
 
 
 @lru_cache(maxsize=1)
@@ -1529,46 +1478,8 @@ def main() -> None:
     run_dir = Path(args.run_dir)
     app.storage.general["run_dir"] = str(run_dir)
 
-    expected_user, expected_pw = _load_credentials()
-    storage_secret = _load_storage_secret()
-
-    @ui.page("/login")
-    def login_page():
-        add_styles()
-        with ui.column().classes("page-wrap w-full"):
-            with ui.column().classes("auth-card gap-3 items-stretch"):
-                with ui.column().classes("gap-0 items-start"):
-                    ui.label("JW Capital").classes("page-title")
-                    ui.label("quantitative trading · internal terminal").classes("geek-aside")
-                user_in = ui.input("ID").props("autofocus autocomplete=username outlined dense").classes("w-full")
-                pw_in = ui.input("Password", password=True).props(
-                    "autocomplete=current-password type=password outlined dense"
-                ).classes("w-full")
-                msg = ui.label("").classes("text-xs").style("color: var(--negative)")
-
-                def _submit():
-                    if _check_credentials(
-                        user_in.value or "", pw_in.value or "", expected_user, expected_pw
-                    ):
-                        app.storage.user["auth"] = True
-                        ui.navigate.to("/")
-                    else:
-                        msg.text = "Invalid credentials."
-                        pw_in.value = ""
-
-                pw_in.on("keydown.enter", lambda _: _submit())
-                user_in.on("keydown.enter", lambda _: _submit())
-                ui.button("Sign in", on_click=_submit).props("unelevated color=primary").classes("w-full")
-
-    @ui.page("/logout")
-    def logout_page():
-        app.storage.user.clear()
-        ui.navigate.to("/login")
-
     @ui.page("/")
     def page():
-        if not _require_auth():
-            return
         add_styles()
         render_top_nav()
         df = load_index(run_dir)
@@ -1813,8 +1724,6 @@ def main() -> None:
 
     @ui.page("/alpha/{run_id}/{alpha_id}")
     def alpha_page(run_id: str, alpha_id: str):
-        if not _require_auth():
-            return
         add_styles()
         render_top_nav()
         df = load_index(run_dir)
@@ -2202,8 +2111,6 @@ def main() -> None:
 
     @ui.page("/composite/{composite_dir_name}")
     def composite_page(composite_dir_name: str):
-        if not _require_auth():
-            return
         add_styles()
         render_top_nav()
         composite_dir = run_dir / "composites" / composite_dir_name
@@ -2366,7 +2273,6 @@ def main() -> None:
         port=args.port,
         title="JW Capital",
         reload=False,
-        storage_secret=storage_secret,
     )
 
 
