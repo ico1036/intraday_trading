@@ -54,6 +54,8 @@ from alpha_dashboard_lib import (  # noqa: E402  (path injection above)
     format_uptime,
     forward_status,
     is_forward_live,
+    _is_flat_layout,
+    read_metrics_for_split,
 )
 
 
@@ -420,9 +422,14 @@ def _detailed_signature(run_dir: Path) -> list[list]:
         for ad in sorted((r / "alphas").iterdir()):
             if not ad.is_dir():
                 continue
-            m = ad / "is" / "metrics.json"
-            if m.exists():
-                sig.append([r.name, ad.name, m.stat().st_mtime_ns])
+            # Cache key per layout: legacy uses is/metrics.json, flat
+            # uses the top-level metrics.json.
+            flat_m = ad / "metrics.json"
+            legacy_m = ad / "is" / "metrics.json"
+            if flat_m.exists() and not (ad / "is").is_dir():
+                sig.append([r.name, ad.name, flat_m.stat().st_mtime_ns])
+            elif legacy_m.exists():
+                sig.append([r.name, ad.name, legacy_m.stat().st_mtime_ns])
     return sig
 
 
@@ -482,13 +489,15 @@ def load_index(run_dir: Path) -> pd.DataFrame:
         for alpha_d in sorted((r / "alphas").iterdir()):
             if not alpha_d.is_dir():
                 continue
-            # Skip alphas whose IS metrics.json is missing — they were either
+            # Skip alphas whose IS metrics is missing — they were either
             # deleted by quality_gate enforcement or never finished. Showing
-            # them as half-empty rows is misleading.
-            if not (alpha_d / "is" / "metrics.json").exists():
+            # them as half-empty rows is misleading. Supports both legacy
+            # (alpha_d/is/metrics.json) and flat (alpha_d/metrics.json with
+            # "is"/"os" sub-blocks) layouts.
+            is_m = read_metrics_for_split(alpha_d, "is")
+            if not is_m:
                 continue
-            is_m = read_json(alpha_d / "is" / "metrics.json")
-            os_m = read_json(alpha_d / "os" / "metrics.json")
+            os_m = read_metrics_for_split(alpha_d, "os") or {}
 
             is_turnover = turnover_from_weights(r, alpha_d.name, "is")
             os_turnover = turnover_from_weights(r, alpha_d.name, "os")
