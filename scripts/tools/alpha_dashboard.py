@@ -1744,57 +1744,16 @@ def main() -> None:
             is_turnover = turnover_from_weights(detail_run_dir, alpha_id, "is")
             os_turnover = turnover_from_weights(detail_run_dir, alpha_id, "os")
 
-            # Heading row: alpha name + LIVE badge if forward runner is alive
+            # Heading row: alpha name + LIVE badge if a recent forward exists.
+            # Forward is now driven by cron + scripts/run_forward_tick.py; the
+            # in-page "Start" button is gone. Liveness = "forward/ exists and
+            # the most recent emit was within ~1.5× the candle period".
             with ui.row().classes("items-center gap-3"):
                 ui.label(alpha_id).classes("page-title")
                 forward_dir = alpha_dir(detail_run_dir, alpha_id) / "forward"
                 already_live = is_forward_live(forward_dir)
                 if already_live:
                     ui.html('<span class="badge-live">LIVE</span>', sanitize=False)
-
-                def _start_forward(run_id=run_id, alpha_id=alpha_id, forward_dir=forward_dir):
-                    # Refuse to spawn a duplicate if a runner is already alive
-                    if is_forward_live(forward_dir):
-                        pid = (forward_dir / "pid.txt").read_text().strip()
-                        ui.notify(
-                            f"Forward already running (PID {pid}). Kill manually to restart.",
-                            color="warning",
-                            position="top",
-                            timeout=6000,
-                        )
-                        return
-                    project_root = Path(__file__).resolve().parents[2]
-                    script = project_root / "scripts" / "run_portfolio_forward_test.py"
-                    universe = _load_universe(detail_run_dir)
-                    if not universe:
-                        ui.notify("No universe found in splits.json", color="negative")
-                        return
-                    cmd = [
-                        "uv", "run", "python", str(script),
-                        "--strategy", "xs_volume_rank",
-                        "--reverse",  # reverse direction is the working signal for xs_volume_rank
-                        "--archive-mode",
-                        "--archive-run", run_id,
-                        "--archive-alpha", alpha_id,
-                        "--symbols", *universe,
-                        "--candle-size", "86400",
-                        "--rebalance", "1",
-                        "--capital", "10000",
-                        "--fee-rate", "0.0005",
-                    ]
-                    import subprocess as _sp
-                    proc = _sp.Popen(cmd, cwd=str(project_root), start_new_session=True)
-                    ui.notify(
-                        f"Forward started (PID {proc.pid}) — refresh page to see LIVE badge",
-                        color="positive",
-                        position="top",
-                        timeout=8000,
-                    )
-
-                btn_label = "● Forward Running" if already_live else "▶ Start Forward (paper)"
-                ui.button(btn_label, on_click=_start_forward).props(
-                    f"flat dense {'disable' if already_live else ''}"
-                )
 
             # ---------- Section: LIVE STATUS (if forward exists) ----------
             fwd_dir = alpha_dir(detail_run_dir, alpha_id) / "forward"

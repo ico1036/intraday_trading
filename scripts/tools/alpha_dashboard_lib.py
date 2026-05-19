@@ -604,24 +604,44 @@ def read_split_parquet(alpha_dir: Path, kind: str, split: str):
 
 
 def is_forward_live(forward_dir: Path) -> bool:
-    """A forward split is "live" iff its ``pid.txt`` references a process
-    that is currently running. Used to render a LIVE indicator on the
-    dashboard. Stale or malformed pid files are treated as dead."""
+    """A forward split is "live" iff its most recent emit timestamp is
+    within ~1.5× the candle period. Driven by cron + run_forward_tick.py
+    these days — no long-running runner, no pid.txt. Legacy pid.txt
+    still wins if present (back-compat for older alphas)."""
     forward_dir = Path(forward_dir)
+    import datetime as _dt
     pid_path = forward_dir / "pid.txt"
-    if not pid_path.exists():
+    if pid_path.exists():
+        try:
+            pid = int(pid_path.read_text().strip())
+            if pid > 0:
+                os.kill(pid, 0)
+                return True
+        except (OSError, ProcessLookupError, ValueError):
+            pass
+    weights = forward_dir / "weights.parquet"
+    if not weights.exists():
         return False
     try:
-        pid = int(pid_path.read_text().strip())
-    except (ValueError, OSError):
+        import pandas as pd
+        ts = pd.read_parquet(weights, columns=["timestamp"])["timestamp"]
+        last = pd.to_datetime(ts).max()
+        if pd.isna(last):
+            return False
+        last_dt = last.to_pydatetime()
+        if last_dt.tzinfo is None:
+            last_dt = last_dt.replace(tzinfo=_dt.timezone.utc)
+        now = _dt.datetime.now(_dt.timezone.utc)
+        # Infer candle period from the parquet timestamps (median spacing).
+        # Daily candles → ~86400s window. 1-minute → ~60s window.
+        ts_sorted = pd.to_datetime(ts).drop_duplicates().sort_values()
+        if len(ts_sorted) < 2:
+            return (now - last_dt).total_seconds() <= 86400 * 1.5
+        diffs = ts_sorted.diff().dt.total_seconds().dropna()
+        period = float(diffs.median()) if not diffs.empty else 86400.0
+        return (now - last_dt).total_seconds() <= max(period * 1.5, 60.0)
+    except Exception:
         return False
-    if pid <= 0:
-        return False
-    try:
-        os.kill(pid, 0)  # signal 0 = existence check, doesn't actually signal
-    except (OSError, ProcessLookupError):
-        return False
-    return True
 
 
 def cumret_segment_offsets(
