@@ -116,6 +116,8 @@ METRIC_COLUMNS = [
     "alpha_id",
     "status",
     "category",
+    "bar_label",
+    "bar_size_sec",
     "is_period_start",
     "is_period_end",
     "is_period_days",
@@ -140,6 +142,7 @@ TABLE_COLUMNS = [
     ("run_id", "run", "left"),
     ("alpha_id", "alpha_id", "left"),
     ("category", "Category", "left"),
+    ("bar_label", "Bar", "left"),
     ("backtest_period_fmt", "Backtest Period (start~end, days)", "left"),
     ("generated_at_fmt", "Generated At", "left"),
     ("is_sharpe_fmt", "IS Sharpe (d/y)", "right"),
@@ -389,6 +392,44 @@ def _detailed_signature(run_dir: Path) -> list[list]:
     return sig
 
 
+def _populate_returns(sub_df: pd.DataFrame, run_dir: Path,
+                      ret_cols: dict, score: dict) -> None:
+    """Fill ret_cols / score in-place from equity_curve.parquet of each
+    SUBMITTABLE row. Resample to the same frequency as the bar_size
+    so correlations are evaluated bar-for-bar — but downsample at
+    most to daily for memory."""
+    for _, row in sub_df.iterrows():
+        aid = row["alpha_id"]
+        run_id = row["run_id"]
+        ad = run_dir / run_id / "alphas" / aid
+        eq_p = None
+        for cand in (
+            ad / "forward" / "equity_curve.parquet",
+            ad / "equity_curve.parquet",
+            ad / "is" / "equity_curve.parquet",
+        ):
+            if cand.exists():
+                eq_p = cand
+                break
+        if eq_p is None:
+            continue
+        try:
+            eq = pd.read_parquet(eq_p, columns=["timestamp", "equity"])
+            eq["timestamp"] = pd.to_datetime(eq["timestamp"])
+            eq = eq.set_index("timestamp").sort_index()
+            # Daily resample even for sub-day alphas: cap memory and
+            # keep correlation comparisons on the most stable axis.
+            d = (eq["equity"].resample("1D").last().dropna()
+                 .pct_change().dropna())
+            if len(d) < 30:
+                continue
+            ret_cols[aid] = d
+            m = read_metrics_for_split(ad, "is") or {}
+            score[aid] = abs(float(m.get("ic_ir") or 0))
+        except Exception:
+            continue
+
+
 def _apply_corr_dedup_to_index(
     df: pd.DataFrame, run_dir: Path, tau: float = 0.7
 ) -> pd.DataFrame:
@@ -407,8 +448,37 @@ def _apply_corr_dedup_to_index(
     if len(sub) < 2:
         return df
 
-    ret_cols: dict[str, pd.Series] = {}
-    score: dict[str, float] = {}
+    # Dedup within each bar_size group separately — mixing frequencies in
+    # one correlation matrix is meaningless (a 1d daily pct_change and a
+    # 1m intra-day pct_change are not comparable). Output: kept alpha ids
+    # across all groups; everyone else gets demoted.
+    if "bar_size_sec" in sub.columns:
+        kept_ids: set[str] = set()
+        groups = sub.groupby(sub["bar_size_sec"].fillna(-1.0))
+        out = df.copy()
+        for bs, grp in groups:
+            sub_grp = grp
+            ret_cols: dict[str, pd.Series] = {}
+            score: dict[str, float] = {}
+            _populate_returns(sub_grp, run_dir, ret_cols, score)
+            if len(ret_cols) < 2:
+                kept_ids.update(grp["alpha_id"].tolist())
+                continue
+            ret_panel = pd.DataFrame(ret_cols)
+            ordered = sorted(score.items(), key=lambda kv: -kv[1])
+            cands = [(aid, {}) for aid, _ in ordered]
+            from alpha_dashboard_lib import apply_correlation_gate as _gate
+            kept = set(_gate(cands, ret_panel, tau=tau))
+            kept_ids.update(kept)
+            no_eq = set(grp["alpha_id"]) - set(ret_cols.keys())
+            kept_ids.update(no_eq)  # alphas with no equity curve stay SUBMITTABLE
+        mask = (out["category"] == "SUBMITTABLE") & ~out["alpha_id"].isin(kept_ids)
+        out.loc[mask, "category"] = "NORMAL"
+        return out
+
+    # Fallback (no bar_size column): single global dedup.
+    ret_cols = {}
+    score = {}
     for _, row in sub.iterrows():
         aid = row["alpha_id"]
         run_id = row["run_id"]
@@ -557,6 +627,38 @@ def load_index(run_dir: Path) -> pd.DataFrame:
                 or (os_manifest or {}).get("generated_at")
             )
 
+            # bar_size (seconds) for frequency segmentation. The dashboard
+            # treats different bar_size groups as independent pools because
+            # daily PnL stitching across mixed frequencies is meaningless
+            # (and correlation dedup must stay within a group).
+            bar_size_sec = None
+            for path in (
+                alpha_d / "summary.json",
+                alpha_d / "is" / "summary.json",
+                alpha_d / "forward" / "summary.json",
+            ):
+                try:
+                    val = read_json(path).get("bar_size") if path.exists() else None
+                except Exception:
+                    val = None
+                if val is not None:
+                    try:
+                        bar_size_sec = float(val)
+                        break
+                    except (TypeError, ValueError):
+                        continue
+            if bar_size_sec is not None:
+                if bar_size_sec >= 86400 * 0.9:
+                    bar_label = "1d"
+                elif bar_size_sec >= 3600 * 0.9:
+                    bar_label = f"{int(round(bar_size_sec/3600))}h"
+                elif bar_size_sec >= 60 * 0.9:
+                    bar_label = f"{int(round(bar_size_sec/60))}m"
+                else:
+                    bar_label = f"{int(bar_size_sec)}s"
+            else:
+                bar_label = "?"
+
             # All trade-level stats are persisted into metrics.json at backtest
             # write time (see scripts/tools/backtest.py:_persist_display_metrics)
             # so the dashboard is purely read-only.
@@ -635,6 +737,8 @@ def load_index(run_dir: Path) -> pd.DataFrame:
                     # carries the IC fields populated by the unified
                     # backtest+slice pipeline. Fall back to IS metrics for
                     # alphas that don't have a forward run yet.
+                    "bar_size_sec": bar_size_sec,
+                    "bar_label": bar_label,
                     "category": classify_alpha(
                         (read_metrics_for_split(alpha_d, "forward") or is_m),
                         os_m,
@@ -1609,6 +1713,10 @@ def main() -> None:
                         search_input = ui.input("Search").props("clearable dense").classes("w-96")
                         category_values = sorted(str(v) for v in df["category"].dropna().unique().tolist()) if "category" in df.columns else []
                         status_filter = ui.select(category_values, multiple=True, label="Category").classes("w-48")
+                        bar_values = sorted(
+                            str(v) for v in df["bar_label"].dropna().unique().tolist()
+                        ) if "bar_label" in df.columns else []
+                        bar_filter = ui.select(bar_values, multiple=True, label="Bar size").classes("w-40")
                         sort_select = ui.select(
                             [
                                 "is_sharpe", "is_return", "is_max_dd", "is_pnl_bps", "is_trades",
@@ -1632,6 +1740,8 @@ def main() -> None:
                             view = view[mask]
                         if status_filter.value:
                             view = view[view["category"].isin(status_filter.value)]
+                        if bar_filter.value:
+                            view = view[view["bar_label"].isin(bar_filter.value)]
                         if min_is_sharpe.value is not None:
                             is_sharpe = pd.to_numeric(view["is_sharpe"], errors="coerce")
                             # Filter input is in daily Sharpe; stored is_sharpe is
@@ -1711,7 +1821,7 @@ def main() -> None:
                                     ui.label(f"… and {len(rows)-50} more. Use sort/filter to narrow.").classes("note-text mt-1")
                             table_ref["table"] = table
 
-                    for control in (search_input, status_filter, sort_select, min_is_sharpe, min_trades):
+                    for control in (search_input, status_filter, bar_filter, sort_select, min_is_sharpe, min_trades):
                         control.on_value_change(lambda _: render_table())
 
                     render_table()
