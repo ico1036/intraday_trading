@@ -63,19 +63,27 @@ def main() -> int:
         except Exception:
             n_skip += 1
             continue
+        def _cast(field: str, raw):
+            if pd.isna(raw):
+                return None
+            if field in ("ic_bars", "ic_bars_is", "ic_bars_os"):
+                try:
+                    return int(raw)
+                except Exception:
+                    return None
+            try:
+                return float(raw)
+            except Exception:
+                return None
+
         for f in present:
-            v = row.get(f)
-            if pd.isna(v):
-                payload[f] = None
-            else:
-                # Cast int-shaped fields to int.
-                if f in ("ic_bars", "ic_bars_is", "ic_bars_os"):
-                    try:
-                        payload[f] = int(v)
-                    except Exception:
-                        payload[f] = None
-                else:
-                    payload[f] = float(v)
+            payload[f] = _cast(f, row.get(f))
+        # Flat layout: the classifier reads the "is" sub-block. Mirror IC
+        # fields into it so SUBMITTABLE/NORMAL evaluation works without
+        # the classifier needing a separate codepath for top-level IC.
+        if isinstance(payload.get("is"), dict):
+            for f in present:
+                payload["is"][f] = _cast(f, row.get(f))
         try:
             target.write_text(json.dumps(payload, indent=2, default=str))
             n_ok += 1
