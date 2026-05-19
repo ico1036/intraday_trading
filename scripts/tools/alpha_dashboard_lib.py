@@ -726,6 +726,28 @@ def forward_status(forward_dir: Path) -> dict:
         except (ValueError, OSError):
             pass
 
+    # Cron-driven mode (no daemon, no pid.txt): liveness = weights.parquet
+    # freshness. PID / uptime become "cron" / time-since-first-emit.
+    if not result["live"]:
+        if is_forward_live(forward_dir):
+            result["live"] = True
+            result["pid"] = "cron"
+            weights = forward_dir / "weights.parquet"
+            if weights.exists():
+                try:
+                    ts = pd.read_parquet(weights, columns=["timestamp"])["timestamp"]
+                    started = pd.to_datetime(ts).min()
+                    if pd.notna(started):
+                        started_dt = started.to_pydatetime()
+                        if started_dt.tzinfo is not None:
+                            started_dt = started_dt.replace(tzinfo=None)
+                        result["started_at"] = started_dt
+                        result["uptime_seconds"] = max(
+                            0.0, (datetime.now() - started_dt).total_seconds()
+                        )
+                except Exception:
+                    pass
+
     eq_path = forward_dir / "equity_curve.parquet"
     if eq_path.exists():
         try:
