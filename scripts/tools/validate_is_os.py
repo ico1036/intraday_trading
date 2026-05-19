@@ -62,8 +62,22 @@ def compare_metrics(
     win_rate_gap: float,
     min_os_trades: int,
 ) -> dict[str, Any]:
-    is_metrics = _read_json(is_dir / "metrics.json")
-    os_metrics = _read_json(os_dir / "metrics.json")
+    # Two layouts are supported:
+    #   legacy: alpha_dir/{is,os}/metrics.json (separate runs)
+    #   flat:   alpha_dir/metrics.json with "is" / "os" sub-blocks
+    # Detect flat via alpha_dir/metrics.json existing without is/.
+    flat_metrics_path = alpha_dir / "metrics.json"
+    if flat_metrics_path.exists() and not is_dir.is_dir():
+        bundle = _read_json(flat_metrics_path)
+        if not isinstance(bundle.get("is"), dict) or not isinstance(bundle.get("os"), dict):
+            raise ValueError(
+                f"flat metrics.json missing 'is' / 'os' sub-blocks: {flat_metrics_path}"
+            )
+        is_metrics = bundle["is"]
+        os_metrics = bundle["os"]
+    else:
+        is_metrics = _read_json(is_dir / "metrics.json")
+        os_metrics = _read_json(os_dir / "metrics.json")
 
     is_return = _metric(is_metrics, "total_return")
     os_return = _metric(os_metrics, "total_return")

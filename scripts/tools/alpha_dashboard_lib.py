@@ -497,6 +497,15 @@ def _downsample_frame(df: pd.DataFrame, max_points: int) -> pd.DataFrame:
 SPLIT_ORDER = ("is", "os", "forward")
 
 
+def _is_flat_layout(alpha_dir: Path) -> bool:
+    """Flat (loader-gateway) layout: backtest ran once and wrote a single
+    metrics.json + raw parquet at alpha_dir/, with IS/OS blocks inside
+    metrics.json. Detected by the presence of the top-level metrics.json
+    AND the absence of an is/ subdirectory (a legacy two-dir alpha
+    always has an is/ subfolder)."""
+    return (alpha_dir / "metrics.json").exists() and not (alpha_dir / "is").is_dir()
+
+
 def _split_has_data(split_dir: Path) -> bool:
     """A split directory counts as "having data" if it contains either a
     ``metrics.json`` (backtest splits) or an ``equity_curve.parquet``
@@ -508,9 +517,89 @@ def _split_has_data(split_dir: Path) -> bool:
 
 def discover_splits(alpha_dir: Path) -> list[str]:
     """Return splits with data for ``alpha_dir`` in canonical order
-    (``is`` → ``os`` → ``forward``)."""
+    (``is`` → ``os`` → ``forward``). Supports both the legacy two-dir
+    layout (is/, os/, forward/ subfolders) and the new flat layout
+    (single metrics.json with is/os sub-blocks)."""
     alpha_dir = Path(alpha_dir)
+    if _is_flat_layout(alpha_dir):
+        try:
+            payload = json.loads((alpha_dir / "metrics.json").read_text())
+        except Exception:
+            return []
+        out: list[str] = []
+        if payload.get("is"):
+            out.append("is")
+        if payload.get("os"):
+            out.append("os")
+        # Forward is always a subdir, even in flat layout.
+        if _split_has_data(alpha_dir / "forward"):
+            out.append("forward")
+        return out
     return [s for s in SPLIT_ORDER if _split_has_data(alpha_dir / s)]
+
+
+def read_metrics_for_split(alpha_dir: Path, split: str) -> dict | None:
+    """Return metric dict for ``split`` ('is'|'os') in either layout.
+
+    Legacy: ``alpha_dir/<split>/metrics.json``.
+    Flat:   ``alpha_dir/metrics.json``[<split>].
+    Returns ``None`` if the split is not present.
+
+    Note: callers running under the seal_check hook will be blocked if
+    they read flat metrics.json directly. Dashboards run with
+    ``SEAL_OPEN=1`` set and use this helper. Agents must use
+    ``scripts/tools/load_alpha.py`` from the shell instead.
+    """
+    alpha_dir = Path(alpha_dir)
+    if _is_flat_layout(alpha_dir):
+        try:
+            payload = json.loads((alpha_dir / "metrics.json").read_text())
+        except Exception:
+            return None
+        return payload.get(split)
+    legacy = alpha_dir / split / "metrics.json"
+    if not legacy.exists():
+        return None
+    try:
+        return json.loads(legacy.read_text())
+    except Exception:
+        return None
+
+
+def read_split_parquet(alpha_dir: Path, kind: str, split: str):
+    """Return a DataFrame for ``kind`` ('equity_curve'|'trades'|'weights')
+    on ``split`` ('is'|'os'). Returns ``None`` if the artifact is absent.
+
+    Legacy: ``alpha_dir/<split>/<kind>.parquet``.
+    Flat:   ``alpha_dir/<kind>.parquet`` sliced by metrics.json's
+            ``is_end`` timestamp.
+    """
+    import pandas as pd  # local import — keep module import cheap
+
+    alpha_dir = Path(alpha_dir)
+    if _is_flat_layout(alpha_dir):
+        p = alpha_dir / f"{kind}.parquet"
+        if not p.exists():
+            return None
+        df = pd.read_parquet(p)
+        try:
+            payload = json.loads((alpha_dir / "metrics.json").read_text())
+            is_end_str = payload.get("is_end")
+        except Exception:
+            is_end_str = None
+        if is_end_str and "timestamp" in df.columns:
+            df = df.copy()
+            df["timestamp"] = pd.to_datetime(df["timestamp"])
+            cutoff = pd.Timestamp(is_end_str)
+            if split == "is":
+                df = df[df["timestamp"] <= cutoff]
+            elif split == "os":
+                df = df[df["timestamp"] > cutoff]
+        return df
+    legacy = alpha_dir / split / f"{kind}.parquet"
+    if not legacy.exists():
+        return None
+    return pd.read_parquet(legacy)
 
 
 def is_forward_live(forward_dir: Path) -> bool:

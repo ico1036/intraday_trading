@@ -271,6 +271,7 @@ class PortfolioTickBacktestRunner:
         maker_fee_rate: float = 0.0017,
         taker_fee_rate: float = 0.0020,
         leverage: int = 1,
+        fixed_aum_sizing: bool = False,
     ):
         self.strategy = strategy
         self.data_loaders = data_loaders
@@ -279,6 +280,12 @@ class PortfolioTickBacktestRunner:
         self.initial_capital = initial_capital
         self.position_size_pct = position_size_pct
         self.leverage = leverage
+        # When True, position notional is computed off ``initial_capital``
+        # rather than ``self._capital``. For a long/short strategy this
+        # decouples per-leg size from the running PnL — drawdowns don't
+        # shrink subsequent legs and recoveries don't pump them, which is
+        # the standard convention for evaluating a market-neutral signal.
+        self.fixed_aum_sizing = bool(fixed_aum_sizing)
 
         if fee_rate is not None:
             self.maker_fee_rate = fee_rate
@@ -478,7 +485,11 @@ class PortfolioTickBacktestRunner:
         if not (0 < order.weight <= 1):
             raise ValueError(f"Invalid order weight for {symbol}: {order.weight}")
 
-        position_value = self._capital * self.position_size_pct * order.weight * self.leverage
+        # Compound (default): scale by current capital. Fixed-AUM: scale
+        # by the constant initial capital so leg notional is invariant to
+        # accumulated PnL — see ``fixed_aum_sizing`` in __init__.
+        capital_base = self.initial_capital if self.fixed_aum_sizing else self._capital
+        position_value = capital_base * self.position_size_pct * order.weight * self.leverage
         return position_value / price if price > 0 else 0.0
 
     def _target_weight(self, order: Order) -> float | None:

@@ -275,6 +275,92 @@ def test_fmt_sharpe_daily_divides_by_sqrt252():
     assert pair == f"{daily} / {yearly}"
 
 
+def test_current_bar_pnl_uses_last_rebalance_nav(tmp_path):
+    """B definition: NAV_now - NAV_at_last_rebalance.
+
+    The dashboard's old "Today's session PnL" calculator just diffed the
+    last two equity rows (== last 30 s of mark-to-market). That value
+    was almost always 0 between rebalances. The new ``_current_bar_pnl``
+    pins the open NAV to the last rebalance timestamp instead, which is
+    the actual "now we're holding through this bar" starting line.
+    """
+    import sys as _sys
+    from pathlib import Path as _Path
+    _here = _Path(__file__).resolve().parents[1] / "scripts" / "tools"
+    if str(_here) not in _sys.path:
+        _sys.path.insert(0, str(_here))
+    from alpha_dashboard import _current_bar_pnl
+    import pandas as pd
+    from datetime import datetime as _dt
+
+    fwd = tmp_path / "forward"
+    fwd.mkdir()
+    # Two rebalances; the current open bar started at 5/16 00:00.
+    pd.DataFrame({
+        "timestamp": [_dt(2026, 5, 15), _dt(2026, 5, 16)],
+        "alpha_id": ["s", "s"], "symbol": ["BTCUSDT", "BTCUSDT"],
+        "target_weight": [0.1, 0.1],
+        "target_notional": [1000.0, 1000.0],
+        "target_qty": [0.01, 0.01],
+        "price": [100000.0, 100100.0],
+        "bar_type": ["time", "time"],
+        "bar_size": [86400.0, 86400.0],
+        "metadata": ["{}", "{}"],
+    }).to_parquet(fwd / "weights.parquet")
+    # Equity: ramp from 9k → 10k → 10100 → 10050. Last rebal at 5/16
+    # corresponds to NAV 10100.
+    pd.DataFrame({
+        "timestamp": [
+            _dt(2026, 5, 15), _dt(2026, 5, 15, 12), _dt(2026, 5, 16),
+            _dt(2026, 5, 17), _dt(2026, 5, 18),
+        ],
+        "equity": [9000.0, 10000.0, 10100.0, 10080.0, 10050.0],
+    }).to_parquet(fwd / "equity_curve.parquet")
+
+    pnl, ret = _current_bar_pnl(fwd)
+    assert pnl == pytest.approx(10050.0 - 10100.0)  # -50
+    assert ret == pytest.approx(10050.0 / 10100.0 - 1.0)
+
+
+def test_current_bar_pnl_returns_none_without_weights(tmp_path):
+    """No prior rebalance → can't define an open boundary → None."""
+    import sys as _sys
+    from pathlib import Path as _Path
+    _here = _Path(__file__).resolve().parents[1] / "scripts" / "tools"
+    if str(_here) not in _sys.path:
+        _sys.path.insert(0, str(_here))
+    from alpha_dashboard import _current_bar_pnl
+    import pandas as pd
+    from datetime import datetime as _dt
+
+    fwd = tmp_path / "forward"
+    fwd.mkdir()
+    # equity exists, but no weights yet.
+    pd.DataFrame({"timestamp": [_dt(2026, 5, 15)], "equity": [10000.0]}).to_parquet(
+        fwd / "equity_curve.parquet"
+    )
+    pnl, ret = _current_bar_pnl(fwd)
+    assert pnl is None
+    assert ret is None
+
+
+def test_current_bar_pnl_returns_none_without_equity(tmp_path):
+    """No equity curve yet → None (don't show a fake zero)."""
+    import sys as _sys
+    from pathlib import Path as _Path
+    _here = _Path(__file__).resolve().parents[1] / "scripts" / "tools"
+    if str(_here) not in _sys.path:
+        _sys.path.insert(0, str(_here))
+    from alpha_dashboard import _current_bar_pnl
+
+    fwd = tmp_path / "forward"
+    fwd.mkdir()
+    # Neither file → None.
+    pnl, ret = _current_bar_pnl(fwd)
+    assert pnl is None
+    assert ret is None
+
+
 def test_fmt_sharpe_handles_none_and_nan():
     import sys as _sys
     from pathlib import Path as _Path

@@ -226,6 +226,90 @@ a { color: var(--brand-link); }
 .alpha-card-list .alpha-row .stat-value.pos { color: var(--positive); }
 .alpha-card-list .alpha-row .stat-value.neg { color: var(--negative); }
 
+/* ============================================================
+ * Humor / vibe section — JW Capital flair.
+ * Distinct enough to be funny, restrained enough not to break
+ * the data hierarchy.
+ * ============================================================ */
+
+/* Daily PnL banner — large, prominent. Gain vs loss color from tone. */
+.daily-banner {
+    display: flex; flex-direction: column; gap: 4px;
+    padding: 16px 18px;
+    border-radius: var(--r-md);
+    border: 1px solid var(--border);
+    background: var(--surface);
+    box-shadow: var(--shadow-1);
+}
+.daily-banner .daily-label {
+    font-size: 10px; font-weight: 700;
+    letter-spacing: 0.06em; text-transform: uppercase;
+    color: var(--muted);
+}
+.daily-banner .daily-amount {
+    font-size: 28px; font-weight: 800; letter-spacing: -0.01em;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.daily-banner.gain { border-left: 4px solid var(--positive); }
+.daily-banner.gain .daily-amount { color: var(--positive); }
+.daily-banner.loss { border-left: 4px solid var(--negative); }
+.daily-banner.loss .daily-amount { color: var(--negative); }
+.daily-banner .daily-roast {
+    margin-top: 6px;
+    font-size: 13px; color: var(--text);
+    font-style: italic;
+    line-height: 1.45;
+}
+
+/* "God loves you" banner — fires when MDD passes the threshold.
+   Comic Sans-ish on purpose; it's supposed to look slightly absurd. */
+.god-banner {
+    margin-top: 8px;
+    padding: 18px 16px;
+    background: linear-gradient(135deg, #fff8e1, #ffe7a3);
+    border: 2px dashed #d97706;
+    border-radius: var(--r-md);
+    text-align: center;
+    font-family: "Comic Sans MS", "Chalkboard SE", "Comic Sans", cursive,
+                 system-ui, sans-serif;
+    color: #92400e;
+}
+.god-banner .god-line {
+    font-size: 22px; font-weight: 700;
+    line-height: 1.35;
+}
+.god-banner .god-line-en {
+    font-size: 16px; font-weight: 600;
+    opacity: 0.85; margin-top: 2px;
+}
+.god-banner .god-foot {
+    margin-top: 8px;
+    font-size: 11px;
+    letter-spacing: 0.04em;
+    opacity: 0.75;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+/* Han River temp chip — small ambient flair, top of Live Status. */
+.hangang-chip {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 4px 10px;
+    background: var(--surface-alt);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    font-size: 11px; color: var(--muted);
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.hangang-chip .hangang-temp { color: var(--text); font-weight: 700; }
+.hangang-chip .hangang-aside { opacity: 0.7; }
+
+/* Tiny geek-style comment lines that show up next to titles. */
+.geek-aside {
+    font-size: 11px; color: var(--muted);
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.geek-aside::before { content: "// "; opacity: 0.55; }
+
 /* Footer */
 .app-footer {
     margin-top: 28px; padding: 14px 0;

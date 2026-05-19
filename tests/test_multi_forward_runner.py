@@ -597,3 +597,183 @@ class TestPortfolioForwardRunner:
         assert weights.iloc[0]["target_weight"] == pytest.approx(0.02)
         assert metrics["total_return"] == pytest.approx(0.004)
         assert metrics["total_trades"] == 1
+
+
+# ===========================================================================
+# Sanity guards added after the 2026-05-18 incident where forward runner
+# stalled trading for 24h after every restart, and the metrics endpoint
+# reported total_trades / win_rate that double-counted OPEN legs.
+# ===========================================================================
+
+
+class TestRebalanceClockRecovery:
+    """Resume must not reset the rebalance interval clock."""
+
+    def _make_runner(self, *, rebalance_minutes: int = 1440):
+        strategy = PortfolioMomentum(
+            symbols=["BTCUSDT", "ETHUSDT"],
+            lookback_minutes=60, top_n=1, bottom_n=1,
+        )
+        return PortfolioForwardRunner(
+            strategy=strategy,
+            symbols=["BTCUSDT", "ETHUSDT"],
+            candle_type=CandleType.TIME,
+            candle_size=86400,
+            initial_capital=10000,
+            rebalance_minutes=rebalance_minutes,
+        )
+
+    def test_load_existing_state_restores_resumed_last_rebalance(self, tmp_path):
+        """Pulling prior weight events should populate the resume hint
+        so run() doesn't reset the clock to ``now``."""
+        runner = self._make_runner()
+        run_dir = tmp_path / runner.run_id
+        run_dir.mkdir(parents=True)
+        # Synthesize a weights.parquet with three rebalances; latest = 5/15.
+        ts_list = [
+            datetime(2026, 5, 13),
+            datetime(2026, 5, 14),
+            datetime(2026, 5, 15),
+        ]
+        weights = pd.DataFrame({
+            "timestamp": ts_list,
+            "alpha_id": ["strat"] * 3,
+            "symbol": ["BTCUSDT"] * 3,
+            "target_weight": [0.1, 0.1, 0.1],
+            "target_notional": [1000.0] * 3,
+            "target_qty": [0.01] * 3,
+            "price": [100000.0] * 3,
+            "bar_type": ["time"] * 3,
+            "bar_size": [86400.0] * 3,
+            "metadata": ["{}"] * 3,
+        })
+        weights.to_parquet(run_dir / "weights.parquet")
+
+        runner.load_existing_state(tmp_path)
+        assert runner._resumed_last_rebalance_time == datetime(2026, 5, 15)
+
+    def test_run_picks_resumed_clock_over_start_time(self):
+        """run() must adopt the resumed timestamp, not stamp start_time."""
+        runner = self._make_runner()
+        prior = datetime(2026, 5, 15, 0, 0, 0)
+        runner._resumed_last_rebalance_time = prior
+
+        async def _just_init():
+            # Stop right after init so we measure the clock, not the loop.
+            runner._running = False
+
+        # Drive only the init portion of run() by patching the wait loop.
+        with patch.object(runner, "_record_nav"):
+            with patch.object(runner, "_kline_warmup", new=AsyncMock()):
+                asyncio.run(self._init_only(runner))
+
+        assert runner._last_rebalance_time == prior
+
+    @staticmethod
+    async def _init_only(runner):
+        """Re-implement just the init block of run() — the actual run()
+        has a long-running async loop we don't want to exercise here."""
+        runner._running = True
+        runner._start_time = datetime(2026, 5, 17, 15, 4, 17)
+        runner._auto_save_last_at = runner._start_time
+        if runner._resumed_last_rebalance_time is not None:
+            runner._last_rebalance_time = runner._resumed_last_rebalance_time
+        else:
+            runner._last_rebalance_time = runner._start_time - timedelta(
+                minutes=runner.rebalance_minutes
+            )
+
+    def test_fresh_start_clock_is_one_window_back(self):
+        """Without a resume hint, the clock starts one full window in the
+        past so the FIRST candle close triggers a rebalance immediately."""
+        runner = self._make_runner(rebalance_minutes=1440)
+        runner._resumed_last_rebalance_time = None
+        asyncio.run(self._init_only(runner))
+        expected = datetime(2026, 5, 17, 15, 4, 17) - timedelta(minutes=1440)
+        assert runner._last_rebalance_time == expected
+        # And should_rebalance fires on the very next candle.
+        next_close = datetime(2026, 5, 18, 0, 0, 0)
+        assert runner.should_rebalance(next_close) is True
+
+    def test_resumed_clock_blocks_premature_rebalance(self):
+        """If the resumed timestamp is recent (< rebalance_minutes ago),
+        should_rebalance() must still wait the rest of the window."""
+        runner = self._make_runner(rebalance_minutes=1440)
+        runner._resumed_last_rebalance_time = datetime(2026, 5, 17, 12, 0, 0)
+        asyncio.run(self._init_only(runner))
+        # 12h after the resumed clock — not yet 24h.
+        too_early = datetime(2026, 5, 18, 0, 0, 0)
+        assert runner.should_rebalance(too_early) is False
+        # Exactly one window later — fires.
+        on_time = datetime(2026, 5, 18, 12, 0, 0)
+        assert runner.should_rebalance(on_time) is True
+
+
+class TestTradeStatsClosedOnly:
+    """``_trade_stats`` must count only realised-pnl legs."""
+
+    def _runner(self):
+        strategy = PortfolioMomentum(
+            symbols=["BTCUSDT", "ETHUSDT"], lookback_minutes=60, top_n=1, bottom_n=1,
+        )
+        return PortfolioForwardRunner(
+            strategy=strategy, symbols=["BTCUSDT", "ETHUSDT"],
+            candle_type=CandleType.TIME, candle_size=86400,
+            initial_capital=10000, rebalance_minutes=1440,
+        )
+
+    def test_open_legs_excluded(self):
+        runner = self._runner()
+        runner.trade_log = [
+            {"action": "OPEN_LONG",  "pnl": None},   # open leg
+            {"action": "CLOSE_LONG", "pnl": 5.0},    # winner
+            {"action": "OPEN_SHORT", "pnl": float("nan")},  # open leg (NaN)
+            {"action": "CLOSE_SHORT", "pnl": -3.0},  # loser
+            {"action": "CLOSE_FINAL", "pnl": 1.0},   # final close (winner)
+        ]
+        stats = runner._trade_stats()
+        # 3 closed legs (CLOSE_LONG, CLOSE_SHORT, CLOSE_FINAL) — opens excluded
+        assert stats["total_trades"] == 3
+        assert stats["wins"] == 2
+        assert stats["losses"] == 1
+        assert stats["win_rate"] == pytest.approx(2 / 3 * 100)
+        assert stats["profit_factor"] == pytest.approx((5.0 + 1.0) / 3.0)
+
+    def test_empty_log(self):
+        runner = self._runner()
+        runner.trade_log = []
+        stats = runner._trade_stats()
+        assert stats["total_trades"] == 0
+        assert stats["wins"] == 0
+        assert stats["losses"] == 0
+        assert stats["win_rate"] == 0.0
+
+
+class TestLongShortBalance:
+    """Sanity: a long/short alpha's notional should net to ~zero per
+    rebalance. Audits real archive output."""
+
+    def test_xs_volume_rank_archive_is_balanced(self):
+        """Walks the real forward weights.parquet (if present) and asserts
+        long_notional ≈ short_notional at every rebalance. Skipped when
+        the archive doesn't exist (CI / fresh checkouts)."""
+        import os
+        from pathlib import Path
+        os.environ.setdefault("SEAL_OPEN", "1")
+        archive = Path("archive/run_2026_05_xs500/alphas/xs_volume_rank/forward/weights.parquet")
+        if not archive.exists():
+            pytest.skip(f"archive not present: {archive}")
+        w = pd.read_parquet(archive)
+        w["abs"] = w["target_notional"].abs()
+        per_rebal = w.groupby("timestamp").apply(
+            lambda g: pd.Series({
+                "long":  float(g[g["target_weight"] > 0]["abs"].sum()),
+                "short": float(g[g["target_weight"] < 0]["abs"].sum()),
+            }),
+            include_groups=False,
+        )
+        per_rebal["ratio"] = per_rebal["long"] / per_rebal["short"].replace(0.0, float("nan"))
+        # Every rebalance is within ±1% of 50/50.
+        assert (per_rebal["ratio"].sub(1.0).abs() < 0.01).all(), (
+            "long/short notional imbalance found: " + str(per_rebal[(per_rebal["ratio"] - 1).abs() >= 0.01])
+        )

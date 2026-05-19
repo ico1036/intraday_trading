@@ -113,6 +113,12 @@ class PortfolioForwardRunner:
         self._running = False
         self._clients: dict[str, BinanceKlineStreamClient] = {}
         self._last_rebalance_time: Optional[datetime] = None
+        # Populated by ``load_existing_state`` so ``run()`` can pick up
+        # the rebalance clock where the prior session left off instead of
+        # restarting the interval from now. Without this, --resume kept
+        # equity continuous but stalled trading for one full
+        # rebalance_minutes window.
+        self._resumed_last_rebalance_time: Optional[datetime] = None
         self._start_time: Optional[datetime] = None
         self._auto_save_last_at: Optional[datetime] = None
         self._rebalance_seq = 0
@@ -170,11 +176,29 @@ class PortfolioForwardRunner:
             elif isinstance(equity, (int, float)) and equity > 0:
                 self.capital = float(equity)
 
+        # Restore the rebalance clock so the should_rebalance() interval
+        # doesn't reset to "wait one full window from now" on resume.
+        # Picking from weight events is robust: a weight event is written
+        # at every successful rebalance.
+        latest_rebal: Optional[datetime] = None
+        for r in prior_weights:
+            ts = r.get("timestamp")
+            if ts is None:
+                continue
+            try:
+                dt = ts if isinstance(ts, datetime) else pd.to_datetime(ts).to_pydatetime()
+            except Exception:
+                continue
+            if latest_rebal is None or dt > latest_rebal:
+                latest_rebal = dt
+        self._resumed_last_rebalance_time = latest_rebal
+
         print(
             f"[Resume] loaded prior state from {run_dir}: "
             f"nav={len(prior_nav)} trades={len(prior_trades)} "
             f"weights={len(prior_weights)} events={len(prior_events)} "
-            f"→ capital=${self.capital:,.2f}"
+            f"→ capital=${self.capital:,.2f} "
+            f"last_rebalance={latest_rebal}"
         )
 
     # ----- data ingestion / scheduling -----
@@ -761,7 +785,11 @@ class PortfolioForwardRunner:
 
     # ----- state + metrics -----
     def _trade_stats(self) -> dict[str, Any]:
-        closed = [t for t in self.trade_log if "pnl" in t]
+        # A "closed" trade is one with a realised PnL. Plain ``"pnl" in t``
+        # matches OPEN legs too (their dict carries pnl=None/NaN), which
+        # would inflate total_trades 2x and crush win_rate by the same
+        # factor. Filter on actual numeric PnL.
+        closed = [t for t in self.trade_log if pd.notna(t.get("pnl"))]
         wins = sum(1 for t in closed if t.get("pnl", 0) > 0)
         losses = sum(1 for t in closed if t.get("pnl", 0) < 0)
         gross_profit = sum(t.get("pnl", 0) for t in closed if t.get("pnl", 0) > 0)
@@ -875,7 +903,19 @@ class PortfolioForwardRunner:
         self._running = True
         self._start_time = datetime.now()
         self._auto_save_last_at = self._start_time
-        self._last_rebalance_time = self._start_time
+        # Initialise the rebalance clock:
+        #   - resume → pick up where the prior session left off (so the
+        #     next candle close that's >= rebalance_minutes past it
+        #     triggers a rebalance immediately).
+        #   - fresh start → set the clock back by one full window so the
+        #     first candle close after start triggers a rebalance, instead
+        #     of waiting a full rebalance_minutes from wallclock start.
+        if self._resumed_last_rebalance_time is not None:
+            self._last_rebalance_time = self._resumed_last_rebalance_time
+        else:
+            self._last_rebalance_time = self._start_time - timedelta(
+                minutes=self.rebalance_minutes
+            )
         self._record_nav(self._start_time)
 
         print("=" * 60)

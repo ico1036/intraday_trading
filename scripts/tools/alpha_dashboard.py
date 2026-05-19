@@ -220,6 +220,108 @@ def _require_auth() -> bool:
     return False
 
 
+@lru_cache(maxsize=1)
+def _hangang_temp_cached(epoch_bucket: int) -> tuple[float | None, str]:
+    """Fetch Han River water temperature (Celsius).
+
+    Source: Seoul OpenAPI ``WPOSInformationTime`` sample endpoint, which
+    publishes the Han River water-quality automatic-measurement-network
+    readings (수질 자동측정망). We use the ``/sample/`` route on purpose
+    — it works without an auth key, returns 5 freshest rows, and the
+    payload's ``WATT`` field is the actual water temperature in °C.
+
+    The earlier hangang.life/ivlis endpoints all proxy a now-dead cache
+    layer that has returned ``CACHE GET FAILED`` for days.
+
+    Returns (temp_c, status_msg); ``temp_c`` is None on any failure.
+    Cache key is a 5-minute bucket so we hit the API at most every 5 min.
+    """
+    del epoch_bucket  # only used as cache key
+    url = "http://openapi.seoul.go.kr:8088/sample/json/WPOSInformationTime/1/5/"
+    try:
+        import urllib.request
+        req = urllib.request.Request(url, headers={"User-Agent": "jw-capital/1.0"})
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            data = json.loads(resp.read())
+    except Exception as exc:
+        return (None, f"api error: {type(exc).__name__}")
+
+    payload = data.get("WPOSInformationTime") or {}
+    result = payload.get("RESULT") or {}
+    if result.get("CODE") and result["CODE"] != "INFO-000":
+        return (None, str(result.get("MESSAGE", "unknown"))[:60])
+
+    rows = payload.get("row") or []
+    if not rows:
+        return (None, "no rows returned")
+
+    # Pick the freshest (YMD, HR) row that has a numeric WATT. Fields are
+    # strings; an empty/"-" reading means the station didn't report.
+    def _key(r):
+        return (r.get("YMD") or "", r.get("HR") or "")
+
+    rows = sorted(rows, key=_key, reverse=True)
+    for r in rows:
+        watt = r.get("WATT")
+        if watt in (None, "", "-"):
+            continue
+        try:
+            return (float(watt), f"ok ({r.get('MSRSTN_NM') or 'station'} {r.get('HR') or ''})")
+        except (TypeError, ValueError):
+            continue
+    return (None, "no usable WATT field")
+
+
+def hangang_temp() -> tuple[float | None, str]:
+    bucket = int(datetime.now().timestamp()) // 300
+    return _hangang_temp_cached(bucket)
+
+
+def _current_bar_pnl(forward_dir: Path) -> tuple[float | None, float | None]:
+    """(pnl_usd, return_pct) for the *current open bar*.
+
+    Defined as ``NAV_now - NAV_at_last_rebalance``. The last rebalance
+    timestamp is the open boundary of the bar the strategy is currently
+    holding through, so this answers "how much has equity moved since
+    we last touched the book?". Resets each time a new rebalance is
+    persisted, which for a daily-candle alpha is once per kline close.
+
+    Returns (None, None) when prior weight events or the equity curve
+    don't exist yet — both are written by the runner, so a freshly
+    created forward dir simply shows "-" instead of a misleading 0.
+    """
+    weights_path = forward_dir / "weights.parquet"
+    eq_path = forward_dir / "equity_curve.parquet"
+    if not weights_path.exists() or not eq_path.exists():
+        return (None, None)
+    try:
+        weights = pd.read_parquet(weights_path, columns=["timestamp"])
+        if weights.empty:
+            return (None, None)
+        last_rebal = pd.to_datetime(weights["timestamp"]).max()
+        eq = pd.read_parquet(eq_path, columns=["timestamp", "equity"])
+        if eq.empty:
+            return (None, None)
+        eq["timestamp"] = pd.to_datetime(eq["timestamp"])
+        eq = eq.sort_values("timestamp").reset_index(drop=True)
+        at_or_after = eq[eq["timestamp"] >= last_rebal]
+        if at_or_after.empty:
+            return (None, None)
+        nav_open = float(at_or_after["equity"].iloc[0])
+        nav_now = float(eq["equity"].iloc[-1])
+        pnl = nav_now - nav_open
+        ret = (nav_now / nav_open - 1.0) if nav_open else None
+        return (pnl, ret)
+    except Exception:
+        return (None, None)
+
+
+_LOSS_COMFORT_LINES = [
+    "오늘은 주인님을 위해 따뜻한 말 한마디를 보태주세요.",
+    "Today the books bled red — leave the boss a kind word.",
+]
+
+
 def discover_live_alphas(run_dir: Path) -> list[dict[str, Any]]:
     """Scan run_dir for alphas with a currently-running forward runner.
 
@@ -246,7 +348,7 @@ def render_top_nav() -> None:
     with ui.header(elevated=False).classes("nav-bar"):
         with ui.row().classes("nav-inner"):
             with ui.link(target="/").classes("nav-brand").style("text-decoration: none;"):
-                ui.html('<span class="nav-mark">◆</span>Alpha Dashboard', sanitize=False)
+                ui.html('<span class="nav-mark">◆</span>JW Capital', sanitize=False)
             ui.element("div").style("flex: 1")
             ui.button("Logout", on_click=lambda: ui.navigate.to("/logout")).props(
                 "flat dense color=primary no-caps"
@@ -629,11 +731,12 @@ def equity_figure(run_dir: Path, alpha_id: str, mode: str = "compound") -> go.Fi
         fig.add_vline(x=ts, line_width=0.8, line_dash="dot",
                       line_color=color, opacity=0.4)
     fig.update_layout(
-        height=320,
+        height=340,
         autosize=True,
-        margin=dict(l=40, r=15, t=40, b=30),
+        # Bottom-anchored legend keeps it off the title row above.
+        margin=dict(l=40, r=15, t=40, b=60),
         title=f"Net cumulative return (after fees) — {label} (stitched)",
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+        legend=dict(orientation="h", yanchor="top", y=-0.18, xanchor="center", x=0.5),
     )
     fig.update_yaxes(tickformat=".1%")
     return fig
@@ -694,11 +797,11 @@ def drawdown_figure(run_dir: Path, alpha_id: str) -> go.Figure:
             )
         )
     fig.update_layout(
-        height=280,
+        height=300,
         autosize=True,
-        margin=dict(l=40, r=15, t=40, b=30),
+        margin=dict(l=40, r=15, t=40, b=60),
         title="Drawdown",
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+        legend=dict(orientation="h", yanchor="top", y=-0.20, xanchor="center", x=0.5),
     )
     fig.update_yaxes(tickformat=".1%")
     return fig
@@ -1399,12 +1502,12 @@ def composite_cumret_figure(
 
     fig.update_layout(
         title=f"Cumulative return — {label}: composite (bold) vs members (faded), IS / OS",
-        height=420,
-        margin=dict(l=40, r=20, t=50, b=40),
+        height=440,
+        margin=dict(l=40, r=20, t=50, b=70),
         xaxis_title="time",
         yaxis_title="cum return",
         showlegend=True,
-        legend=dict(orientation="h"),
+        legend=dict(orientation="h", yanchor="top", y=-0.18, xanchor="center", x=0.5),
         hovermode="x unified",
     )
     fig.update_yaxes(tickformat=".1%")
@@ -1426,8 +1529,8 @@ def main() -> None:
         with ui.column().classes("page-wrap w-full"):
             with ui.column().classes("auth-card gap-3 items-stretch"):
                 with ui.column().classes("gap-0 items-start"):
-                    ui.label("Alpha Dashboard").classes("page-title")
-                    ui.label("Sign in to continue").classes("page-subtitle")
+                    ui.label("JW Capital").classes("page-title")
+                    ui.label("quantitative trading · internal terminal").classes("geek-aside")
                 user_in = ui.input("ID").props("autofocus autocomplete=username outlined dense").classes("w-full")
                 pw_in = ui.input("Password", password=True).props(
                     "autocomplete=current-password type=password outlined dense"
@@ -1465,8 +1568,8 @@ def main() -> None:
         live_alphas = discover_live_alphas(run_dir)
         with ui.column().classes("page-wrap w-full gap-3"):
             with ui.column().classes("page-header"):
-                ui.label("Alpha Archive Dashboard").classes("page-title")
-                ui.label(str(run_dir)).classes("page-subtitle")
+                ui.label("Alpha Archive").classes("page-title")
+                ui.label(f"{run_dir}").classes("geek-aside")
 
             with ui.tabs().classes("w-full") as top_tabs:
                 tab_alphas = ui.tab("Alphas")
@@ -1779,8 +1882,49 @@ def main() -> None:
             fwd_dir = alpha_dir(detail_run_dir, alpha_id) / "forward"
             if fwd_dir.exists():
                 status = forward_status(fwd_dir)
+                # --- Vibe block: current-bar gain/loss banner ---
+                # PnL since the last rebalance (= last kline close that the
+                # strategy acted on). Resets each new bar. Daily strategy →
+                # "today's PnL"; an hourly strategy auto-adapts.
+                bar_pnl_usd, bar_ret = _current_bar_pnl(fwd_dir)
+                if bar_pnl_usd is not None:
+                    is_loss = bar_pnl_usd < 0
+                    tone_cls = "loss" if is_loss else "gain"
+                    pct_part = f" ({bar_ret * 100:+.2f}%)" if bar_ret is not None else ""
+                    roast = (
+                        "오늘은 주인님을 위해 따뜻한 말 한마디를 보태주세요. "
+                        "Take it easy, boss — the market owes us nothing."
+                        if is_loss else
+                        "오늘의 식대는 강세장이 책임집니다. "
+                        "Green candle, green tea — savor it."
+                    )
+                    with ui.element("div").classes(f"daily-banner {tone_cls} w-full"):
+                        ui.html(
+                            f'<div class="daily-label">Current bar PnL (since last close)</div>'
+                            f'<div class="daily-amount">{bar_pnl_usd:+,.2f} USD{pct_part}</div>'
+                            f'<div class="daily-roast">{roast}</div>',
+                            sanitize=False,
+                        )
                 with ui.column().classes("section-panel w-full gap-2"):
-                    ui.label("Live Status").classes("section-title")
+                    with ui.row().classes("w-full items-center justify-between"):
+                        ui.label("Live Status").classes("section-title")
+                        temp_c, temp_status = hangang_temp()
+                        if temp_c is not None:
+                            ui.html(
+                                f'<div class="hangang-chip">'
+                                f'<span>🌊 한강 수온</span>'
+                                f'<span class="hangang-temp">{temp_c:.1f}°C</span>'
+                                f'</div>',
+                                sanitize=False,
+                            )
+                        else:
+                            ui.html(
+                                f'<div class="hangang-chip" title="{html.escape(temp_status)}">'
+                                f'<span>🌊 한강 수온</span>'
+                                f'<span class="hangang-aside">측정 불가</span>'
+                                f'</div>',
+                                sanitize=False,
+                            )
                     with ui.row().classes("gap-2 w-full"):
                         metric_card(
                             "Status",
@@ -1916,39 +2060,28 @@ def main() -> None:
                     metric_card("IS DD duration", _fmt_duration_days(is_dd_dur))
                     metric_card("OS Max DD", _fmt_pct(os_dd_pct), tone="negative" if os_dd_pct else None)
                     metric_card("OS DD duration", _fmt_duration_days(os_dd_dur))
+                # God-loves-you banner — surfaces when any split's drawdown
+                # passes 20%. The Comic Sans is the joke; don't lecture it.
+                worst_mdd = max(
+                    (abs(x) for x in (is_dd_pct, os_dd_pct) if x is not None),
+                    default=0.0,
+                )
+                if worst_mdd >= 0.20:
+                    ui.html(
+                        f'<div class="god-banner">'
+                        f'  <div class="god-line">하나님은 당신을 사랑합니다.</div>'
+                        f'  <div class="god-line-en">God loves you.</div>'
+                        f'  <div class="god-foot">// MDD {worst_mdd*100:.1f}% — hang in there, boss</div>'
+                        f'</div>',
+                        sanitize=False,
+                    )
 
-            # ---------- Section: Statistical Confidence ----------
-            with ui.column().classes("section-panel w-full gap-2"):
-                ui.label("Statistical Confidence").classes("section-title")
-                with ui.row().classes("gap-2 w-full"):
-                    metric_card("IS t-stat", _fmt_num(selected.get("is_t_stat")),
-                                tone=_tone_from_number(selected.get("is_t_stat")))
-                    metric_card("IS Profit Factor", _fmt_num(selected.get("is_profit_factor_trades")))
-                    metric_card("IS Round trips", _fmt_int(selected.get("is_round_trips")))
-                    metric_card("OS t-stat", _fmt_num(selected.get("os_t_stat")),
-                                tone=_tone_from_number(selected.get("os_t_stat")))
-                    metric_card("OS Profit Factor", _fmt_num(selected.get("os_profit_factor_trades")))
-                    metric_card("OS Round trips", _fmt_int(selected.get("os_round_trips")))
-
-            # ---------- Section: Distribution ----------
-            with ui.column().classes("section-panel w-full gap-2"):
-                ui.label("Distribution").classes("section-title")
-                with ui.row().classes("gap-2 w-full"):
-                    metric_card("IS Win rate (trades)", _fmt_pct(selected.get("is_win_rate_trades")))
-                    metric_card("IS Avg win", _fmt_bps(selected.get("is_avg_win_bps")), tone="positive")
-                    metric_card("IS Avg loss", _fmt_bps(selected.get("is_avg_loss_bps")), tone="negative")
-                    metric_card("IS W/L ratio", _fmt_num(selected.get("is_win_loss_ratio")))
-                    metric_card("IS Largest win",  _fmt_bps(selected.get("is_largest_win_bps")), tone="positive")
-                    metric_card("IS Largest loss", _fmt_bps(selected.get("is_largest_loss_bps")), tone="negative")
-                with ui.row().classes("gap-2 w-full"):
-                    metric_card("OS Win rate (trades)", _fmt_pct(selected.get("os_win_rate_trades")))
-                    metric_card("OS Avg win", _fmt_bps(selected.get("os_avg_win_bps")), tone="positive")
-                    metric_card("OS Avg loss", _fmt_bps(selected.get("os_avg_loss_bps")), tone="negative")
-                    metric_card("OS W/L ratio", _fmt_num(selected.get("os_win_loss_ratio")))
-                    metric_card("OS Largest win",  _fmt_bps(selected.get("os_largest_win_bps")), tone="positive")
-                    metric_card("OS Largest loss", _fmt_bps(selected.get("os_largest_loss_bps")), tone="negative")
-
-            # ---------- Section: Overfit Check (OS / IS ratio) ----------
+            # ---------- Section: Backtest details (collapsed) ----------
+            # These three sections (Statistical Confidence / Distribution /
+            # Overfit Check) are mostly informational for the backtest
+            # researcher. For live monitoring most fields are "-" so they
+            # add clutter — hide behind a click. No lazy load needed; the
+            # values are already attached to ``selected``.
             def _ratio(os_v, is_v):
                 try:
                     if os_v is None or is_v is None or float(is_v) == 0:
@@ -1964,13 +2097,47 @@ def main() -> None:
                 selected.get("is_profit_factor_trades"),
             )
             ts_degr = _ratio(selected.get("os_t_stat"), selected.get("is_t_stat"))
-            with ui.column().classes("section-panel w-full gap-2"):
-                ui.label("Overfit Check (OS / IS)").classes("section-title")
-                with ui.row().classes("gap-2 w-full"):
-                    metric_card("Sharpe degr", _fmt_num(sharpe_degr))
-                    metric_card("bps degr",    _fmt_num(bps_degr))
-                    metric_card("PF degr",     _fmt_num(pf_degr))
-                    metric_card("t-stat degr", _fmt_num(ts_degr))
+
+            with ui.expansion(
+                "Backtest details — Statistical Confidence · Distribution · Overfit Check",
+                icon="science",
+            ).classes("w-full dense-panel"):
+                with ui.column().classes("section-panel w-full gap-2 mt-2"):
+                    ui.label("Statistical Confidence").classes("section-title")
+                    with ui.row().classes("gap-2 w-full"):
+                        metric_card("IS t-stat", _fmt_num(selected.get("is_t_stat")),
+                                    tone=_tone_from_number(selected.get("is_t_stat")))
+                        metric_card("IS Profit Factor", _fmt_num(selected.get("is_profit_factor_trades")))
+                        metric_card("IS Round trips", _fmt_int(selected.get("is_round_trips")))
+                        metric_card("OS t-stat", _fmt_num(selected.get("os_t_stat")),
+                                    tone=_tone_from_number(selected.get("os_t_stat")))
+                        metric_card("OS Profit Factor", _fmt_num(selected.get("os_profit_factor_trades")))
+                        metric_card("OS Round trips", _fmt_int(selected.get("os_round_trips")))
+
+                with ui.column().classes("section-panel w-full gap-2 mt-2"):
+                    ui.label("Distribution").classes("section-title")
+                    with ui.row().classes("gap-2 w-full"):
+                        metric_card("IS Win rate (trades)", _fmt_pct(selected.get("is_win_rate_trades")))
+                        metric_card("IS Avg win", _fmt_bps(selected.get("is_avg_win_bps")), tone="positive")
+                        metric_card("IS Avg loss", _fmt_bps(selected.get("is_avg_loss_bps")), tone="negative")
+                        metric_card("IS W/L ratio", _fmt_num(selected.get("is_win_loss_ratio")))
+                        metric_card("IS Largest win",  _fmt_bps(selected.get("is_largest_win_bps")), tone="positive")
+                        metric_card("IS Largest loss", _fmt_bps(selected.get("is_largest_loss_bps")), tone="negative")
+                    with ui.row().classes("gap-2 w-full"):
+                        metric_card("OS Win rate (trades)", _fmt_pct(selected.get("os_win_rate_trades")))
+                        metric_card("OS Avg win", _fmt_bps(selected.get("os_avg_win_bps")), tone="positive")
+                        metric_card("OS Avg loss", _fmt_bps(selected.get("os_avg_loss_bps")), tone="negative")
+                        metric_card("OS W/L ratio", _fmt_num(selected.get("os_win_loss_ratio")))
+                        metric_card("OS Largest win",  _fmt_bps(selected.get("os_largest_win_bps")), tone="positive")
+                        metric_card("OS Largest loss", _fmt_bps(selected.get("os_largest_loss_bps")), tone="negative")
+
+                with ui.column().classes("section-panel w-full gap-2 mt-2"):
+                    ui.label("Overfit Check (OS / IS)").classes("section-title")
+                    with ui.row().classes("gap-2 w-full"):
+                        metric_card("Sharpe degr", _fmt_num(sharpe_degr))
+                        metric_card("bps degr",    _fmt_num(bps_degr))
+                        metric_card("PF degr",     _fmt_num(pf_degr))
+                        metric_card("t-stat degr", _fmt_num(ts_degr))
             with ui.grid(columns=2).classes("w-full gap-3 chart-grid"):
                 with ui.column().classes("w-full gap-1"):
                     with ui.row().classes("w-full justify-end"):
@@ -2188,7 +2355,7 @@ def main() -> None:
     ui.run(
         host=args.host,
         port=args.port,
-        title="Alpha Dashboard",
+        title="JW Capital",
         reload=False,
         storage_secret=storage_secret,
     )

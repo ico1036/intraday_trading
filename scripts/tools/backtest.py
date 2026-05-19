@@ -154,6 +154,7 @@ def run_backtest(args: argparse.Namespace) -> dict[str, Any]:
         maker_fee_rate=args.maker_fee_rate,
         taker_fee_rate=args.taker_fee_rate,
         leverage=args.leverage,
+        fixed_aum_sizing=getattr(args, "fixed_aum_sizing", False),
     )
     result = runner.run(start_time=parse_dt(args.start), end_time=parse_dt(args.end))
     runner.save_report(output_dir)
@@ -163,6 +164,7 @@ def run_backtest(args: argparse.Namespace) -> dict[str, Any]:
     # recomputed on every render. Persist into metrics.json so the dashboard
     # is read-only and the cost is paid once at write time.
     pnl_bps_simple, pnl_bps_w = _persist_display_metrics(output_dir)
+    _compute_split_metrics(output_dir, getattr(args, "is_end", None))
 
     metrics = {
         "profit_factor": result.profit_factor,
@@ -380,6 +382,165 @@ def _persist_display_metrics(output_dir: Path) -> tuple[float | None, float | No
     return (simple, weighted)
 
 
+def _compute_split_metrics(output_dir: Path, is_end_str: str | None) -> None:
+    """Persist IS/OS sub-metrics into metrics.json.
+
+    When ``--is-end`` is set, backtest ran once across the full IS+OS
+    range. This helper reads equity_curve.parquet + trades.parquet,
+    slices each by ``is_end``, computes IS and OS metric blocks
+    independently, and merges them into metrics.json under the keys
+    ``"is"`` and ``"os"`` (the top-level keys remain the full-period
+    metric, for back-compat).
+
+    Agents must NOT read metrics.json directly when this field is
+    populated; use ``scripts/tools/load_alpha.py --split is`` so OS
+    blocks stay hidden behind ``SEAL_OPEN=1``.
+    """
+    if not is_end_str:
+        return
+    metrics_path = output_dir / "metrics.json"
+    equity_path = output_dir / "equity_curve.parquet"
+    trades_path = output_dir / "trades.parquet"
+    if not metrics_path.exists():
+        return
+
+    try:
+        import pandas as _pd
+        import numpy as _np
+        _here = Path(__file__).resolve().parent
+        if str(_here) not in sys.path:
+            sys.path.insert(0, str(_here))
+        from alpha_dashboard_lib import compute_trade_stats  # noqa: E402
+        from intraday.backtest.metrics import sharpe_daily_annualized  # noqa: E402
+    except Exception:
+        return
+
+    try:
+        is_end = _pd.Timestamp(is_end_str)
+    except Exception:
+        return
+
+    try:
+        existing = json.loads(metrics_path.read_text())
+    except Exception:
+        return
+
+    equity_df = _pd.read_parquet(equity_path) if equity_path.exists() else _pd.DataFrame()
+    trades_df = _pd.read_parquet(trades_path) if trades_path.exists() else _pd.DataFrame()
+
+    def _slice_metrics(eq: "_pd.DataFrame", tr: "_pd.DataFrame") -> dict:
+        out: dict[str, Any] = {}
+        if not eq.empty and "timestamp" in eq.columns and "equity" in eq.columns:
+            eq = eq.dropna(subset=["timestamp", "equity"]).sort_values("timestamp")
+            if len(eq) >= 2:
+                e0 = float(eq["equity"].iloc[0])
+                e1 = float(eq["equity"].iloc[-1])
+                out["initial_equity"] = e0
+                out["final_equity"] = e1
+                out["total_return"] = (e1 - e0) / e0 if e0 != 0 else 0.0
+                cummax = eq["equity"].cummax()
+                dd = (eq["equity"] - cummax) / cummax.replace(0, _np.nan)
+                out["max_drawdown"] = float(dd.min()) if dd.notna().any() else 0.0
+                # Engine convention: daily-resample equity, then sqrt(252)
+                # annualise. Calling the same helper the runner uses keeps
+                # PoC IS-slice metrics consistent with single-period runs.
+                out["sharpe"] = sharpe_daily_annualized(
+                    eq["equity"].tolist(), timestamps=eq["timestamp"].tolist()
+                )
+                tr_val = out["total_return"]
+                mdd_val = out["max_drawdown"]
+                out["calmar"] = (
+                    float(tr_val) / abs(float(mdd_val)) if mdd_val and mdd_val != 0 else None
+                )
+        if not tr.empty:
+            closed = tr[tr["pnl"].notna()] if "pnl" in tr.columns else tr.iloc[0:0]
+            out["total_trades"] = int(len(closed))
+            if len(closed) > 0:
+                wins = closed[closed["pnl"] > 0]
+                losses = closed[closed["pnl"] < 0]
+                out["win_rate"] = float(len(wins) / len(closed))
+                gross_w = float(wins["pnl"].sum()) if not wins.empty else 0.0
+                gross_l = float(-losses["pnl"].sum()) if not losses.empty else 0.0
+                out["profit_factor"] = (gross_w / gross_l) if gross_l > 0 else float("inf") if gross_w > 0 else 0.0
+            try:
+                stats = compute_trade_stats(tr)
+                out["pnl_bps_simple"] = stats.get("mean_bps")
+                out["pnl_bps_notional_weighted"] = stats.get("mean_bps_notional_weighted")
+                out["per_trade_sharpe"] = stats.get("per_trade_sharpe")
+                out["t_stat"] = stats.get("t_stat")
+                out["pnl_bps_std"] = stats.get("std_bps")
+                out["round_trips"] = stats.get("n_round_trips")
+                out["trade_win_rate"] = stats.get("win_rate")
+                out["avg_win_bps"] = stats.get("avg_win_bps")
+                out["avg_loss_bps"] = stats.get("avg_loss_bps")
+                out["win_loss_ratio"] = stats.get("win_loss_ratio")
+                out["profit_factor_trades"] = stats.get("profit_factor")
+                out["largest_win_bps"] = stats.get("largest_win_bps")
+                out["largest_loss_bps"] = stats.get("largest_loss_bps")
+            except Exception:
+                pass
+        return out
+
+    if not equity_df.empty:
+        equity_df["timestamp"] = _pd.to_datetime(equity_df["timestamp"])
+        is_eq = equity_df[equity_df["timestamp"] <= is_end]
+        os_eq = equity_df[equity_df["timestamp"] > is_end]
+    else:
+        is_eq = os_eq = equity_df
+
+    if not trades_df.empty and "timestamp" in trades_df.columns:
+        trades_df["timestamp"] = _pd.to_datetime(trades_df["timestamp"])
+        is_tr = trades_df[trades_df["timestamp"] <= is_end]
+        os_tr = trades_df[trades_df["timestamp"] > is_end]
+    else:
+        is_tr = os_tr = trades_df
+
+    is_block = _slice_metrics(is_eq, is_tr)
+    os_block = _slice_metrics(os_eq, os_tr)
+    existing["is_end"] = is_end.isoformat()
+    existing["is"] = is_block
+    existing["os"] = os_block
+    metrics_path.write_text(json.dumps(existing, indent=2, default=str))
+
+    # Re-emit backtest_report.md as two clearly delimited sections so the
+    # loader can serve the IS section without leaking OS numbers. The
+    # original report file contained the full-period summary only; once
+    # this helper runs the file is the canonical IS/OS split view.
+    report_path = output_dir / "backtest_report.md"
+    if report_path.exists():
+        def _section(label: str, block: dict) -> str:
+            if not block:
+                return f"## {label}\n\n(no data)\n"
+            lines = [f"## {label}\n"]
+            ordered = [
+                ("total_return", "Total Return"),
+                ("sharpe", "Sharpe"),
+                ("max_drawdown", "Max Drawdown"),
+                ("calmar", "Calmar"),
+                ("profit_factor", "Profit Factor"),
+                ("win_rate", "Win Rate"),
+                ("total_trades", "Total Trades"),
+                ("initial_equity", "Initial Equity"),
+                ("final_equity", "Final Equity"),
+                ("t_stat", "t-stat"),
+                ("pnl_bps_simple", "Mean PnL (bps, simple)"),
+                ("pnl_bps_notional_weighted", "Mean PnL (bps, notional-weighted)"),
+            ]
+            for key, label_pretty in ordered:
+                if key in block and block[key] is not None:
+                    lines.append(f"- **{label_pretty}**: {block[key]}")
+            return "\n".join(lines) + "\n"
+
+        new_report = (
+            f"# Backtest report\n\n"
+            f"is_end: {is_end.isoformat()}\n\n"
+            + _section("In-Sample (IS)", is_block)
+            + "\n"
+            + _section("Out-of-Sample (OS)", os_block)
+        )
+        report_path.write_text(new_report)
+
+
 def _enforce_reject_rules(output_dir: Path, *, enforce: bool) -> dict:
     """Apply user-defined reject rules and delete the alpha dir on failure.
 
@@ -477,11 +638,23 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--symbol-data-paths", default="")
     parser.add_argument("--start", default=None)
     parser.add_argument("--end", default=None)
+    parser.add_argument(
+        "--is-end", default=None,
+        help="If set with a full IS+OS --start/--end range, runs once and "
+             "splits metrics into IS (up to is-end) and OS (after is-end) "
+             "sets inside metrics.json. agents read the IS set via "
+             "scripts/tools/load_alpha.py.",
+    )
     parser.add_argument("--bar-type", choices=["TIME", "VOLUME", "TICK", "DOLLAR"], default="TIME")
     parser.add_argument("--bar-size", type=float, default=60.0)
     parser.add_argument("--initial-capital", type=float, default=10000.0)
     parser.add_argument("--position-size-pct", type=float, default=1.0)
     parser.add_argument("--leverage", type=int, default=1)
+    parser.add_argument(
+        "--fixed-aum-sizing", action="store_true",
+        help="Scale leg notional off initial_capital instead of running "
+             "capital. Recommended for evaluating market-neutral L/S signals.",
+    )
     parser.add_argument("--maker-fee-rate", type=float, default=0.0002)
     parser.add_argument("--taker-fee-rate", type=float, default=0.0005)
     parser.add_argument("--strategy-params", default="")
