@@ -200,6 +200,117 @@ def compute_net_pnl_bps(
     return (simple, weighted, n)
 
 
+def compute_ic(
+    weights_df: pd.DataFrame,
+    data_path: Path | str = Path("data/futures_klines_daily"),
+    bar_size_sec: float = 86400.0,
+) -> dict:
+    """Information Coefficient over the alpha's emit history.
+
+    Cross-sectional ``spearman(target_weight_t, return_{t+1})`` for each
+    rebalance timestamp ``t``, then time-averaged. Returns dict with:
+
+      ic_mean       — mean of per-bar IC; the time-averaged signal-return rank corr
+      ic_std        — std of per-bar IC; volatility of the edge
+      ic_ir         — ic_mean / ic_std × sqrt(bars_per_year); the IC info ratio
+      ic_hit_rate   — share of bars where sign(IC_t) == sign(ic_mean)
+      ic_bars       — number of rebalance timestamps with ≥2 valid pairs
+
+    All None when weights_df is empty / malformed / lacks variance.
+    Sign of ic_mean is informative but irrelevant for SUBMITTABLE gates
+    (a negative IC alpha can be deployed flipped).
+    """
+    import math
+    empty = {"ic_mean": None, "ic_std": None, "ic_ir": None,
+             "ic_hit_rate": None, "ic_bars": 0}
+    if weights_df is None or weights_df.empty:
+        return empty
+    needed = {"timestamp", "symbol", "target_weight"}
+    if not needed.issubset(weights_df.columns):
+        return empty
+
+    data_root = Path(data_path)
+    w = weights_df[["timestamp", "symbol", "target_weight"]].copy()
+    w["timestamp"] = pd.to_datetime(w["timestamp"])
+    symbols = sorted(w["symbol"].astype(str).str.upper().unique())
+    if not symbols:
+        return empty
+
+    # Load each symbol's daily close once, build a wide close panel, then
+    # compute next-bar return on the panel timestamps.
+    close_by_sym: dict[str, pd.Series] = {}
+    for sym in symbols:
+        sym_dir = data_root / sym
+        if not sym_dir.is_dir():
+            continue
+        parts = sorted(sym_dir.glob(f"{sym}-*.parquet"))
+        if not parts:
+            continue
+        frames = []
+        for p in parts:
+            try:
+                df = pd.read_parquet(p, columns=["timestamp", "close"])
+                frames.append(df)
+            except Exception:
+                continue
+        if not frames:
+            continue
+        df = pd.concat(frames, ignore_index=True)
+        df["timestamp"] = pd.to_datetime(df["timestamp"])
+        df = (df.dropna(subset=["timestamp", "close"])
+                .drop_duplicates(subset=["timestamp"])
+                .sort_values("timestamp")
+                .set_index("timestamp"))
+        if df.empty:
+            continue
+        close_by_sym[sym] = df["close"].astype(float)
+    if not close_by_sym:
+        return empty
+
+    closes = pd.DataFrame(close_by_sym).sort_index()
+    next_ret = closes.pct_change().shift(-1)  # ret_{t+1} aligned at t
+
+    # Per-rebalance-timestamp Spearman across the symbols that have both a
+    # weight and a defined next-bar return.
+    ic_per_bar: list[float] = []
+    for ts, grp in w.groupby("timestamp"):
+        # snap weight ts to nearest available kline ts (timestamps usually
+        # already match; this is a defensive shim).
+        if ts not in next_ret.index:
+            nearest = next_ret.index.asof(ts)
+            if pd.isna(nearest):
+                continue
+            ts = nearest
+        rets = next_ret.loc[ts]
+        wt = (grp.set_index(grp["symbol"].astype(str).str.upper())["target_weight"]
+                .astype(float))
+        joined = pd.concat([wt.rename("w"), rets.rename("r")], axis=1).dropna()
+        if len(joined) < 5:
+            continue
+        if joined["w"].nunique() < 2 or joined["r"].nunique() < 2:
+            continue
+        ic = joined["w"].rank().corr(joined["r"].rank())  # spearman = pearson of ranks
+        if pd.notna(ic):
+            ic_per_bar.append(float(ic))
+
+    if not ic_per_bar:
+        return empty
+    arr = pd.Series(ic_per_bar)
+    mean = float(arr.mean())
+    std = float(arr.std(ddof=1)) if len(arr) > 1 else 0.0
+    bars_per_year = max(1.0, (365 * 86400) / max(bar_size_sec, 1.0))
+    ic_ir = (mean / std * math.sqrt(bars_per_year)) if std > 0 else None
+    sign = 1 if mean >= 0 else -1
+    hit = float(((arr * sign) > 0).mean())
+    return {
+        "ic_mean": mean,
+        "ic_std": std,
+        "ic_ir": ic_ir,
+        "ic_hit_rate": hit,
+        "ic_bars": int(len(arr)),
+    }
+
+
 def compute_trade_stats(trades_df: pd.DataFrame) -> dict:
     """Compute per-round-trip statistics from trades.parquet.
 
@@ -286,61 +397,46 @@ def compute_trade_stats(trades_df: pd.DataFrame) -> dict:
 
 
 def classify_alpha(is_m: dict | None, os_m: dict | None = None) -> tuple[str, str]:
-    """Classify SUBMITTABLE / NORMAL / INCOMPLETE.
+    """Classify SUBMITTABLE / NORMAL / INCOMPLETE on a single metric set.
 
-    Sign-agnostic: we only care whether the signal is healthier than
-    noise. A strong negative edge can be flipped to a long signal at
-    deployment time, so |t-stat|, |bps|, and PF distance from 1 are
-    the right gates. REJECT is no longer produced — failing signals
-    just stay NORMAL until the user decides what to do with them.
+    Forward = backtest re-run daily; IS / OS split is no longer the
+    validation boundary, so this function gates on **one set of
+    metrics covering the full available range**. The primary signal
+    health measure is the Information Coefficient: cross-sectional
+    spearman(target_weight, next-bar return) averaged across all emit
+    bars. ``ic_mean`` (sign-agnostic via abs) tells us how much edge
+    the signal carries; ``ic_ir`` tells us how stable that edge is
+    over time. A noisy alpha with sporadic high |t-stat| will have
+    low |ic_ir| and stay NORMAL.
 
-    Two modes:
-      - IS-only (os_m falsy): IS-side gates only.
-      - Full: adds OS-side gates + IS↔OS degradation checks (both
-        ratios use absolute values so a sign flip across windows is
-        still treated as consistent).
+    The legacy second argument ``os_m`` is accepted for back-compat;
+    if ``is_m`` is missing IC and ``os_m`` has it, ``os_m`` wins.
     """
-    if not is_m:
-        return ("INCOMPLETE", "missing IS metrics")
+    m = is_m
+    if (not m or m.get("ic_mean") is None) and os_m and os_m.get("ic_mean") is not None:
+        m = os_m
+    if not m:
+        return ("INCOMPLETE", "missing metrics")
 
-    is_bps = abs(is_m.get("pnl_bps_simple") or 0)
-    is_t = abs(is_m.get("t_stat") or 0)
-    is_pf_raw = is_m.get("profit_factor_trades") or 0
-    is_pf_edge = max(is_pf_raw, 1.0 / is_pf_raw) if is_pf_raw > 0 else 0
-    is_dd_abs = abs(is_m.get("max_drawdown") or 0)
-    is_n = int(is_m.get("total_trades") or 0)
-    is_sh = abs(is_m.get("sharpe") or 0)
+    ic_mean = m.get("ic_mean")
+    ic_ir = m.get("ic_ir")
+    n = int(m.get("total_trades") or 0)
 
-    # ---------- IS-only path ----------
-    if not os_m:
-        if (is_t > 2.5
-            and is_bps > 2.0
-            and is_dd_abs < 0.12
-            and is_pf_edge > 1.3
-            and is_n > 500):
-            return ("SUBMITTABLE", "IS signal healthy (sign-agnostic)")
-        return ("NORMAL", "below IS gates")
+    if ic_mean is None or ic_ir is None:
+        return ("NORMAL", "IC not computed — re-run backtest to populate")
 
-    # ---------- Full IS + OS path ----------
-    os_bps = abs(os_m.get("pnl_bps_simple") or 0)
-    os_t = abs(os_m.get("t_stat") or 0)
-    os_sh = abs(os_m.get("sharpe") or 0)
-    os_pf_raw = os_m.get("profit_factor_trades") or 0
-    os_pf_edge = max(os_pf_raw, 1.0 / os_pf_raw) if os_pf_raw > 0 else 0
-    os_dd_abs = abs(os_m.get("max_drawdown") or 0)
-    sh_degr = (os_sh / is_sh) if is_sh > 0 else 0
-    bps_degr = (os_bps / is_bps) if is_bps > 0 else 0
+    abs_ic = abs(float(ic_mean))
+    abs_ir = abs(float(ic_ir))
 
-    if (os_t > 2.5
-        and os_bps > 2.0
-        and sh_degr > 0.7
-        and bps_degr > 0.6
-        and os_dd_abs < 0.12
-        and os_pf_edge > 1.3
-        and is_n > 500):
-        return ("SUBMITTABLE", "IS+OS signal healthy (sign-agnostic)")
-
-    return ("NORMAL", "below SUBMITTABLE gates")
+    # Sign-agnostic SUBMITTABLE gates (cross-asset academic conventions):
+    #   |IC| > 0.03   — "weak but real" edge (>= 0.05 is healthy)
+    #   |IC_IR| > 1.5 — IC stable over time (Sharpe-equivalent threshold)
+    #   trades > 500  — enough sample to trust the IC estimate
+    if abs_ic > 0.03 and abs_ir > 1.5 and n > 500:
+        return ("SUBMITTABLE",
+                f"|IC|={abs_ic:.3f} |IC_IR|={abs_ir:.2f} trades={n}")
+    return ("NORMAL",
+            f"|IC|={abs_ic:.3f} |IC_IR|={abs_ir:.2f} trades={n}")
 
 
 def is_ensemble_candidate(

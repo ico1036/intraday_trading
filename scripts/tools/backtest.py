@@ -324,13 +324,14 @@ def _persist_display_metrics(output_dir: Path) -> tuple[float | None, float | No
     """
     metrics_path = output_dir / "metrics.json"
     trades_path = output_dir / "trades.parquet"
+    weights_path = output_dir / "weights.parquet"
     if not metrics_path.exists():
         return (None, None)
     try:
         _here = Path(__file__).resolve().parent
         if str(_here) not in sys.path:
             sys.path.insert(0, str(_here))
-        from alpha_dashboard_lib import compute_trade_stats  # noqa: E402
+        from alpha_dashboard_lib import compute_trade_stats, compute_ic  # noqa: E402
         import pandas as _pd
     except Exception:
         return (None, None)
@@ -378,6 +379,23 @@ def _persist_display_metrics(output_dir: Path) -> tuple[float | None, float | No
     existing["largest_win_bps"] = stats.get("largest_win_bps")
     existing["largest_loss_bps"] = stats.get("largest_loss_bps")
     existing["calmar"] = calmar
+
+    # Information Coefficient — signal-vs-return rank corr per emit bar,
+    # then time-averaged. Sign-agnostic SUBMITTABLE gates key off |IC|
+    # and |IC_IR|.
+    ic_stats: dict = {}
+    if weights_path.exists():
+        try:
+            weights_df = _pd.read_parquet(weights_path)
+            ic_stats = compute_ic(weights_df)
+        except Exception:
+            ic_stats = {}
+    existing["ic_mean"] = ic_stats.get("ic_mean")
+    existing["ic_std"] = ic_stats.get("ic_std")
+    existing["ic_ir"] = ic_stats.get("ic_ir")
+    existing["ic_hit_rate"] = ic_stats.get("ic_hit_rate")
+    existing["ic_bars"] = ic_stats.get("ic_bars")
+
     metrics_path.write_text(json.dumps(existing, indent=2, default=str))
     return (simple, weighted)
 

@@ -564,7 +564,14 @@ def load_index(run_dir: Path) -> pd.DataFrame:
                     "os_period_end": os_period_end,
                     "os_period_days": os_period_days,
                     "generated_at": generated_at,
-                    "category": classify_alpha(is_m, os_m)[0],
+                    # Prefer forward/metrics.json for classification because it
+                    # carries the IC fields populated by the unified
+                    # backtest+slice pipeline. Fall back to IS metrics for
+                    # alphas that don't have a forward run yet.
+                    "category": classify_alpha(
+                        (read_metrics_for_split(alpha_d, "forward") or is_m),
+                        os_m,
+                    )[0],
                     **extra,
                 }
             )
