@@ -1667,12 +1667,20 @@ def composite_cumret_figure(
     _add_member_lines("is", COMPOSITE_MEMBER_LINE_COLOR, "members IS")
     _add_member_lines("os", COMPOSITE_MEMBER_OS_LINE_COLOR, "members OS")
 
-    # Composite IS line (bold dark blue)
+    # Composite IS / OS lines, stitched: OS starts where IS ends so
+    # the chart reads as one continuous curve. ``offset_os`` is the
+    # final cumret of IS, applied to every OS point. The OS trace also
+    # prepends the IS endpoint so plotly draws an unbroken line.
     comp_is_path = composite_dir / "is" / "equity_curve.parquet"
+    comp_os_path = composite_dir / "os" / "equity_curve.parquet"
+    is_final = None
+    is_last_x: str | None = None
     if comp_is_path.exists():
         s = cumret_fn(str(comp_is_path))
         if not s.empty:
             s = _series_downsample(s)
+            is_final = float(s.iloc[-1])
+            is_last_x = str(s.index[-1])
             fig.add_trace(
                 go.Scatter(
                     x=s.index.astype(str), y=s.values, mode="lines",
@@ -1681,15 +1689,20 @@ def composite_cumret_figure(
                     hovertemplate="composite IS<br>%{x}<br>%{y:.2%}<extra></extra>",
                 )
             )
-    # Composite OS line (bold red — matches individual-alpha OS #dc2626)
-    comp_os_path = composite_dir / "os" / "equity_curve.parquet"
     if comp_os_path.exists():
         s = cumret_fn(str(comp_os_path))
         if not s.empty:
             s = _series_downsample(s)
+            xs = s.index.astype(str).tolist()
+            ys = s.values.tolist()
+            if is_final is not None:
+                ys = [y + is_final for y in ys]
+                if is_last_x is not None:
+                    xs = [is_last_x] + xs
+                    ys = [is_final] + ys
             fig.add_trace(
                 go.Scatter(
-                    x=s.index.astype(str), y=s.values, mode="lines",
+                    x=xs, y=ys, mode="lines",
                     line=dict(color=COMPOSITE_OS_BOLD_COLOR, width=3),
                     name="Composite OS",
                     hovertemplate="composite OS<br>%{x}<br>%{y:.2%}<extra></extra>",
