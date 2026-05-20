@@ -1593,33 +1593,41 @@ def composite_cumret_figure(
     fig = go.Figure()
     members_csv = composite_dir / "members.csv"
     members = pd.read_csv(members_csv) if members_csv.exists() else pd.DataFrame()
+    has_flip = "flipped" in members.columns
 
-    def _member_paths(split: str) -> list[str]:
-        return [
-            str(_resolve_member_equity_path(archive_root, str(m["run"]), str(m["alpha_id"]), split))
-            for _, m in members.iterrows()
-        ]
+    def _add_member_lines(split: str, color: str, legend_name: str):
+        """Plot one faded line per member. When `flipped`=1 the cumret
+        series is negated so the rendered line matches what the member
+        actually contributes to the composite (sign-flipped at deploy)."""
+        if members.empty:
+            return
+        is_first = True
+        for _, m in members.iterrows():
+            try:
+                p = _resolve_member_equity_path(
+                    archive_root, str(m["run"]), str(m["alpha_id"]), split)
+            except Exception:
+                continue
+            if not Path(p).exists():
+                continue
+            s = cumret_fn(str(p))
+            if s.empty:
+                continue
+            if has_flip and bool(m["flipped"]):
+                s = -s
+            s = _series_downsample(s)
+            fig.add_trace(
+                go.Scattergl(
+                    x=s.index.astype(str), y=s.values, mode="lines",
+                    line=dict(color=color, width=1),
+                    name=legend_name if is_first else legend_name,
+                    showlegend=is_first, hoverinfo="skip",
+                )
+            )
+            is_first = False
 
-    # Member IS lines (faded gray)
-    is_xs, is_ys = _stacked_member_lines(_member_paths("is"), cumret_fn)
-    if is_xs:
-        fig.add_trace(
-            go.Scattergl(
-                x=is_xs, y=is_ys, mode="lines",
-                line=dict(color=COMPOSITE_MEMBER_LINE_COLOR, width=1),
-                name="members IS", showlegend=False, hoverinfo="skip",
-            )
-        )
-    # Member OS lines (faded red — matches individual-alpha OS color tone)
-    os_xs, os_ys = _stacked_member_lines(_member_paths("os"), cumret_fn)
-    if os_xs:
-        fig.add_trace(
-            go.Scattergl(
-                x=os_xs, y=os_ys, mode="lines",
-                line=dict(color=COMPOSITE_MEMBER_OS_LINE_COLOR, width=1),
-                name="members OS", showlegend=False, hoverinfo="skip",
-            )
-        )
+    _add_member_lines("is", COMPOSITE_MEMBER_LINE_COLOR, "members IS")
+    _add_member_lines("os", COMPOSITE_MEMBER_OS_LINE_COLOR, "members OS")
 
     # Composite IS line (bold dark blue)
     comp_is_path = composite_dir / "is" / "equity_curve.parquet"
