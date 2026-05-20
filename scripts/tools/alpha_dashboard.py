@@ -1667,46 +1667,43 @@ def composite_cumret_figure(
     _add_member_lines("is", COMPOSITE_MEMBER_LINE_COLOR, "members IS")
     _add_member_lines("os", COMPOSITE_MEMBER_OS_LINE_COLOR, "members OS")
 
-    # Composite IS / OS lines, stitched: OS starts where IS ends so
-    # the chart reads as one continuous curve. ``offset_os`` is the
-    # final cumret of IS, applied to every OS point. The OS trace also
-    # prepends the IS endpoint so plotly draws an unbroken line.
+    # Concat composite IS + OS into a single trace so plotly draws one
+    # unbroken polyline. Per-segment colour-coding is replaced by a
+    # vertical line at OS_start (already added later via boundaries).
     comp_is_path = composite_dir / "is" / "equity_curve.parquet"
     comp_os_path = composite_dir / "os" / "equity_curve.parquet"
-    is_final = None
-    is_last_x: str | None = None
+    full_xs: list[str] = []
+    full_ys: list[float] = []
+    os_boundary_x: str | None = None
     if comp_is_path.exists():
         s = cumret_fn(str(comp_is_path))
         if not s.empty:
             s = _series_downsample(s)
-            is_final = float(s.iloc[-1])
-            is_last_x = str(s.index[-1])
-            fig.add_trace(
-                go.Scatter(
-                    x=s.index.astype(str), y=s.values, mode="lines",
-                    line=dict(color=COMPOSITE_BOLD_COLOR, width=3),
-                    name="Composite IS",
-                    hovertemplate="composite IS<br>%{x}<br>%{y:.2%}<extra></extra>",
-                )
-            )
+            full_xs.extend(s.index.astype(str).tolist())
+            full_ys.extend(s.values.tolist())
+    is_final = full_ys[-1] if full_ys else 0.0
     if comp_os_path.exists():
         s = cumret_fn(str(comp_os_path))
         if not s.empty:
             s = _series_downsample(s)
-            xs = s.index.astype(str).tolist()
-            ys = s.values.tolist()
-            if is_final is not None:
-                ys = [y + is_final for y in ys]
-                if is_last_x is not None:
-                    xs = [is_last_x] + xs
-                    ys = [is_final] + ys
-            fig.add_trace(
-                go.Scatter(
-                    x=xs, y=ys, mode="lines",
-                    line=dict(color=COMPOSITE_OS_BOLD_COLOR, width=3),
-                    name="Composite OS",
-                    hovertemplate="composite OS<br>%{x}<br>%{y:.2%}<extra></extra>",
-                )
+            os_boundary_x = str(s.index[0])
+            full_xs.extend(s.index.astype(str).tolist())
+            full_ys.extend((s.values + is_final).tolist())
+    if full_xs:
+        fig.add_trace(
+            go.Scatter(
+                x=full_xs, y=full_ys, mode="lines",
+                line=dict(color=COMPOSITE_BOLD_COLOR, width=3),
+                name="Composite (IS→OS)",
+                hovertemplate="%{x}<br>%{y:.2%}<extra>composite</extra>",
+            )
+        )
+        if os_boundary_x is not None:
+            # Plain dotted line — annotation_text triggers a numeric
+            # mean(X) inside plotly which can't handle string timestamps.
+            fig.add_vline(
+                x=os_boundary_x, line_width=1, line_dash="dot",
+                line_color=COMPOSITE_OS_BOLD_COLOR, opacity=0.5,
             )
 
     fig.update_layout(
@@ -2363,6 +2360,13 @@ def main() -> None:
             comp_trades_path = composite_dir / "is" / "trades.parquet"
             comp_eq_path = composite_dir / "is" / "equity_curve.parquet"
             comp_bps_simple, comp_bps_w, _ = _net_trade_metrics_cached(str(comp_trades_path))
+            # Composites built from member equity (no trades.parquet) still
+            # publish bps via metrics.json — fall back to that so the cards
+            # don't render "-".
+            if comp_bps_simple is None and metrics.get("pnl_bps_simple") is not None:
+                comp_bps_simple = metrics.get("pnl_bps_simple")
+            if comp_bps_w is None and metrics.get("pnl_bps_notional_weighted") is not None:
+                comp_bps_w = metrics.get("pnl_bps_notional_weighted")
             is_active = _active_period_metrics(str(comp_eq_path))
 
             os_metrics_path = composite_dir / "os" / "metrics.json"
@@ -2370,6 +2374,10 @@ def main() -> None:
             os_eq_path = composite_dir / "os" / "equity_curve.parquet"
             os_metrics = read_json(os_metrics_path) if os_metrics_path.exists() else {}
             os_bps_simple, os_bps_w, _ = _net_trade_metrics_cached(str(os_trades_path))
+            if os_bps_simple is None and os_metrics.get("pnl_bps_simple") is not None:
+                os_bps_simple = os_metrics.get("pnl_bps_simple")
+            if os_bps_w is None and os_metrics.get("pnl_bps_notional_weighted") is not None:
+                os_bps_w = os_metrics.get("pnl_bps_notional_weighted")
             os_active = _active_period_metrics(str(os_eq_path))
 
             ui.label("IS metrics — active period only (warmup excluded)").classes("section-title")
