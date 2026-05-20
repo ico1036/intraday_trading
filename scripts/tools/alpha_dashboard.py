@@ -1009,21 +1009,55 @@ def forward_session_figure(run_dir: Path, alpha_id: str) -> go.Figure:
 
 def drawdown_figure(run_dir: Path, alpha_id: str) -> go.Figure:
     fig = go.Figure()
+    ad = alpha_dir(run_dir, alpha_id)
+    palette = {"is": "#2563eb", "os": "#dc2626", "forward": "#16a34a"}
+
+    # Flat layout: slice the top-level equity_curve by is_end so the IS
+    # and OS traces still get rendered separately.
+    if (ad / "equity_curve.parquet").exists() and not (ad / "is").is_dir():
+        flat_df = _equity_chart_series_cached(str(ad / "equity_curve.parquet"))
+        if not flat_df.empty:
+            flat_df["timestamp"] = pd.to_datetime(flat_df["timestamp"])
+            is_end = None
+            try:
+                payload = json.loads((ad / "metrics.json").read_text())
+                if payload.get("is_end"):
+                    is_end = pd.Timestamp(payload["is_end"])
+            except Exception:
+                pass
+            if is_end is not None:
+                is_seg = flat_df[flat_df["timestamp"] <= is_end]
+                os_seg = flat_df[flat_df["timestamp"] > is_end]
+                if not is_seg.empty:
+                    fig.add_trace(go.Scatter(
+                        x=_x(is_seg["timestamp"]), y=is_seg["drawdown"],
+                        mode="lines", name="IS",
+                        line={"color": palette["is"], "width": 1.5}))
+                if not os_seg.empty:
+                    fig.add_trace(go.Scatter(
+                        x=_x(os_seg["timestamp"]), y=os_seg["drawdown"],
+                        mode="lines", name="OS",
+                        line={"color": palette["os"], "width": 1.5}))
+            else:
+                fig.add_trace(go.Scatter(
+                    x=_x(flat_df["timestamp"]), y=flat_df["drawdown"],
+                    mode="lines", name="full",
+                    line={"color": palette["is"], "width": 1.5}))
+    # Legacy / forward layout (forward dir still applies in flat alphas)
     for split, color in (("is", "#2563eb"), ("os", "#dc2626"), ("forward", "#16a34a")):
-        df = _equity_chart_series_cached(
-            str(alpha_dir(run_dir, alpha_id) / split / "equity_curve.parquet")
-        )
-        if df.empty:
-            continue
-        fig.add_trace(
-            go.Scatter(
-                x=_x(df["timestamp"]),
-                y=df["drawdown"],
-                mode="lines",
-                name=split.upper(),
-                line={"color": color, "width": 1.5},
+        if (ad / split / "equity_curve.parquet").exists():
+            df = _equity_chart_series_cached(str(ad / split / "equity_curve.parquet"))
+            if df.empty:
+                continue
+            fig.add_trace(
+                go.Scatter(
+                    x=_x(df["timestamp"]),
+                    y=df["drawdown"],
+                    mode="lines",
+                    name=split.upper(),
+                    line={"color": color, "width": 1.5},
+                )
             )
-        )
     fig.update_layout(
         height=300,
         autosize=True,
@@ -1057,7 +1091,30 @@ def _weight_pivot_cached(weights_path: str) -> pd.DataFrame:
 
 
 def _weight_pivot(run_dir: Path, alpha_id: str, split: str) -> pd.DataFrame:
-    return _weight_pivot_cached(str(alpha_dir(run_dir, alpha_id) / split / "weights.parquet"))
+    ad = alpha_dir(run_dir, alpha_id)
+    legacy = ad / split / "weights.parquet"
+    if legacy.exists():
+        return _weight_pivot_cached(str(legacy))
+    flat = ad / "weights.parquet"
+    if not flat.exists():
+        return pd.DataFrame()
+    # Slice the flat-layout weights by metrics.json's is_end so IS / OS
+    # views remain distinct in the dashboard.
+    is_end = None
+    try:
+        payload = json.loads((ad / "metrics.json").read_text())
+        if payload.get("is_end"):
+            is_end = pd.Timestamp(payload["is_end"])
+    except Exception:
+        pass
+    full = _weight_pivot_cached(str(flat))
+    if full.empty or is_end is None:
+        return full
+    if split == "is":
+        return full[full.index <= is_end]
+    if split == "os":
+        return full[full.index > is_end]
+    return full
 
 
 def turnover_from_weights(run_dir: Path, alpha_id: str, split: str) -> float | None:
@@ -1068,6 +1125,28 @@ def turnover_from_weights(run_dir: Path, alpha_id: str, split: str) -> float | N
 def _net_trade_metrics_cached(trades_path: str) -> tuple[float | None, float | None, int]:
     p = Path(trades_path)
     if not p.exists():
+        # Flat-layout fallback: if the caller asked for a split-specific
+        # trades.parquet (e.g. .../is/trades.parquet) but the alpha is
+        # actually flat, look up the parent directory's trades.parquet
+        # and slice by is_end from metrics.json.
+        if p.parent.name in ("is", "os"):
+            ad = p.parent.parent
+            flat = ad / "trades.parquet"
+            if flat.exists() and (ad / "metrics.json").exists():
+                try:
+                    df = pd.read_parquet(flat)
+                    payload = json.loads((ad / "metrics.json").read_text())
+                    is_end_raw = payload.get("is_end")
+                    if is_end_raw and "timestamp" in df.columns:
+                        df["timestamp"] = pd.to_datetime(df["timestamp"])
+                        cutoff = pd.Timestamp(is_end_raw)
+                        if p.parent.name == "is":
+                            df = df[df["timestamp"] <= cutoff]
+                        else:
+                            df = df[df["timestamp"] > cutoff]
+                    return compute_net_pnl_bps(df)
+                except Exception:
+                    return (None, None, 0)
         return (None, None, 0)
     return compute_net_pnl_bps(pd.read_parquet(p))
 
@@ -1579,17 +1658,29 @@ def _active_period_metrics(equity_path: str) -> dict:
 
 
 def _resolve_member_equity_path(archive_root: Path, run: str, alpha_id: str, split: str) -> Path:
-    """Tolerant resolver for both archive layouts.
+    """Tolerant resolver across archive layouts AND alpha layouts.
 
-    Layout A (current single-run): ``archive_root`` IS the run dir, members
-    live at ``archive_root / alphas / <id>``.
-    Layout B (multi-run): ``archive_root`` is the bare ``archive/``, members
-    live at ``archive_root / <run> / alphas / <id>``.
+    Archive layouts:
+      A (single-run): archive_root IS the run dir → archive_root/alphas/<id>/…
+      B (multi-run):  archive_root is bare archive/ → archive_root/<run>/alphas/<id>/…
+
+    Alpha layouts:
+      legacy: alpha_dir/<split>/equity_curve.parquet
+      flat:   alpha_dir/equity_curve.parquet  (single file covers IS+OS;
+              the caller is responsible for slicing if it cares about the
+              split — for member overlay we just return the flat path so
+              the faded line renders something)
     """
-    direct = archive_root / "alphas" / alpha_id / split / "equity_curve.parquet"
-    if direct.exists():
-        return direct
-    return archive_root / run / "alphas" / alpha_id / split / "equity_curve.parquet"
+    candidates = [
+        archive_root / "alphas" / alpha_id / split / "equity_curve.parquet",
+        archive_root / "alphas" / alpha_id / "equity_curve.parquet",
+        archive_root / run / "alphas" / alpha_id / split / "equity_curve.parquet",
+        archive_root / run / "alphas" / alpha_id / "equity_curve.parquet",
+    ]
+    for c in candidates:
+        if c.exists():
+            return c
+    return candidates[2]  # legacy fallback (will fail exists() upstream)
 
 
 @lru_cache(maxsize=64)
@@ -1730,8 +1821,13 @@ def composite_cumret_figure(
             if has_flip and bool(m["flipped"]):
                 s = -s
             s = _series_downsample(s)
+            # Scatter (SVG) not Scattergl — Scattergl lives on a separate
+            # WebGL layer that paints *above* the SVG composite traces,
+            # which is why the bold IS/OS lines appeared masked. SVG
+            # traces render below WebGL, so member overlays now sit
+            # under the composite as intended.
             fig.add_trace(
-                go.Scattergl(
+                go.Scatter(
                     x=s.index.astype(str), y=s.values, mode="lines",
                     line=dict(color=color, width=1),
                     name=legend_name if is_first else legend_name,
@@ -1761,7 +1857,7 @@ def composite_cumret_figure(
             fig.add_trace(
                 go.Scatter(
                     x=s.index.astype(str), y=s.values, mode="lines",
-                    line=dict(color=COMPOSITE_BOLD_COLOR, width=3),
+                    line=dict(color=COMPOSITE_BOLD_COLOR, width=4),
                     name="Composite IS",
                     hovertemplate="composite IS<br>%{x}<br>%{y:.2%}<extra></extra>",
                 )
@@ -1791,7 +1887,7 @@ def composite_cumret_figure(
             fig.add_trace(
                 go.Scatter(
                     x=os_xs, y=os_ys, mode="lines",
-                    line=dict(color=COMPOSITE_OS_BOLD_COLOR, width=3),
+                    line=dict(color=COMPOSITE_OS_BOLD_COLOR, width=4),
                     name="Composite OS",
                     hovertemplate="composite OS<br>%{x}<br>%{y:.2%}<extra></extra>",
                 )
