@@ -698,7 +698,20 @@ def read_metrics_for_split(alpha_dir: Path, split: str) -> dict | None:
             payload = json.loads((alpha_dir / "metrics.json").read_text())
         except Exception:
             return None
-        return payload.get(split)
+        sub = payload.get(split) or {}
+        if not isinstance(sub, dict):
+            return None
+        # Fall back to top-level fields for trade-level stats that
+        # _compute_split_metrics doesn't carve out into the IS/OS
+        # sub-blocks yet (t_stat, per_trade_sharpe, pnl_bps_*, calmar,
+        # avg_win_bps, ...). Top-level is full-period rather than
+        # split-specific but is better than rendering "-" everywhere.
+        merged = dict(sub)
+        for key, val in payload.items():
+            if key in ("is", "os", "full"):
+                continue
+            merged.setdefault(key, val)
+        return merged
     legacy = alpha_dir / split / "metrics.json"
     if not legacy.exists():
         return None

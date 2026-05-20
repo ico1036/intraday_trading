@@ -876,12 +876,52 @@ def _downsample_frame(df: pd.DataFrame, max_points: int = MAX_LINE_POINTS) -> pd
 def equity_figure(run_dir: Path, alpha_id: str, mode: str = "compound") -> go.Figure:
     """Per-alpha cumret chart with IS/OS/Forward stitched into one
     continuous NAV curve (each segment offset by the prior segment's
-    final cumret)."""
+    final cumret). Supports both layouts:
+      legacy: alpha_dir/{is,os,forward}/equity_curve.parquet
+      flat:   alpha_dir/equity_curve.parquet sliced by metrics.json's
+              is_end (so we don't lose the per-segment view)."""
     column = "cumret_simple" if mode == "simple" else "cumret"
     label = "Simple (additive)" if mode == "simple" else "Compound"
     fig = go.Figure()
     segments: dict[str, pd.DataFrame] = {}
+    ad = alpha_dir(run_dir, alpha_id)
+
+    # Flat layout: one top-level equity_curve.parquet covering IS+OS.
+    if (ad / "equity_curve.parquet").exists() and not (ad / "is").is_dir():
+        df = _equity_chart_series_cached(str(ad / "equity_curve.parquet"))
+        if not df.empty and column in df.columns:
+            df["timestamp"] = pd.to_datetime(df["timestamp"])
+            # Read is_end from flat metrics.json so the IS/OS split lines
+            # up with the metric cards.
+            is_end = None
+            try:
+                payload = json.loads((ad / "metrics.json").read_text())
+                is_end_raw = payload.get("is_end")
+                if is_end_raw:
+                    is_end = pd.Timestamp(is_end_raw)
+            except Exception:
+                pass
+            if is_end is not None:
+                is_seg = df[df["timestamp"] <= is_end].reset_index(drop=True)
+                os_seg = df[df["timestamp"] > is_end].reset_index(drop=True)
+                # Rebase each segment's cumret to start at 0 so IS_final
+                # offset and stitching logic below work identically to the
+                # legacy two-dir layout.
+                if not is_seg.empty:
+                    base = is_seg[column].iloc[0]
+                    is_seg = is_seg.assign(**{column: is_seg[column] - base})
+                    segments["is"] = is_seg
+                if not os_seg.empty:
+                    base = os_seg[column].iloc[0]
+                    os_seg = os_seg.assign(**{column: os_seg[column] - base})
+                    segments["os"] = os_seg
+            else:
+                segments["is"] = df
+    # Legacy / forward layout (works alongside flat — forward sits in
+    # a subfolder even when IS/OS are flat).
     for split in ("is", "os", "forward"):
+        if split in segments:
+            continue
         df = _equity_chart_series_cached(
             str(alpha_dir(run_dir, alpha_id) / split / "equity_curve.parquet")
         )
@@ -1050,7 +1090,43 @@ def _drawdown_metrics_cached(equity_path: str) -> tuple[float | None, float | No
 
 
 def drawdown_metrics(run_dir: Path, alpha_id: str, split: str) -> tuple[float | None, float | None, str | None, str | None]:
-    return _drawdown_metrics_cached(str(alpha_dir(run_dir, alpha_id) / split / "equity_curve.parquet"))
+    ad = alpha_dir(run_dir, alpha_id)
+    legacy = ad / split / "equity_curve.parquet"
+    if legacy.exists():
+        return _drawdown_metrics_cached(str(legacy))
+    # Flat layout: derive split from the top-level equity_curve by is_end.
+    flat = ad / "equity_curve.parquet"
+    metrics_p = ad / "metrics.json"
+    if not flat.exists() or not metrics_p.exists():
+        return (None, None, None, None)
+    try:
+        payload = json.loads(metrics_p.read_text())
+        is_end = payload.get("is_end")
+    except Exception:
+        is_end = None
+    if not is_end:
+        return _drawdown_metrics_cached(str(flat))
+    try:
+        df_eq = pd.read_parquet(flat, columns=["timestamp", "equity"])
+        df_eq["timestamp"] = pd.to_datetime(df_eq["timestamp"])
+        cutoff = pd.Timestamp(is_end)
+        if split == "is":
+            df_eq = df_eq[df_eq["timestamp"] <= cutoff]
+        elif split == "os":
+            df_eq = df_eq[df_eq["timestamp"] > cutoff]
+        if df_eq.empty:
+            return (None, None, None, None)
+        # compute_drawdown_metrics expects a datetime-indexed Series.
+        # Backtest can emit several rows per day (one per symbol bar).
+        # Dedup by taking the last equity reading on each timestamp so
+        # compute_drawdown_metrics' .loc lookup returns a scalar.
+        eq_series = (
+            df_eq.set_index("timestamp").sort_index()["equity"]
+            .groupby(level=0).last()
+        )
+        return compute_drawdown_metrics(eq_series)
+    except Exception:
+        return (None, None, None, None)
 
 
 @lru_cache(maxsize=64)
@@ -1667,43 +1743,58 @@ def composite_cumret_figure(
     _add_member_lines("is", COMPOSITE_MEMBER_LINE_COLOR, "members IS")
     _add_member_lines("os", COMPOSITE_MEMBER_OS_LINE_COLOR, "members OS")
 
-    # Concat composite IS + OS into a single trace so plotly draws one
-    # unbroken polyline. Per-segment colour-coding is replaced by a
-    # vertical line at OS_start (already added later via boundaries).
+    # Three traces so the IS / OS halves keep their distinct colours
+    # AND the curve still reads as continuous:
+    #   1. Composite IS (bold dark blue) — IS data
+    #   2. Bridge (dotted gray) — IS_last point → OS_first point
+    #   3. Composite OS (bold red) — OS data offset by IS_final
     comp_is_path = composite_dir / "is" / "equity_curve.parquet"
     comp_os_path = composite_dir / "os" / "equity_curve.parquet"
-    full_xs: list[str] = []
-    full_ys: list[float] = []
-    os_boundary_x: str | None = None
+    is_final = 0.0
+    is_last_x: str | None = None
     if comp_is_path.exists():
         s = cumret_fn(str(comp_is_path))
         if not s.empty:
             s = _series_downsample(s)
-            full_xs.extend(s.index.astype(str).tolist())
-            full_ys.extend(s.values.tolist())
-    is_final = full_ys[-1] if full_ys else 0.0
+            is_final = float(s.iloc[-1])
+            is_last_x = str(s.index[-1])
+            fig.add_trace(
+                go.Scatter(
+                    x=s.index.astype(str), y=s.values, mode="lines",
+                    line=dict(color=COMPOSITE_BOLD_COLOR, width=3),
+                    name="Composite IS",
+                    hovertemplate="composite IS<br>%{x}<br>%{y:.2%}<extra></extra>",
+                )
+            )
     if comp_os_path.exists():
         s = cumret_fn(str(comp_os_path))
         if not s.empty:
             s = _series_downsample(s)
-            os_boundary_x = str(s.index[0])
-            full_xs.extend(s.index.astype(str).tolist())
-            full_ys.extend((s.values + is_final).tolist())
-    if full_xs:
-        fig.add_trace(
-            go.Scatter(
-                x=full_xs, y=full_ys, mode="lines",
-                line=dict(color=COMPOSITE_BOLD_COLOR, width=3),
-                name="Composite (IS→OS)",
-                hovertemplate="%{x}<br>%{y:.2%}<extra>composite</extra>",
-            )
-        )
-        if os_boundary_x is not None:
-            # Plain dotted line — annotation_text triggers a numeric
-            # mean(X) inside plotly which can't handle string timestamps.
-            fig.add_vline(
-                x=os_boundary_x, line_width=1, line_dash="dot",
-                line_color=COMPOSITE_OS_BOLD_COLOR, opacity=0.5,
+            os_xs = s.index.astype(str).tolist()
+            os_ys = (s.values + is_final).tolist()
+            os_first_x = os_xs[0]
+            os_first_y = os_ys[0]
+            # Bridge between IS endpoint and OS start: dotted gray so the
+            # eye reads continuity but the colour change is still legible.
+            if is_last_x is not None:
+                fig.add_trace(
+                    go.Scatter(
+                        x=[is_last_x, os_first_x],
+                        y=[is_final, os_first_y],
+                        mode="lines",
+                        line=dict(color="#64748b", width=2, dash="dot"),
+                        name="IS → OS bridge",
+                        showlegend=False,
+                        hoverinfo="skip",
+                    )
+                )
+            fig.add_trace(
+                go.Scatter(
+                    x=os_xs, y=os_ys, mode="lines",
+                    line=dict(color=COMPOSITE_OS_BOLD_COLOR, width=3),
+                    name="Composite OS",
+                    hovertemplate="composite OS<br>%{x}<br>%{y:.2%}<extra></extra>",
+                )
             )
 
     fig.update_layout(
