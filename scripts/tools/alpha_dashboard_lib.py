@@ -480,13 +480,19 @@ def classify_alpha(is_m: dict | None, os_m: dict | None = None) -> tuple[str, st
     #   |IC_IR| > 1.5  — IC stable across bars (within-window stationarity)
     #   |IC_z|  < 2.0  — IS↔OS IC means agree (Welch test): overfit guard
     #   trades  > 500  — sample sufficiency
+    #   |IS MDD|< 0.50 — IS-window max drawdown ≤ 50% (risk magnitude)
     z = m.get("ic_z")
     abs_z = abs(float(z)) if z is not None else None
+    mdd = m.get("max_drawdown")
+    abs_mdd = abs(float(mdd)) if mdd is not None else None
     parts = f"|IC|={abs_ic:.3f} |IR|={abs_ir:.2f} trades={n}"
     if abs_z is not None:
         parts += f" |z|={abs_z:.2f}"
+    if abs_mdd is not None:
+        parts += f" |MDD|={abs_mdd:.2%}"
     z_ok = (abs_z is None) or (abs_z < 2.0)
-    if abs_ic > 0.03 and abs_ir > 1.5 and n > 500 and z_ok:
+    mdd_ok = (abs_mdd is None) or (abs_mdd < 0.50)
+    if abs_ic > 0.03 and abs_ir > 1.5 and n > 500 and z_ok and mdd_ok:
         return ("SUBMITTABLE", parts)
     return ("NORMAL", parts)
 
