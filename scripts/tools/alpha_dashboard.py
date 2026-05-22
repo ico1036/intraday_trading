@@ -289,21 +289,38 @@ _LOSS_COMFORT_LINES = [
 def discover_live_alphas(run_dir: Path) -> list[dict[str, Any]]:
     """Scan run_dir for alphas with a currently-running forward runner.
 
-    Returns one entry per live alpha with its run_id, alpha_id, and the
-    full forward_status() snapshot (NAV, session PnL/return, uptime, …).
+    Supports both layouts:
+      * multi-run:  ``run_dir`` is the archive root, contains ``run_*/alphas/``
+      * single-run: ``run_dir`` is a single run, contains ``alphas/`` directly
     """
     found: list[dict[str, Any]] = []
-    for forward_dir in run_dir.glob("*/alphas/*/forward"):
-        if not is_forward_live(forward_dir):
-            continue
-        alpha_dir_path = forward_dir.parent
-        run_id = alpha_dir_path.parent.parent.name
-        alpha_id = alpha_dir_path.name
-        found.append({
-            "run_id": run_id,
-            "alpha_id": alpha_id,
-            "status": forward_status(forward_dir),
-        })
+    patterns = []
+    if (run_dir / "alphas").exists():
+        patterns.append("alphas/*/forward")          # single-run
+    patterns.append("*/alphas/*/forward")            # multi-run
+    seen_paths: set[Path] = set()
+    for pat in patterns:
+        for forward_dir in run_dir.glob(pat):
+            resolved = forward_dir.resolve()
+            if resolved in seen_paths:
+                continue
+            seen_paths.add(resolved)
+            if not is_forward_live(forward_dir):
+                continue
+            alpha_dir_path = forward_dir.parent
+            alpha_id = alpha_dir_path.name
+            # run_id heuristic: parent of `alphas/<aid>/forward` 가
+            # `<run>/alphas/<aid>/forward` 라면 grandparent.parent. 단
+            # single-run 모드면 alpha_dir_path.parent.parent = run_dir 자체.
+            try:
+                run_id = alpha_dir_path.parent.parent.name
+            except Exception:
+                run_id = run_dir.name
+            found.append({
+                "run_id": run_id,
+                "alpha_id": alpha_id,
+                "status": forward_status(forward_dir),
+            })
     return found
 
 
@@ -335,10 +352,19 @@ def render_footer(run_dir: Path) -> None:
     """Small footer with run_dir, live count, and git SHA."""
     live_count = 0
     try:
-        # Archive layout is run_dir/<run_id>/alphas/<alpha_id>/forward
-        for forward_dir in run_dir.glob("*/alphas/*/forward"):
-            if is_forward_live(forward_dir):
-                live_count += 1
+        patterns = []
+        if (run_dir / "alphas").exists():
+            patterns.append("alphas/*/forward")
+        patterns.append("*/alphas/*/forward")
+        seen = set()
+        for pat in patterns:
+            for forward_dir in run_dir.glob(pat):
+                resolved = forward_dir.resolve()
+                if resolved in seen:
+                    continue
+                seen.add(resolved)
+                if is_forward_live(forward_dir):
+                    live_count += 1
     except Exception:
         pass
     with ui.row().classes("app-footer w-full"):

@@ -18,18 +18,25 @@ import pandas as pd
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DATA_ROOT = REPO_ROOT / "data" / "futures_klines_daily"
+DATA_DAILY = REPO_ROOT / "data" / "futures_klines_daily"
+DATA_MINUTE = REPO_ROOT / "data" / "futures_klines"
 ARCHIVE = REPO_ROOT / "archive"
 
 
-def _build_next_ret_panel(symbols: list[str]) -> pd.DataFrame:
-    """Concatenated close panel → next-bar returns. Daily candles only."""
+def _build_next_ret_panel(symbols: list[str], data_root: Path,
+                          file_glob: str = "{sym}-*.parquet") -> pd.DataFrame:
+    """Concatenated close panel → next-bar returns. ``data_root`` selects
+    the candle frequency (daily kline dir vs 1m kline dir). Tries the
+    direct glob first, falls back to a recursive search for layouts
+    that bucket files into year subdirectories."""
     closes = {}
     for sym in symbols:
-        sym_dir = DATA_ROOT / sym
+        sym_dir = data_root / sym
         if not sym_dir.is_dir():
             continue
-        parts = sorted(sym_dir.glob(f"{sym}-*.parquet"))
+        parts = sorted(sym_dir.glob(file_glob.format(sym=sym)))
+        if not parts:
+            parts = sorted(sym_dir.rglob(file_glob.format(sym=sym)))
         if not parts:
             continue
         try:
@@ -104,15 +111,87 @@ def _compute_ic_fast(weights_df: pd.DataFrame, next_ret: pd.DataFrame,
     return out
 
 
+def _load_bar_size(splits_path: Path, alpha_dir: Path) -> float | None:
+    """Read bar_size_sec from the alpha's summary.json. Falls back to the
+    common Forward / IS / OS / flat layouts."""
+    for path in (
+        alpha_dir / "summary.json",
+        alpha_dir / "is" / "summary.json",
+        alpha_dir / "forward" / "summary.json",
+    ):
+        if not path.exists():
+            continue
+        try:
+            import json as _json
+            v = _json.loads(path.read_text()).get("bar_size")
+            if v is not None:
+                return float(v)
+        except Exception:
+            continue
+    return None
+
+
 def main() -> int:
-    print(f"[ic_scan] data root: {DATA_ROOT}", flush=True)
-    all_symbols = sorted({p.name for p in DATA_ROOT.iterdir() if p.is_dir()})
-    print(f"[ic_scan] symbols on disk: {len(all_symbols)}", flush=True)
-    next_ret = _build_next_ret_panel(all_symbols)
-    if next_ret.empty:
-        print("[ic_scan] no kline panel — aborting", file=sys.stderr)
+    print(f"[ic_scan] daily dir: {DATA_DAILY}", flush=True)
+    print(f"[ic_scan] minute dir: {DATA_MINUTE}", flush=True)
+    daily_syms = sorted({p.name for p in DATA_DAILY.iterdir() if p.is_dir()}) \
+        if DATA_DAILY.exists() else []
+    minute_syms = sorted({p.name for p in DATA_MINUTE.iterdir() if p.is_dir()}) \
+        if DATA_MINUTE.exists() else []
+    print(f"[ic_scan] daily symbols: {len(daily_syms)}  "
+          f"minute symbols: {len(minute_syms)}", flush=True)
+
+    # Minute kline panel is huge (274 sym × ~2.3M bars). To keep memory
+    # bounded, restrict the 1m panel to the symbols any minute alpha
+    # actually trades — those come from the legacy 7-coin alphas. If the
+    # universe ever grows, this filter scales naturally with whatever
+    # weights.parquet files contain.
+    minute_universe: set[str] = set()
+    for splits_p in ARCHIVE.glob("*/splits.json"):
+        alphas_dir = splits_p.parent / "alphas"
+        if not alphas_dir.is_dir():
+            continue
+        for ad in alphas_dir.iterdir():
+            if not ad.is_dir():
+                continue
+            bar = _load_bar_size(None, ad)
+            if bar is None or bar >= 86400 * 0.9:
+                continue
+            for sub_src in ("is", "os", "forward", ""):
+                wp = ad / (sub_src + "/weights.parquet" if sub_src else "weights.parquet")
+                if not wp.exists():
+                    continue
+                try:
+                    syms = pd.read_parquet(wp, columns=["symbol"])["symbol"].astype(str).str.upper().unique()
+                    minute_universe.update(syms.tolist())
+                except Exception:
+                    pass
+                break
+    if minute_universe:
+        minute_syms = [s for s in minute_syms if s in minute_universe]
+        print(f"[ic_scan] minute panel limited to {len(minute_syms)} symbols "
+              f"(min alpha universe)", flush=True)
+
+    panels: dict[str, pd.DataFrame] = {}
+    if daily_syms:
+        panels["1d"] = _build_next_ret_panel(daily_syms, DATA_DAILY)
+        print(f"[ic_scan] daily panel: {panels['1d'].shape}", flush=True)
+    if minute_syms:
+        panels["1m"] = _build_next_ret_panel(minute_syms, DATA_MINUTE)
+        print(f"[ic_scan] minute panel: {panels['1m'].shape}", flush=True)
+    if not panels:
+        print("[ic_scan] no panel built — aborting", file=sys.stderr)
         return 1
-    print(f"[ic_scan] kline panel built: {next_ret.shape}", flush=True)
+
+    def _panel_for(bar_sec: float | None) -> pd.DataFrame:
+        if bar_sec is None:
+            return panels.get("1d", panels.get("1m", pd.DataFrame()))
+        if bar_sec >= 86400 * 0.9:
+            return panels.get("1d", pd.DataFrame())
+        return panels.get("1m", pd.DataFrame())
+
+    # Below this comment the per-alpha loop runs against the right panel.
+    next_ret = panels.get("1d", pd.DataFrame())  # legacy var for fallback
 
     rows = []
     alpha_dirs: list[tuple[str, Path, str | None]] = []
@@ -154,11 +233,16 @@ def main() -> int:
         src = "+".join(p.parent.name for p in sources) if sources else None
         if not sources:
             continue
+        bar_sec = _load_bar_size(None, ad)
+        panel = _panel_for(bar_sec)
+        if panel.empty:
+            continue
         try:
             wdf = pd.concat([pd.read_parquet(p) for p in sources], ignore_index=True)
-            stats = _compute_ic_fast(wdf, next_ret, is_end=is_end)
+            stats = _compute_ic_fast(wdf, panel, is_end=is_end)
+            stats["bar_size_sec"] = bar_sec
         except Exception as exc:
-            stats = {"err": str(exc)[:80]}
+            stats = {"err": str(exc)[:80], "bar_size_sec": bar_sec}
         rows.append({
             "run_id": run_id,
             "alpha_id": ad.name,

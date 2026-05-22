@@ -42,6 +42,10 @@ from pathlib import Path
 import pandas as pd
 
 from intraday.composites._runner import ARCHIVE_ROOT, build_and_backtest
+from intraday.composites._optim_helpers import (
+    member_signs_ic, member_is_sharpe, member_ic,
+    load_member_is_returns, correlation_dedup,
+)
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(_REPO_ROOT / "scripts" / "tools"))
@@ -49,7 +53,7 @@ from alpha_dashboard_lib import classify_alpha  # noqa: E402
 
 
 COMPOSITE_ID = "is_submittable_eqw"
-COMPOSITION_NOTE = "equal_weight_is_submittable"
+COMPOSITION_NOTE = "equal_weight_ic_flip_dedup"
 
 
 def _select_is_submittable(run_id: str) -> list[str]:
@@ -79,12 +83,33 @@ def main() -> None:
     args = parser.parse_args()
     run_id = args.run_id
 
+    # Pre-compute the deduplicated, IC-sign-aligned member set once and
+    # cache it for both selector and weight callables (runner calls them
+    # separately and we want a consistent member list).
+    _cache: dict = {}
+
+    def _build_member_set() -> list[str]:
+        if "members" in _cache:
+            return _cache["members"]
+        raw = _select_is_submittable(run_id)
+        signs = member_signs_ic(run_id, raw)
+        R = load_member_is_returns(run_id, raw, signs=signs)
+        sh = member_is_sharpe(run_id, raw)
+        kept = correlation_dedup(R, threshold=0.6, keep_metric=sh)
+        _cache["members"] = kept
+        _cache["signs"] = signs
+        print(f"[is_submittable_eqw] raw={len(raw)}  kept_after_dedup={len(kept)}",
+              flush=True)
+        return kept
+
     def select_members(_alpha_index: pd.DataFrame) -> list[str]:
-        return _select_is_submittable(run_id)
+        return _build_member_set()
 
     def equal_weight(ids: list[str], _idx: pd.DataFrame) -> dict[str, float]:
+        _build_member_set()
+        signs = _cache["signs"]
         n = len(ids)
-        return {a: 1.0 / n for a in ids}
+        return {a: signs.get(a, 1) / n for a in ids}
 
     build_and_backtest(
         composite_id=COMPOSITE_ID,

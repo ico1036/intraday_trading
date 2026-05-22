@@ -306,10 +306,15 @@ def _preflight_governance(
         except IndexError:
             self_alpha_dir = None
         existing = _existing_cells_in_run(run_dir, exclude=self_alpha_dir)
-        if _cell_signature(cell) in existing:
-            report["issues"].append(
-                "ALPHA_CELL signature already present in this run (saturation)"
-            )
+        # Cell-saturation guard disabled per owner directive 2026-05-22
+        # ("패밀리 개념 없애"). idea_family classification was too
+        # narrowly defined (variant-level) to act as a real coverage
+        # guard, and the owner prefers free-form alpha exploration with
+        # per-attempt feedback instead of an enforced taxonomy.
+        # The cell signature is still recorded in manifest.json for
+        # post-hoc analysis, but does not block runs.
+        _ = _cell_signature  # keep import alive for governance check
+        del existing
 
     if report["issues"] and enforce:
         report["ok"] = False

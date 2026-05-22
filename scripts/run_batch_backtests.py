@@ -30,10 +30,19 @@ def _splits(run_id: str) -> dict:
 
 
 def _list_zoo_modules() -> list[tuple[str, str]]:
-    """(module_filename_stem, class_name) for each zoo module by inspecting
-    the generated file's ``class XsFactor...:`` line."""
+    """(module_filename_stem, class_name) for every generated zoo module.
+    Picks up xs_factor_* (XsFactorBase subclasses) AND xs_reg_*
+    (XsRegressionBase subclasses) — anything starting with xs_factor_
+    or xs_reg_ in strategies/multi/."""
     out: list[tuple[str, str]] = []
-    for f in sorted(ZOO_DIR.glob("xs_factor_*.py")):
+    patterns = ["xs_factor_*.py", "xs_reg_*.py"]
+    seen: set[Path] = set()
+    files: list[Path] = []
+    for pat in patterns:
+        for f in ZOO_DIR.glob(pat):
+            if f in seen: continue
+            seen.add(f); files.append(f)
+    for f in sorted(files):
         try:
             text = f.read_text()
         except Exception:
@@ -41,7 +50,7 @@ def _list_zoo_modules() -> list[tuple[str, str]]:
         cls = None
         for line in text.splitlines():
             line = line.strip()
-            if line.startswith("class ") and "(XsFactorBase)" in line:
+            if line.startswith("class ") and ("(XsFactorBase)" in line or "(XsRegressionBase)" in line):
                 cls = line.split(" ", 1)[1].split("(", 1)[0].strip()
                 break
         if cls:

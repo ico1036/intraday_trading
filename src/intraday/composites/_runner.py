@@ -179,10 +179,19 @@ def _run_backtest_window(
     # for a composite would nuke ``manifest.json`` / ``members.csv`` /
     # ``weights.parquet``. Composite-level validation belongs at the
     # composite level (e.g. compare-vs-members), not at the per-alpha gate.
+    #
+    # Use daily-bar data — the existing daily XS factor zoo + per-alpha
+    # weights all come from daily-bar backtests. backtest.py's default
+    # data path is the minute-bar tree, which doesn't cover all daily-only
+    # symbols (e.g. coins listed only in 2025+).
     cmd = [
         "uv", "run", "python", str(BACKTEST_SCRIPT),
         "--strategy", "PrecomputedWeightsStrategy",
         "--symbols", *symbols,
+        "--data-type", "bars",
+        "--data-path", "data/futures_klines_daily",
+        "--bar-type", "TIME",
+        "--bar-size", "86400",
         "--start", start,
         "--end", end,
         "--strategy-params", json.dumps({"weights_path": str(weights_path)}),

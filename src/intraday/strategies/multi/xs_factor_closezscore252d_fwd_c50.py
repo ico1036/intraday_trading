@@ -1,0 +1,41 @@
+"""xs_factor_closezscore252d_fwd_c50 — auto-generated XS factor.
+
+Signal: close_zscore_252d  direction=fwd  concentration=0.5
+Cross-sectional rank of ``_compute_score`` over the eligible
+universe each emit bar, top/bottom concentration_pct legs.
+"""
+from __future__ import annotations
+
+import math
+from typing import Any
+
+from intraday.strategies._xs_factor_base import XsFactorBase
+
+
+ALPHA_CELL = {
+    "bar": "TIME",
+    "transform": "rolling_rank",
+    "horizon": "multi_day",
+    "universe": "basket_full",
+    "exit": "signal_flip",
+    "idea_family": "xs_factor_close_zscore_252d_fwd_c50",
+}
+SOURCE_NOTES: list[str] = ["research/notes/xs_factor_zoo.md"]
+
+
+class XsFactorClosezscore252dFwdC50(XsFactorBase):
+    HISTORY_FIELDS = ('close',)
+    HISTORY_LEN = 253
+
+    def __init__(self, symbols: list[str], **kwargs: Any):
+        kwargs.setdefault("concentration_pct", 0.5)
+        kwargs.setdefault("reverse", False)
+        super().__init__(symbols=symbols, **kwargs)
+
+    def _compute_score(self, hist: dict[str, list[float]]) -> float | None:
+        if len(hist['close']) < 252:
+            return None
+        try:
+            return (hist['close'][-1] - sum(hist['close'][-252:])/252) / (((sum((c - sum(hist['close'][-252:])/252)**2 for c in hist['close'][-252:]))/251)**0.5 or 1e-9)
+        except Exception:
+            return None

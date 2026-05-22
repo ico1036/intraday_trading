@@ -493,15 +493,13 @@ def check_coverage(*, archive_root: Path | None = None) -> CoverageCheckResult:
             sig = _cell_signature(cell)
             seen.setdefault(sig, []).append(rel)
 
-        for sig, paths in seen.items():
-            if len(paths) >= 2:
-                res.violations.append(
-                    {
-                        "reason": "duplicate cell signature",
-                        "cell": dict(zip(ALPHA_CELL_KEYS, sig)),
-                        "alphas": paths,
-                    }
-                )
+        # Duplicate cell-signature violation disabled per owner directive
+        # 2026-05-22 ("패밀리 개념 없애"). The 6-tuple cell taxonomy was
+        # variant-level rather than mechanism-level, so coverage checks
+        # tripped on parameter sweeps that should have been allowed.
+        # The cell metadata is still parsed and recorded; only the
+        # blocking violation is suppressed.
+        _ = seen  # noqa: keep for inspection
     return res
 
 

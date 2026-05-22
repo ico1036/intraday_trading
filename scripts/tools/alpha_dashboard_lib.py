@@ -388,16 +388,38 @@ def compute_trade_stats(trades_df: pd.DataFrame) -> dict:
     }
     if trades_df is None or trades_df.empty or "action" not in trades_df.columns:
         return empty
-    df = trades_df.sort_values(["symbol", "timestamp"]).reset_index(drop=True)
-    opens = df[df["action"].astype(str).str.startswith("OPEN")].reset_index(drop=True)
-    closes = df[df["action"].astype(str).str.startswith("CLOSE")].reset_index(drop=True)
-    n = min(len(opens), len(closes))
-    if n == 0:
+    # Pair opens with closes WITHIN each (symbol, direction) bucket, in
+    # timestamp order. Global zip-pairing failed on multi-symbol concurrent
+    # XS strategies: when any symbol had open!=close count or LONG/SHORT
+    # interleaved, downstream indices misaligned and the function bailed
+    # out with empty stats. Bucket-local pairing is robust to concurrency
+    # and partial fills.
+    df = trades_df.copy()
+    df["action_str"] = df["action"].astype(str)
+    def _direction(act: str) -> str:
+        return "LONG" if "LONG" in act else ("SHORT" if "SHORT" in act else "OTHER")
+    df["dir"] = df["action_str"].apply(_direction)
+    df = df.sort_values(["symbol", "dir", "timestamp"]).reset_index(drop=True)
+
+    open_rows = []
+    close_rows = []
+    for (sym, dr), grp in df.groupby(["symbol", "dir"]):
+        if dr == "OTHER":
+            continue
+        op = grp[grp["action_str"].str.startswith("OPEN")].reset_index(drop=True)
+        cl = grp[grp["action_str"].str.startswith("CLOSE")].reset_index(drop=True)
+        k = min(len(op), len(cl))
+        if k == 0:
+            continue
+        open_rows.append(op.iloc[:k])
+        close_rows.append(cl.iloc[:k])
+
+    if not open_rows:
         return empty
-    opens = opens.iloc[:n]
-    closes = closes.iloc[:n]
-    if not (opens["symbol"].values == closes["symbol"].values).all():
-        empty["n_round_trips"] = n
+    opens = pd.concat(open_rows, ignore_index=True)
+    closes = pd.concat(close_rows, ignore_index=True)
+    n = len(opens)
+    if n == 0:
         return empty
     open_fee = opens["fee"].astype(float).values
     close_fee = closes["fee"].astype(float).values
@@ -444,55 +466,57 @@ def compute_trade_stats(trades_df: pd.DataFrame) -> dict:
 
 
 def classify_alpha(is_m: dict | None, os_m: dict | None = None) -> tuple[str, str]:
-    """Classify SUBMITTABLE / NORMAL / INCOMPLETE on a single metric set.
+    """Classify SUBMITTABLE / NORMAL / INCOMPLETE — fee-only gate.
 
-    Forward = backtest re-run daily; IS / OS split is no longer the
-    validation boundary, so this function gates on **one set of
-    metrics covering the full available range**. The primary signal
-    health measure is the Information Coefficient: cross-sectional
-    spearman(target_weight, next-bar return) averaged across all emit
-    bars. ``ic_mean`` (sign-agnostic via abs) tells us how much edge
-    the signal carries; ``ic_ir`` tells us how stable that edge is
-    over time. A noisy alpha with sporadic high |t-stat| will have
-    low |ic_ir| and stay NORMAL.
+    IC-based gates were too strict — they filtered out alphas where the
+    raw signal was strong enough to beat fees (those would deploy fine,
+    flipped or as-is). The fee-only gate keeps only one question:
 
-    The legacy second argument ``os_m`` is accepted for back-compat;
-    if ``is_m`` is missing IC and ``os_m`` has it, ``os_m`` wins.
+        "Did this alpha generate non-trivial per-trade net P&L after
+        fees were subtracted?"
+
+    A negative ``pnl_bps_simple`` is fine — the mirror direction
+    deploys it as a positive-bps alpha. We only reject alphas whose
+    raw economics are eaten exactly by fees (|pnl_bps_simple| ≤ 0,
+    which essentially never happens unless the trade count is too
+    small), don't have enough trades to be statistically meaningful,
+    or whose drawdown is catastrophic.
+
+    Gates (sign-agnostic, deploy direction decided downstream):
+        |pnl_bps_simple| > 0   — fee 이긴 raw edge
+        total_trades    > 100  — sample size
+        |MDD|           < 0.60 — risk cap
+
+    The legacy ``os_m`` argument is accepted for back-compat.
     """
     m = is_m
-    if (not m or m.get("ic_mean") is None) and os_m and os_m.get("ic_mean") is not None:
+    if (not m or m.get("pnl_bps_simple") is None) and os_m \
+       and os_m.get("pnl_bps_simple") is not None:
         m = os_m
     if not m:
         return ("INCOMPLETE", "missing metrics")
 
-    ic_mean = m.get("ic_mean")
-    ic_ir = m.get("ic_ir")
+    bps = m.get("pnl_bps_simple")
     n = int(m.get("total_trades") or 0)
-
-    if ic_mean is None or ic_ir is None:
-        return ("NORMAL", "IC not computed — re-run backtest to populate")
-
-    abs_ic = abs(float(ic_mean))
-    abs_ir = abs(float(ic_ir))
-
-    # Sign-agnostic SUBMITTABLE gates:
-    #   |IC|    > 0.03 — "weak but real" edge (≥0.05 is healthy)
-    #   |IC_IR| > 1.5  — IC stable across bars (within-window stationarity)
-    #   |IC_z|  < 2.0  — IS↔OS IC means agree (Welch test): overfit guard
-    #   trades  > 500  — sample sufficiency
-    #   |IS MDD|< 0.50 — IS-window max drawdown ≤ 50% (risk magnitude)
-    z = m.get("ic_z")
-    abs_z = abs(float(z)) if z is not None else None
     mdd = m.get("max_drawdown")
     abs_mdd = abs(float(mdd)) if mdd is not None else None
-    parts = f"|IC|={abs_ic:.3f} |IR|={abs_ir:.2f} trades={n}"
-    if abs_z is not None:
-        parts += f" |z|={abs_z:.2f}"
+
+    if bps is None:
+        return ("NORMAL", "pnl_bps_simple not computed — re-run backtest")
+
+    abs_bps = abs(float(bps))
+    parts = f"|bps|={abs_bps:.2f} trades={n}"
     if abs_mdd is not None:
         parts += f" |MDD|={abs_mdd:.2%}"
-    z_ok = (abs_z is None) or (abs_z < 2.0)
-    mdd_ok = (abs_mdd is None) or (abs_mdd < 0.50)
-    if abs_ic > 0.03 and abs_ir > 1.5 and n > 500 and z_ok and mdd_ok:
+
+    mdd_ok = (abs_mdd is None) or (abs_mdd < 0.60)
+    # Fee gate: net per trade must beat 1.5 × round-trip fee (≈ 10 bps).
+    # Threshold 15 bps catches "fee-eaten" alphas (raw signal ≈ fee) and
+    # only keeps the ones whose net is comfortably positive after fees.
+    # Mirror direction handling: zoo carries fwd + rev variants, so a
+    # raw-negative alpha gets its mirror evaluated as a separate module.
+    FEE_THRESHOLD_BPS = 15.0
+    if abs_bps > FEE_THRESHOLD_BPS and n > 100 and mdd_ok:
         return ("SUBMITTABLE", parts)
     return ("NORMAL", parts)
 

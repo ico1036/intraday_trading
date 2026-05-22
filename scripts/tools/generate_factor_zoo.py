@@ -237,10 +237,265 @@ SIGNALS: dict[str, tuple[tuple[str, ...], str, int]] = {
     "streak_5d_signed":  (("close",),
                           "(1.0 if hist['close'][-1] > hist['close'][-2] else -1.0) * "
                           "sum(1 for i in range(1,6) if (hist['close'][-i] > hist['close'][-i-1]) == (hist['close'][-1] > hist['close'][-2]))", 6),
+    # === Technical indicator family (batch 3) ===========================
+    # RSI — Wilder smoothing on positive vs negative daily changes
+    "rsi_14d": (("close",),
+                "(lambda gains=[max(hist['close'][-i]-hist['close'][-i-1],0.0) for i in range(1,15)], "
+                "losses=[max(hist['close'][-i-1]-hist['close'][-i],0.0) for i in range(1,15)]: "
+                "(sum(gains)/14) / ((sum(gains)/14 + sum(losses)/14) or 1e-9))()", 15),
+    "rsi_9d":  (("close",),
+                "(lambda gains=[max(hist['close'][-i]-hist['close'][-i-1],0.0) for i in range(1,10)], "
+                "losses=[max(hist['close'][-i-1]-hist['close'][-i],0.0) for i in range(1,10)]: "
+                "(sum(gains)/9) / ((sum(gains)/9 + sum(losses)/9) or 1e-9))()", 10),
+    "rsi_21d": (("close",),
+                "(lambda gains=[max(hist['close'][-i]-hist['close'][-i-1],0.0) for i in range(1,22)], "
+                "losses=[max(hist['close'][-i-1]-hist['close'][-i],0.0) for i in range(1,22)]: "
+                "(sum(gains)/21) / ((sum(gains)/21 + sum(losses)/21) or 1e-9))()", 22),
+    # Stochastic %K (close-low_n)/(high_n-low_n) where high_n/low_n use rolling close
+    "stoch_k_14d": (("close",),
+                    "(hist['close'][-1] - min(hist['close'][-14:])) / "
+                    "((max(hist['close'][-14:]) - min(hist['close'][-14:])) or 1e-9)", 14),
+    "stoch_k_5d":  (("close",),
+                    "(hist['close'][-1] - min(hist['close'][-5:])) / "
+                    "((max(hist['close'][-5:]) - min(hist['close'][-5:])) or 1e-9)", 5),
+    "williams_r_14d": (("close",),
+                       "(max(hist['close'][-14:]) - hist['close'][-1]) / "
+                       "((max(hist['close'][-14:]) - min(hist['close'][-14:])) or 1e-9) * -1", 14),
+    # Bollinger band position — (close-MA)/(2*sigma) clipped to [-1,1]
+    "bb_pos_20d": (("close",),
+                   "(hist['close'][-1] - sum(hist['close'][-20:])/20) / "
+                   "(2 * ((sum((c - sum(hist['close'][-20:])/20)**2 for c in hist['close'][-20:])/19)**0.5 or 1e-9))", 20),
+    "bb_pos_10d": (("close",),
+                   "(hist['close'][-1] - sum(hist['close'][-10:])/10) / "
+                   "(2 * ((sum((c - sum(hist['close'][-10:])/10)**2 for c in hist['close'][-10:])/9)**0.5 or 1e-9))", 10),
+    "bb_width_20d": (("close",),
+                     "((sum((c - sum(hist['close'][-20:])/20)**2 for c in hist['close'][-20:])/19)**0.5) / "
+                     "(sum(hist['close'][-20:])/20 or 1e-9)", 20),
+    # Commodity channel index — (price - SMA) / (0.015 * MAD)
+    "cci_20d": (("close",),
+                "(lambda sma=sum(hist['close'][-20:])/20, "
+                "mad=sum(abs(c - sum(hist['close'][-20:])/20) for c in hist['close'][-20:])/20: "
+                "(hist['close'][-1] - sma) / (0.015 * (mad or 1e-9)))()", 20),
+    "cci_14d": (("close",),
+                "(lambda sma=sum(hist['close'][-14:])/14, "
+                "mad=sum(abs(c - sum(hist['close'][-14:])/14) for c in hist['close'][-14:])/14: "
+                "(hist['close'][-1] - sma) / (0.015 * (mad or 1e-9)))()", 14),
+    # MACD — EMA12 - EMA26 (using simple alpha=2/(N+1))
+    "macd_12_26": (("close",),
+                   "(lambda a12=2/13, a26=2/27, "
+                   "e12=hist['close'][-1] * (2/13) + sum(hist['close'][-i] * (2/13)*(1-2/13)**i for i in range(1,12))*0.5, "
+                   "e26=hist['close'][-1] * (2/27) + sum(hist['close'][-i] * (2/27)*(1-2/27)**i for i in range(1,26))*0.5: "
+                   "e12 - e26)()", 27),
+    # ATR proxy from rolling close (no H/L) — mean abs change
+    "atr_proxy_7d":  (("close",), "sum(abs(hist['close'][-i] - hist['close'][-i-1]) for i in range(1,8))/7", 8),
+    "atr_proxy_21d": (("close",), "sum(abs(hist['close'][-i] - hist['close'][-i-1]) for i in range(1,22))/21", 22),
+    # ROC (rate of change) at extra horizons
+    "roc_6d":   (("close",), "hist['close'][-1] / hist['close'][-7] - 1.0", 7),
+    "roc_12d":  (("close",), "hist['close'][-1] / hist['close'][-13] - 1.0", 13),
+    "roc_35d":  (("close",), "hist['close'][-1] / hist['close'][-36] - 1.0", 36),
+    # Momentum diff (mom_n - mom_m)
+    "mom_diff_5_20":  (("close",), "(hist['close'][-1]/hist['close'][-6]-1.0) - (hist['close'][-1]/hist['close'][-21]-1.0)", 21),
+    "mom_diff_10_40": (("close",), "(hist['close'][-1]/hist['close'][-11]-1.0) - (hist['close'][-1]/hist['close'][-41]-1.0)", 41),
+    # TRIX — triple-smoothed momentum proxy
+    "trix_proxy_15d": (("close",),
+                       "(hist['close'][-1] - 3*hist['close'][-6] + 3*hist['close'][-11] - hist['close'][-16]) / "
+                       "(hist['close'][-1] or 1e-9)", 16),
+    # OBV (proxy from close direction × volume)
+    "obv_5d":  (("close", "quote_volume"),
+                "sum((1.0 if hist['close'][-i] > hist['close'][-i-1] else -1.0) * hist['quote_volume'][-i] "
+                "for i in range(1,6))", 6),
+    "obv_20d": (("close", "quote_volume"),
+                "sum((1.0 if hist['close'][-i] > hist['close'][-i-1] else -1.0) * hist['quote_volume'][-i] "
+                "for i in range(1,21))", 21),
+    # MFI proxy: typical_price * volume signed; close proxies typical_price
+    "mfi_proxy_14d": (("close", "quote_volume"),
+                      "(lambda pos=sum(hist['close'][-i] * hist['quote_volume'][-i] for i in range(1,15) if hist['close'][-i] > hist['close'][-i-1]), "
+                      "neg=sum(hist['close'][-i] * hist['quote_volume'][-i] for i in range(1,15) if hist['close'][-i] < hist['close'][-i-1]): "
+                      "pos / ((pos + neg) or 1e-9))()", 15),
+    # ADX proxy: ratio of directional movement
+    "adx_proxy_14d": (("close",),
+                      "(lambda up=sum(max(hist['close'][-i]-hist['close'][-i-1],0.0) for i in range(1,15)), "
+                      "dn=sum(max(hist['close'][-i-1]-hist['close'][-i],0.0) for i in range(1,15)): "
+                      "abs(up - dn) / ((up + dn) or 1e-9))()", 15),
+    # Aroon — distance from highest/lowest close in N-day window
+    "aroon_up_14d":   (("close",),
+                       "(14 - (hist['close'][-14:].index(max(hist['close'][-14:])))) / 14.0", 14),
+    "aroon_down_14d": (("close",),
+                       "(14 - (hist['close'][-14:].index(min(hist['close'][-14:])))) / 14.0", 14),
+    "aroon_diff_14d": (("close",),
+                       "((14 - (hist['close'][-14:].index(max(hist['close'][-14:])))) - "
+                       "(14 - (hist['close'][-14:].index(min(hist['close'][-14:]))))) / 14.0", 14),
+    # Chaikin money flow proxy
+    "cmf_proxy_20d": (("close", "quote_volume"),
+                      "(lambda num=sum(((hist['close'][-i] - min(hist['close'][-20:])) - "
+                      "(max(hist['close'][-20:]) - hist['close'][-i])) * hist['quote_volume'][-i] "
+                      "for i in range(1,21)), "
+                      "den=sum(hist['quote_volume'][-i] for i in range(1,21)): "
+                      "num / ((den * (max(hist['close'][-20:]) - min(hist['close'][-20:]))) or 1e-9))()", 20),
+    # Force index — close change × volume
+    "force_5d":  (("close", "quote_volume"),
+                  "sum((hist['close'][-i] - hist['close'][-i-1]) * hist['quote_volume'][-i] for i in range(1,6))", 6),
+    "force_20d": (("close", "quote_volume"),
+                  "sum((hist['close'][-i] - hist['close'][-i-1]) * hist['quote_volume'][-i] for i in range(1,21))", 21),
+    # DPO — detrended price oscillator
+    "dpo_20d": (("close",),
+                "hist['close'][-11] - sum(hist['close'][-20:])/20", 21),
+    # Volume oscillator
+    "vol_osc_5_20": (("quote_volume",),
+                     "sum(hist['quote_volume'][-5:])/5 - sum(hist['quote_volume'][-20:])/20", 20),
+    "vol_osc_10_60": (("quote_volume",),
+                     "sum(hist['quote_volume'][-10:])/10 - sum(hist['quote_volume'][-60:])/60", 60),
+    # Ease of movement proxy: (close change) / volume
+    "eom_5d":  (("close", "quote_volume"),
+                "sum((hist['close'][-i] - hist['close'][-i-1]) / (hist['quote_volume'][-i] or 1e-9) for i in range(1,6))/5", 6),
+    "eom_20d": (("close", "quote_volume"),
+                "sum((hist['close'][-i] - hist['close'][-i-1]) / (hist['quote_volume'][-i] or 1e-9) for i in range(1,21))/20", 21),
+    # VWAP proxy: volume-weighted average of close — distance
+    "vwap_dist_5d":  (("close", "quote_volume"),
+                      "hist['close'][-1] / (sum(hist['close'][-i]*hist['quote_volume'][-i] for i in range(1,6)) / "
+                      "(sum(hist['quote_volume'][-i] for i in range(1,6)) or 1e-9)) - 1.0", 6),
+    "vwap_dist_20d": (("close", "quote_volume"),
+                      "hist['close'][-1] / (sum(hist['close'][-i]*hist['quote_volume'][-i] for i in range(1,21)) / "
+                      "(sum(hist['quote_volume'][-i] for i in range(1,21)) or 1e-9)) - 1.0", 21),
+    # Skew / kurt 60d
+    "ret_skew_120d": (("close",),
+                      "(lambda r=[hist['close'][-i]/hist['close'][-i-1]-1.0 for i in range(1,121)]: "
+                      "(sum((x - sum(r)/120)**3 for x in r)/120) / ((sum((x - sum(r)/120)**2 for x in r)/120)**1.5 or 1e-9))()", 121),
+    "ret_kurt_60d":  (("close",),
+                      "(lambda r=[hist['close'][-i]/hist['close'][-i-1]-1.0 for i in range(1,61)]: "
+                      "(sum((x - sum(r)/60)**4 for x in r)/60) / ((sum((x - sum(r)/60)**2 for x in r)/60)**2 or 1e-9))()", 61),
+    # Acceleration variants
+    "accel_diff_5_20": (("close",),
+                        "((hist['close'][-1] - 2*hist['close'][-3] + hist['close'][-5]) / (hist['close'][-3] or 1e-9)) - "
+                        "((hist['close'][-1] - 2*hist['close'][-11] + hist['close'][-21]) / (hist['close'][-11] or 1e-9))", 21),
+    # Percentile rank of current close in 20d
+    "pct_rank_20d": (("close",),
+                     "sum(1 for c in hist['close'][-20:] if c <= hist['close'][-1]) / 20.0", 20),
+    "pct_rank_60d": (("close",),
+                     "sum(1 for c in hist['close'][-60:] if c <= hist['close'][-1]) / 60.0", 60),
+    # Log-return aggregates
+    "log_ret_sum_5d":  (("close",),
+                        "sum(math.log(hist['close'][-i] / (hist['close'][-i-1] or 1e-9) or 1e-9) for i in range(1,6))", 6),
+    "log_ret_sum_20d": (("close",),
+                        "sum(math.log(hist['close'][-i] / (hist['close'][-i-1] or 1e-9) or 1e-9) for i in range(1,21))", 21),
+    # Sharpe-proxy (ret_mean / ret_std) on 20d / 60d
+    "sharpe_proxy_20d": (("close",),
+                         "(lambda r=[hist['close'][-i]/hist['close'][-i-1]-1.0 for i in range(1,21)]: "
+                         "(sum(r)/20) / ((sum((x - sum(r)/20)**2 for x in r)/19)**0.5 or 1e-9))()", 21),
+    "sharpe_proxy_60d": (("close",),
+                         "(lambda r=[hist['close'][-i]/hist['close'][-i-1]-1.0 for i in range(1,61)]: "
+                         "(sum(r)/60) / ((sum((x - sum(r)/60)**2 for x in r)/59)**0.5 or 1e-9))()", 61),
+    # Calmar proxy: 20d return / |max drawdown 20d|
+    "calmar_proxy_20d": (("close",),
+                         "(hist['close'][-1]/hist['close'][-21]-1.0) / "
+                         "((1 - min(hist['close'][-i]/max(hist['close'][-21:-i+1] or [1e-9]) for i in range(1,21))) or 1e-9)", 21),
+    # Sortino proxy: ret_mean / downside_std
+    "sortino_proxy_20d": (("close",),
+                          "(lambda r=[hist['close'][-i]/hist['close'][-i-1]-1.0 for i in range(1,21)]: "
+                          "(sum(r)/20) / ((sum(min(x,0.0)**2 for x in r)/19)**0.5 or 1e-9))()", 21),
+    # === Family 4: long-lookback (252+ days, low-turnover) ===
+    "return_252d":     (("close",), "hist['close'][-1]/hist['close'][-253] - 1.0", 253),
+    "return_180d":     (("close",), "hist['close'][-1]/hist['close'][-181] - 1.0", 181),
+    "return_126d":     (("close",), "hist['close'][-1]/hist['close'][-127] - 1.0", 127),
+    "mom_252_21":      (("close",), "hist['close'][-22]/hist['close'][-253] - 1.0", 253),
+    "mom_180_21":      (("close",), "hist['close'][-22]/hist['close'][-181] - 1.0", 181),
+    "vol_real_252d":   (("close",),
+                        "((sum((hist['close'][-i]/hist['close'][-i-1]-1.0)**2 for i in range(1,253))/251)**0.5)", 253),
+    "vol_real_126d":   (("close",),
+                        "((sum((hist['close'][-i]/hist['close'][-i-1]-1.0)**2 for i in range(1,127))/125)**0.5)", 127),
+    "close_zscore_252d": (("close",),
+                          "(hist['close'][-1] - sum(hist['close'][-252:])/252) / "
+                          "(((sum((c - sum(hist['close'][-252:])/252)**2 for c in hist['close'][-252:]))/251)**0.5 or 1e-9)", 252),
+    "dist_from_high_252d": (("close",),
+                            "hist['close'][-1] / max(hist['close'][-252:]) - 1.0", 252),
+    "dist_from_low_252d":  (("close",),
+                            "hist['close'][-1] / min(hist['close'][-252:]) - 1.0", 252),
+    "mar_efficiency_252d": (("close",),
+                            "abs(hist['close'][-1]/hist['close'][-253]-1.0) / "
+                            "(sum(abs(hist['close'][-i]/hist['close'][-i-1]-1.0) for i in range(1,253)) or 1e-9)", 253),
+    "mom_minus_rev_252_21":(("close",),
+                            "(hist['close'][-1]/hist['close'][-253] - 1.0) - "
+                            "(hist['close'][-1]/hist['close'][-22] - 1.0)", 253),
+    "max_lottery_252d":    (("close",),
+                            "max(hist['close'][-i]/hist['close'][-i-1]-1.0 for i in range(1,253))", 253),
+    "min_lottery_252d":    (("close",),
+                            "min(hist['close'][-i]/hist['close'][-i-1]-1.0 for i in range(1,253))", 253),
+    "ret_skew_252d":       (("close",),
+                            "(lambda r=[hist['close'][-i]/hist['close'][-i-1]-1.0 for i in range(1,253)]: "
+                            "(sum((x - sum(r)/252)**3 for x in r)/252) / ((sum((x - sum(r)/252)**2 for x in r)/252)**1.5 or 1e-9))()", 253),
+    "vol_ratio_60_252":    (("close",),
+                            "(((sum((hist['close'][-i]/hist['close'][-i-1]-1.0)**2 for i in range(1,61))/59)**0.5)) / "
+                            "(((sum((hist['close'][-i]/hist['close'][-i-1]-1.0)**2 for i in range(1,253))/251)**0.5) or 1e-9)", 253),
+    # === Family 5: volume regime / liquidity premium ===
+    "vol_ratio_5_60":      (("quote_volume",),
+                            "(sum(hist['quote_volume'][-5:])/5) / ((sum(hist['quote_volume'][-60:])/60) or 1e-9)", 60),
+    "vol_drop_60d":        (("close",),
+                            "1.0 - (((sum((hist['close'][-i]/hist['close'][-i-1]-1.0)**2 for i in range(1,21))/19)**0.5) / "
+                            "(((sum((hist['close'][-i]/hist['close'][-i-1]-1.0)**2 for i in range(1,61))/59)**0.5) or 1e-9))", 61),
+    "amihud_60d":          (("close", "quote_volume"),
+                            "sum(abs(hist['close'][-i]/hist['close'][-i-1]-1.0) / (hist['quote_volume'][-i] or 1e-9) for i in range(1,61))/60", 61),
+    "qv_zscore_60d":       (("quote_volume",),
+                            "(hist['quote_volume'][-1] - sum(hist['quote_volume'][-60:])/60) / "
+                            "(((sum((v - sum(hist['quote_volume'][-60:])/60)**2 for v in hist['quote_volume'][-60:]))/59)**0.5 or 1e-9)", 60),
+    # === Family 6: drawdown-based ===
+    "drawdown_60d":        (("close",),
+                            "hist['close'][-1] / max(hist['close'][-60:]) - 1.0", 60),
+    "drawdown_120d":       (("close",),
+                            "hist['close'][-1] / max(hist['close'][-120:]) - 1.0", 120),
+    "bounce_from_low_60d": (("close",),
+                            "hist['close'][-1] / min(hist['close'][-60:]) - 1.0", 60),
+    "bounce_from_low_120d":(("close",),
+                            "hist['close'][-1] / min(hist['close'][-120:]) - 1.0", 120),
+    # === Family 7: aggressor flow (buy_volume ratio) ===
+    "buy_share_1d":         (("buy_volume", "volume"),
+                             "hist['buy_volume'][-1] / (hist['volume'][-1] or 1e-9)", 1),
+    "buy_share_5d":         (("buy_volume", "volume"),
+                             "sum(hist['buy_volume'][-5:]) / (sum(hist['volume'][-5:]) or 1e-9)", 5),
+    "buy_share_20d":        (("buy_volume", "volume"),
+                             "sum(hist['buy_volume'][-20:]) / (sum(hist['volume'][-20:]) or 1e-9)", 20),
+    "buy_share_60d":        (("buy_volume", "volume"),
+                             "sum(hist['buy_volume'][-60:]) / (sum(hist['volume'][-60:]) or 1e-9)", 60),
+    "buy_share_zscore_20d": (("buy_volume", "volume"),
+                             "(hist['buy_volume'][-1]/(hist['volume'][-1] or 1e-9) - "
+                             "sum(hist['buy_volume'][-i]/(hist['volume'][-i] or 1e-9) for i in range(1,21))/20)", 21),
+    # === Family 8: trade count / market activity ===
+    "trade_count_1d":       (("trade_count",), "hist['trade_count'][-1]", 1),
+    "trade_count_log_1d":   (("trade_count",), "math.log(max(hist['trade_count'][-1], 1))", 1),
+    "trade_count_zscore_20d": (("trade_count",),
+                               "(hist['trade_count'][-1] - sum(hist['trade_count'][-20:])/20) / "
+                               "(((sum((v - sum(hist['trade_count'][-20:])/20)**2 for v in hist['trade_count'][-20:]))/19)**0.5 or 1e-9)", 20),
+    "trade_count_growth_5d":(("trade_count",),
+                             "hist['trade_count'][-1] / (sum(hist['trade_count'][-6:-1])/5 or 1e-9) - 1.0", 6),
+    # === Family 9: OHLC microstructure ===
+    "range_ratio_1d":       (("close", "high", "low"),
+                             "(hist['high'][-1] - hist['low'][-1]) / (hist['close'][-1] or 1e-9)", 1),
+    "range_ratio_20d":      (("close", "high", "low"),
+                             "sum((hist['high'][-i] - hist['low'][-i]) / (hist['close'][-i] or 1e-9) for i in range(1,21))/20", 20),
+    "intraday_gap_1d":      (("close", "open"),
+                             "(hist['close'][-1] - hist['open'][-1]) / (hist['open'][-1] or 1e-9)", 1),
+    "intraday_gap_5d":      (("close", "open"),
+                             "sum((hist['close'][-i] - hist['open'][-i]) / (hist['open'][-i] or 1e-9) for i in range(1,6))/5", 5),
+    "overnight_gap_1d":     (("close", "open"),
+                             "hist['open'][-1] / (hist['close'][-2] or 1e-9) - 1.0", 2),
+    # === Family 10: vol-adjusted momentum (risk-adjusted) ===
+    "vol_adj_ret_20d":      (("close",),
+                             "(hist['close'][-1]/hist['close'][-21]-1.0) / "
+                             "(((sum((hist['close'][-i]/hist['close'][-i-1]-1.0)**2 for i in range(1,21))/19)**0.5) or 1e-9)", 21),
+    "vol_adj_ret_60d":      (("close",),
+                             "(hist['close'][-1]/hist['close'][-61]-1.0) / "
+                             "(((sum((hist['close'][-i]/hist['close'][-i-1]-1.0)**2 for i in range(1,61))/59)**0.5) or 1e-9)", 61),
+    "vol_adj_ret_252d":     (("close",),
+                             "(hist['close'][-1]/hist['close'][-253]-1.0) / "
+                             "(((sum((hist['close'][-i]/hist['close'][-i-1]-1.0)**2 for i in range(1,253))/251)**0.5) or 1e-9)", 253),
+    # === Family 11: high-low based momentum (range-aware) ===
+    "high_low_mom_20d":     (("high", "low"),
+                             "hist['high'][-1] / hist['low'][-20] - 1.0", 20),
+    "high_to_high_60d":     (("high",),
+                             "hist['high'][-1] / max(hist['high'][-60:]) - 1.0", 60),
 }
 
 
-CONCENTRATIONS = [0.1, 0.2, 0.3]
+CONCENTRATIONS = [0.05, 0.1, 0.2, 0.3, 0.4, 0.5]
 DIRECTIONS = [("fwd", False), ("rev", True)]
 
 
