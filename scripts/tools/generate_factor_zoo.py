@@ -446,6 +446,102 @@ SIGNALS: dict[str, tuple[tuple[str, ...], str, int]] = {
                             "hist['close'][-1] / min(hist['close'][-60:]) - 1.0", 60),
     "bounce_from_low_120d":(("close",),
                             "hist['close'][-1] / min(hist['close'][-120:]) - 1.0", 120),
+    # === WorldQuant 101 Alphas — single-expression daily-data-compatible ===
+    # alpha_006:  -correlation(open, volume, 10)
+    "wq_006_neg_corr_open_volume_10d": (("open", "volume"),
+                                         "-(lambda o=hist['open'][-10:], v=hist['volume'][-10:]: "
+                                         "(sum((o[i]-sum(o)/10)*(v[i]-sum(v)/10) for i in range(10))/9) / "
+                                         "(((sum((o[i]-sum(o)/10)**2 for i in range(10))/9)**0.5 * "
+                                         "(sum((v[i]-sum(v)/10)**2 for i in range(10))/9)**0.5) or 1e-9))()", 10),
+    # alpha_012:  sign(delta(volume,1)) * (-delta(close,1))
+    "wq_012_sgn_dvol_x_neg_dclose": (("close", "volume"),
+                                      "(1 if hist['volume'][-1]>hist['volume'][-2] else -1) * "
+                                      "(-(hist['close'][-1]-hist['close'][-2]))", 2),
+    # alpha_018:  -(stddev(abs(close-open),5) + (close-open) + correlation(close,open,10))
+    "wq_018_neg_co_disp": (("open", "close"),
+                            "-(((sum((abs(hist['close'][-i]-hist['open'][-i]) - "
+                            "sum(abs(hist['close'][-j]-hist['open'][-j]) for j in range(1,6))/5)**2 "
+                            "for i in range(1,6))/4)**0.5) + "
+                            "(hist['close'][-1]-hist['open'][-1]))", 10),
+    # alpha_023:  -delta(high,2) if sma(high,20)<high else 0
+    "wq_023_high_break_revert": (("high",),
+                                  "(-(hist['high'][-1]-hist['high'][-3]) if "
+                                  "sum(hist['high'][-20:])/20 < hist['high'][-1] else 0.0)", 20),
+    # alpha_025:  -returns * sma(volume,20) * vwap * (high - close)
+    #   approx vwap = quote_volume / volume
+    "wq_025_resvol_high_close": (("close", "high", "volume", "quote_volume"),
+                                  "(-(hist['close'][-1]/hist['close'][-2]-1.0)) * "
+                                  "(sum(hist['volume'][-20:])/20) * "
+                                  "(hist['quote_volume'][-1]/(hist['volume'][-1] or 1e-9)) * "
+                                  "(hist['high'][-1]-hist['close'][-1])", 20),
+    # alpha_033:  -1 + open/close  ==  (open-close)/close
+    "wq_033_open_over_close": (("open", "close"),
+                                "(hist['open'][-1]/(hist['close'][-1] or 1e-9)) - 1.0", 1),
+    # alpha_038:  -ts_rank(open,10) * (close/open)   (single-score approx of rank product)
+    "wq_038_ts_open_x_co": (("open", "close"),
+                             "-((sorted(hist['open'][-10:]).index(hist['open'][-1])+1)/10.0) * "
+                             "(hist['close'][-1]/(hist['open'][-1] or 1e-9))", 10),
+    # alpha_041:  sqrt(high*low) - vwap
+    "wq_041_root_hl_minus_vwap": (("high", "low", "volume", "quote_volume"),
+                                   "(hist['high'][-1]*hist['low'][-1])**0.5 - "
+                                   "hist['quote_volume'][-1]/(hist['volume'][-1] or 1e-9)", 1),
+    # alpha_042:  (vwap-close)/(vwap+close)
+    "wq_042_vwap_close_ratio": (("close", "volume", "quote_volume"),
+                                 "(lambda v=hist['quote_volume'][-1]/(hist['volume'][-1] or 1e-9): "
+                                 "(v-hist['close'][-1])/((v+hist['close'][-1]) or 1e-9))()", 1),
+    # alpha_043:  ts_rank(volume/sma(volume,20), 20) * ts_rank(-delta(close,7), 8)
+    "wq_043_vol_x_neg_dclose": (("close", "volume"),
+                                 "((sorted([hist['volume'][-i]/(sum(hist['volume'][-i-20+1:-i+1])/20 or 1e-9) "
+                                 "for i in range(1,21)]).index(hist['volume'][-1]/(sum(hist['volume'][-20:])/20 or 1e-9))+1)/20.0) * "
+                                 "((sorted([-(hist['close'][-i]-hist['close'][-i-7]) for i in range(1,9)]).index(-(hist['close'][-1]-hist['close'][-8]))+1)/8.0)", 28),
+    # alpha_046:  conditional momentum gradient
+    "wq_046_mom_gradient": (("close",),
+                             "(lambda d1=hist['close'][-1]-hist['close'][-11], "
+                             "d2=hist['close'][-11]-hist['close'][-21]: "
+                             "(-1.0 if (d2-d1)/10 > 0.25 else (1.0 if (d2-d1)/10 < -0.25 else "
+                             "-(hist['close'][-1]-hist['close'][-2]))))()", 21),
+    # alpha_051: mean-reversion delta
+    "wq_051_grad_delta": (("close",),
+                          "(lambda g=((hist['close'][-21]-hist['close'][-11])/10) - "
+                          "((hist['close'][-11]-hist['close'][-1])/10): "
+                          "(1.0 if g < -0.05 else -(hist['close'][-1]-hist['close'][-2])))()", 21),
+    # alpha_053:  -delta(((close-low)-(high-close))/(close-low), 9)
+    "wq_053_neg_d_close_position": (("close", "high", "low"),
+                                     "-((((hist['close'][-1]-hist['low'][-1]) - (hist['high'][-1]-hist['close'][-1])) / "
+                                     "((hist['close'][-1]-hist['low'][-1]) or 1e-9)) - "
+                                     "(((hist['close'][-10]-hist['low'][-10]) - (hist['high'][-10]-hist['close'][-10])) / "
+                                     "((hist['close'][-10]-hist['low'][-10]) or 1e-9)))", 10),
+    # alpha_054:  -((low-close) * open^5) / ((low-high) * close^5)
+    "wq_054_lc_oc_ratio": (("close", "open", "low", "high"),
+                            "-((hist['low'][-1]-hist['close'][-1]) * (hist['open'][-1]**5)) / "
+                            "(((hist['low'][-1]-hist['high'][-1]) * (hist['close'][-1]**5)) or 1e-9)", 1),
+    # === Simpler WQ-style additions ===
+    # close-low / high-low (Williams %R inverse)
+    "wq_williams_inv_14d": (("high", "low", "close"),
+                             "(hist['close'][-1] - min(hist['low'][-14:])) / "
+                             "((max(hist['high'][-14:]) - min(hist['low'][-14:])) or 1e-9)", 14),
+    # signed-price-volume momentum
+    "wq_signed_pv_5d": (("close", "volume"),
+                        "sum((1.0 if hist['close'][-i] > hist['close'][-i-1] else -1.0) * "
+                        "hist['volume'][-i] for i in range(1,6))/5", 6),
+    # range expansion: today's range / sma(range, 20)
+    "wq_range_exp_20d": (("high", "low"),
+                         "((hist['high'][-1]-hist['low'][-1])) / "
+                         "((sum(hist['high'][-i]-hist['low'][-i] for i in range(1,21))/20) or 1e-9)", 20),
+    # close vs sma(close, n) — relative position
+    "wq_close_vs_sma_50d": (("close",),
+                            "hist['close'][-1] / (sum(hist['close'][-50:])/50 or 1e-9) - 1.0", 50),
+    "wq_close_vs_sma_100d": (("close",),
+                             "hist['close'][-1] / (sum(hist['close'][-100:])/100 or 1e-9) - 1.0", 100),
+    # downside-vol weighted return (sortino-like signal)
+    "wq_signed_to_dvol_20d": (("close",),
+                               "(hist['close'][-1]/hist['close'][-2]-1.0) / "
+                               "(((sum(min(hist['close'][-i]/hist['close'][-i-1]-1.0, 0.0)**2 "
+                               "for i in range(1,21))/19)**0.5) or 1e-9)", 21),
+    # volume z-score over volume average  (over-supplied days)
+    "wq_volume_zscore_60d": (("volume",),
+                              "(hist['volume'][-1] - sum(hist['volume'][-60:])/60) / "
+                              "(((sum((v - sum(hist['volume'][-60:])/60)**2 for v in hist['volume'][-60:]))/59)**0.5 or 1e-9)", 60),
     # === Family 7: aggressor flow (buy_volume ratio) ===
     "buy_share_1d":         (("buy_volume", "volume"),
                              "hist['buy_volume'][-1] / (hist['volume'][-1] or 1e-9)", 1),

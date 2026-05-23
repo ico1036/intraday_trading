@@ -134,3 +134,7 @@ archive/*
 
 
 
+
+# Local junk
+.claude/scheduled_tasks.lock
+page_snapshot.yaml

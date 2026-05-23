@@ -1827,12 +1827,14 @@ def composite_cumret_figure(
     has_flip = "flipped" in members.columns
 
     def _add_member_lines(split: str, color: str, legend_name: str):
-        """Plot one faded line per member. When `flipped`=1 the cumret
-        series is negated so the rendered line matches what the member
-        actually contributes to the composite (sign-flipped at deploy)."""
+        """Pack all member cumret lines into a SINGLE Scatter trace using
+        ``None`` separators between members. 72 members × IS+OS used to
+        emit 144 traces (≈15 MB JSON); packed form is 2 traces (≈1 MB)
+        and renders the same visual."""
         if members.empty:
             return
-        is_first = True
+        xs: list[Any] = []
+        ys: list[Any] = []
         for _, m in members.iterrows():
             try:
                 p = _resolve_member_equity_path(
@@ -1846,21 +1848,21 @@ def composite_cumret_figure(
                 continue
             if has_flip and bool(m["flipped"]):
                 s = -s
-            s = _series_downsample(s)
-            # Scatter (SVG) not Scattergl — Scattergl lives on a separate
-            # WebGL layer that paints *above* the SVG composite traces,
-            # which is why the bold IS/OS lines appeared masked. SVG
-            # traces render below WebGL, so member overlays now sit
-            # under the composite as intended.
-            fig.add_trace(
-                go.Scatter(
-                    x=s.index.astype(str), y=s.values, mode="lines",
-                    line=dict(color=color, width=1),
-                    name=legend_name if is_first else legend_name,
-                    showlegend=is_first, hoverinfo="skip",
-                )
+            s = _series_downsample(s, max_points=MEMBER_TRACE_POINTS)
+            xs.extend(s.index.strftime("%Y-%m-%d %H:%M:%S").tolist())
+            xs.append(None)
+            ys.extend(s.values.astype(float).tolist())
+            ys.append(None)
+        if not xs:
+            return
+        fig.add_trace(
+            go.Scatter(
+                x=xs, y=ys, mode="lines",
+                line=dict(color=color, width=1),
+                name=legend_name, showlegend=True, hoverinfo="skip",
+                connectgaps=False,
             )
-            is_first = False
+        )
 
     _add_member_lines("is", COMPOSITE_MEMBER_LINE_COLOR, "members IS")
     _add_member_lines("os", COMPOSITE_MEMBER_OS_LINE_COLOR, "members OS")

@@ -1,0 +1,25 @@
+{
+  "artifact_version": 1,
+  "run_type": "backtest",
+  "alpha_id": "XsVolumeRankStrategy",
+  "strategy_name": "XsVolumeRankStrategy",
+  "symbols": [
+    "BNBUSDT",
+    "BTCUSDT",
+    "ETHUSDT",
+    "SOLUSDT",
+    "XRPUSDT"
+  ],
+  "generated_at": "2026-05-23T01:52:22.546654",
+  "files": {
+    "manifest": "manifest.json",
+    "weights": "weights.parquet",
+    "metrics": "metrics.json",
+    "summary": "summary.json",
+    "summary_csv": "summary.csv",
+    "equity_curve": "equity_curve.parquet",
+    "trades": "trades.parquet",
+    "events": "events.parquet",
+    "backtest_report": "backtest_report.md"
+  }
+}

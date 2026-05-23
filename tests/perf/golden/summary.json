@@ -1,0 +1,35 @@
+{
+  "artifact_version": 1,
+  "run_type": "backtest",
+  "strategy_name": "XsVolumeRankStrategy",
+  "alpha_id": "XsVolumeRankStrategy",
+  "symbols": [
+    "BNBUSDT",
+    "BTCUSDT",
+    "ETHUSDT",
+    "SOLUSDT",
+    "XRPUSDT"
+  ],
+  "bar_type": "time",
+  "bar_size": 86400.0,
+  "initial_capital": 10000.0,
+  "final_capital": 9882.344640358697,
+  "total_return": -0.011765535964130321,
+  "started_at": "2024-01-01T00:00:00",
+  "ended_at": "2024-03-31T00:00:00",
+  "generated_at": "2026-05-23T01:52:22.546654",
+  "tick_counts": {
+    "BNBUSDT": 91,
+    "BTCUSDT": 91,
+    "ETHUSDT": 91,
+    "SOLUSDT": 91,
+    "XRPUSDT": 91
+  },
+  "bar_counts": {
+    "BNBUSDT": 91,
+    "BTCUSDT": 91,
+    "ETHUSDT": 91,
+    "SOLUSDT": 91,
+    "XRPUSDT": 91
+  }
+}

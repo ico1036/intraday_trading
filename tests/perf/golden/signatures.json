@@ -1,0 +1,7 @@
+{
+  "metrics.json": "0dc3d26a5a7db939a0cf410e3280a032aa6766530a04ece1c7197238561e117d",
+  "equity_curve.parquet": "3b57a01769d7c5ffc7401623b48c9529d7353c40ba8daf46956bb2e65f39c74a",
+  "trades.parquet": "dbad00b1c1b31f9981d97698bd8176641e15db5e57bc47db483eac8705b02741",
+  "weights.parquet": "9514d5a4685fdc43c7122c97571fd264fd0dcdd80418f49712ea6b7bdd8ab1ec",
+  "events.parquet": "99c6319810fb8b66de9acfb9383949e2f289784dbef39a7abd3106be87f51870"
+}

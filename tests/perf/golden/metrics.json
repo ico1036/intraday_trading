@@ -1,0 +1,60 @@
+{
+  "profit_factor": 0.7869247440243113,
+  "total_return": -0.011765535964130321,
+  "max_drawdown": -0.03663128934555391,
+  "total_trades": 201,
+  "win_rate": 0.4228855721393035,
+  "sharpe": -0.9182248719672593,
+  "per_symbol": {
+    "BTCUSDT": {
+      "total_pnl": -261.93124721348187,
+      "trades": 53,
+      "wins": 16,
+      "losses": 37
+    },
+    "ETHUSDT": {
+      "total_pnl": -243.30882581448475,
+      "trades": 50,
+      "wins": 10,
+      "losses": 40
+    },
+    "XRPUSDT": {
+      "total_pnl": 28.40382266378854,
+      "trades": 47,
+      "wins": 18,
+      "losses": 29
+    },
+    "BNBUSDT": {
+      "total_pnl": 363.36093592807515,
+      "trades": 51,
+      "wins": 41,
+      "losses": 10
+    }
+  },
+  "pnl_bps_simple": -2355.4727239399367,
+  "pnl_bps_notional_weighted": -166.96246341634205,
+  "per_trade_sharpe": -0.16257500141176187,
+  "t_stat": -2.0692419470940484,
+  "pnl_bps_std": 14488.529623162129,
+  "round_trips": 162,
+  "trade_win_rate": 0.41358024691358025,
+  "avg_win_bps": 2042.7483890670962,
+  "avg_loss_bps": -5457.376035218581,
+  "win_loss_ratio": 0.37430962716962185,
+  "profit_factor_trades": 0.2639867896880491,
+  "largest_win_bps": 33942.47162608095,
+  "largest_loss_bps": -146984.63539518148,
+  "calmar": -0.3211881474643849,
+  "ic_mean": null,
+  "ic_std": null,
+  "ic_ir": null,
+  "ic_hit_rate": null,
+  "ic_bars": 0,
+  "ic_mean_is": null,
+  "ic_std_is": null,
+  "ic_bars_is": 0,
+  "ic_mean_os": null,
+  "ic_std_os": null,
+  "ic_bars_os": 0,
+  "ic_z": null
+}
