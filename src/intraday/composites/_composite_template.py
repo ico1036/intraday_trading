@@ -50,6 +50,21 @@ def select_members(alpha_index: pd.DataFrame) -> list[str]:
 
         passed = alpha_index[alpha_index["status"] == "IS_PASS"]
         return passed.nlargest(20, "is_sharpe_daily")["alpha_id"].tolist()
+
+    Parameter-sweep dedup: the zoo generator mass-produces cousin cells
+    (same signal, different K / window). Stacking them double-counts the
+    factor. ``family_dedup`` from ``_optim_helpers`` collapses each
+    ``xs_factor_<signal>_<dir>`` family to its highest-IS-Sharpe member::
+
+        from intraday.composites._optim_helpers import family_dedup
+        passed = alpha_index[alpha_index["is_sharpe"] > 0]
+        candidates = passed["alpha_id"].tolist()
+        metric = dict(zip(passed["alpha_id"], passed["is_sharpe"]))
+        return family_dedup(candidates, metric)  # default level='signal_dir'
+
+    Pass ``level='signal_window_dir'`` to keep different windows of the
+    same signal as independent. Hand-written ``ts_*`` / ``xs_volume_rank``
+    alphas pass through untouched.
     """
     raise NotImplementedError("Fill select_members in your copy.")
 

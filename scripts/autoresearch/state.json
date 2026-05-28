@@ -1,0 +1,1283 @@
+{
+  "run_id": "run_2026_05_c",
+  "target_os_sharpe": 2.0,
+  "max_iterations": 200,
+  "started_utc": "2026-05-26T01:00:17.934122+00:00",
+  "iterations_run": 119,
+  "iterations_invalid": 0,
+  "iterations_evaluated": 116,
+  "best": {
+    "composite_id": "auto_037_yearstable_dd20_top5_neumann_k4_tangency",
+    "os_sharpe": 0.838006592181136,
+    "is_sharpe": 0.9015936012055303,
+    "os_return": 0.08612944048210301,
+    "n_members": 5
+  },
+  "leaderboard": [
+    {
+      "composite_id": "auto_037_yearstable_dd20_top5_neumann_k4_tangency",
+      "os_sharpe": 0.838006592181136,
+      "is_sharpe": 0.9015936012055303,
+      "os_return": 0.08612944048210301,
+      "n_members": 5
+    },
+    {
+      "composite_id": "auto_025_neumann_minvar_year_robust_top5_dd25_ded",
+      "os_sharpe": 0.40874311161867916,
+      "is_sharpe": 1.2457107856853282,
+      "os_return": 0.01909461919776113,
+      "n_members": 5
+    },
+    {
+      "composite_id": "auto_044_blockboot_sharpe_tertile_stable_dd22_neu",
+      "os_sharpe": 0.4060753589897453,
+      "is_sharpe": 1.2132184527918566,
+      "os_return": 0.03933942341046732,
+      "n_members": 3
+    },
+    {
+      "composite_id": "auto_050_greedy_gram_schmidt_resid_sharpe_yearsta",
+      "os_sharpe": 0.36401702127493885,
+      "is_sharpe": 1.187028686636477,
+      "os_return": 0.009600888981967363,
+      "n_members": 3
+    },
+    {
+      "composite_id": "auto_032_michaud_resampled_tangency_yearstable_dd",
+      "os_sharpe": 0.34990374354590176,
+      "is_sharpe": 1.4222226746660418,
+      "os_return": 0.018354789481694205,
+      "n_members": 7
+    },
+    {
+      "composite_id": "auto_035_eg_ftrl_online_yearstable_dd25_top8_corr",
+      "os_sharpe": 0.34710938393001495,
+      "is_sharpe": 1.29460424327123,
+      "os_return": 0.028463971893963026,
+      "n_members": 8
+    },
+    {
+      "composite_id": "auto_112_corr_rank_sharpe_rank_greedy_n8_yearstab",
+      "os_sharpe": 0.33741412915898605,
+      "is_sharpe": 1.446215137613999,
+      "os_return": 0.0948412912866528,
+      "n_members": 8
+    },
+    {
+      "composite_id": "auto_030_ewma_riskmetrics_recency_sharpe_top8_tan",
+      "os_sharpe": 0.3343547731841869,
+      "is_sharpe": 1.20676978874108,
+      "os_return": 0.02567973282399562,
+      "n_members": 8
+    },
+    {
+      "composite_id": "auto_033_psr_dsr_yearstable_dd25_neumann_k4_tange",
+      "os_sharpe": 0.32981973363506245,
+      "is_sharpe": 1.353373349035114,
+      "os_return": 0.034403611871904105,
+      "n_members": 8
+    },
+    {
+      "composite_id": "auto_020_ccm_eltongruber_tangency_regime_top8_ded",
+      "os_sharpe": 0.312492440272784,
+      "is_sharpe": 1.2724139809341275,
+      "os_return": 0.019357952130295234,
+      "n_members": 8
+    }
+  ],
+  "history": [
+    {
+      "n": 1,
+      "composite_id": "auto_001_neumann_k5_tangency_top60_dedup085_gross",
+      "status": "ERRORED",
+      "reason": "backtest produced incomplete metrics. tail: ~~~~~~~~~~~~~~~~~~~~^^^^^^^^^\n  File \"/Users/taeyeong/intraday_trading/src/intraday/composites/_optim_helpers.py\", line 229, in normalize_coefficients\n    s = sum(abs(v) for v in c.values()) or 1.0\n                            ^^^^^^^^\nAttributeError: 'numpy.ndarray' object has no attribute 'values'\n",
+      "is_sharpe": null,
+      "os_sharpe": null,
+      "n_members": null,
+      "elapsed_seconds": 171.40427591698244
+    },
+    {
+      "n": 2,
+      "composite_id": "auto_002_nco_mp_denoise_detone_tangency_top80_ded",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 1.432412739150017,
+      "os_sharpe": 0.30157321097370227,
+      "n_members": 6,
+      "elapsed_seconds": 463.42289450002136
+    },
+    {
+      "n": 3,
+      "composite_id": "auto_003_herc_raffinot_dedup085_sharpe_tilt_top24",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 1.0136165498737,
+      "os_sharpe": 0.2827190815004615,
+      "n_members": 10,
+      "elapsed_seconds": 244.78014400001848
+    },
+    {
+      "n": 4,
+      "composite_id": "auto_004_black_litterman_lw_shrink_sharpe_views_d",
+      "status": "ERRORED",
+      "reason": "backtest produced incomplete metrics. tail: ts\n    c = normalize_coefficients(s, \"l1\")\n  File \"/Users/taeyeong/intraday_trading/src/intraday/composites/_optim_helpers.py\", line 229, in normalize_coefficients\n    s = sum(abs(v) for v in c.values()) or 1.0\n                            ~~~~~~~~^^\nTypeError: 'numpy.ndarray' object is not callable\n",
+      "is_sharpe": null,
+      "os_sharpe": null,
+      "n_members": null,
+      "elapsed_seconds": 418.014516833995
+    },
+    {
+      "n": 5,
+      "composite_id": "auto_005_drp_detoned_eigenbasis_lw_top24_signtilt",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 0.4059076607334985,
+      "os_sharpe": -0.4261418775391868,
+      "n_members": 8,
+      "elapsed_seconds": 448.89354804198956
+    },
+    {
+      "n": 6,
+      "composite_id": "auto_006_max_div_ratio_lw_shrink_top80_dedup090_c",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 1.2011816210292694,
+      "os_sharpe": 0.06459783715720044,
+      "n_members": 30,
+      "elapsed_seconds": 378.85694116703235
+    },
+    {
+      "n": 7,
+      "composite_id": "auto_007_mean_cvar_rockafellar_uryasev_eta010_ded",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 1.263050289834635,
+      "os_sharpe": 0.17618318474015313,
+      "n_members": 7,
+      "elapsed_seconds": 412.4562253750046
+    },
+    {
+      "n": 8,
+      "composite_id": "auto_008_fractional_kelly_lw_shrink_sharpe_top18",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 1.4270001987678045,
+      "os_sharpe": 0.22256685855012154,
+      "n_members": 6,
+      "elapsed_seconds": 463.7716250420199
+    },
+    {
+      "n": 9,
+      "composite_id": "auto_009_hrp_lopezdeprado_quasidiag_sharpe_tilt_t",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 1.0279149533800753,
+      "os_sharpe": 0.09896998365694476,
+      "n_members": 19,
+      "elapsed_seconds": 367.9790940830135
+    },
+    {
+      "n": 10,
+      "composite_id": "auto_010_james_stein_tangency_neumann_k6_lw020_to",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 1.3595744128911476,
+      "os_sharpe": 0.11485041387582817,
+      "n_members": 6,
+      "elapsed_seconds": 449.8756791250198
+    },
+    {
+      "n": 11,
+      "composite_id": "auto_011_cscv_bootstrap_robust_sharpe_top18_dedup",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 1.2611987684365267,
+      "os_sharpe": -0.19623908590794037,
+      "n_members": 10,
+      "elapsed_seconds": 673.1319456249475
+    },
+    {
+      "n": 12,
+      "composite_id": "auto_012_antibias_middle_quintile_dedup085_equal",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 0.936725269226371,
+      "os_sharpe": -0.2442596884376474,
+      "n_members": 6,
+      "elapsed_seconds": 372.59911558398744
+    },
+    {
+      "n": 13,
+      "composite_id": "auto_013_stability_ir_cluster_median_repr_eqweigh",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 1.05790030943603,
+      "os_sharpe": -0.238934427932018,
+      "n_members": 14,
+      "elapsed_seconds": 392.5831458339817
+    },
+    {
+      "n": 14,
+      "composite_id": "auto_014_bootstrap_erc_icmag_stability_dedup085_t",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 0.7653218766915669,
+      "os_sharpe": -0.444315179354197,
+      "n_members": 8,
+      "elapsed_seconds": 408.31807899998967
+    },
+    {
+      "n": 15,
+      "composite_id": "auto_015_pbo_chunk_consistency_spinu_risk_budget",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 1.0392816033164762,
+      "os_sharpe": -0.2550600724760605,
+      "n_members": 17,
+      "elapsed_seconds": 455.81518099998357
+    },
+    {
+      "n": 16,
+      "composite_id": "auto_016_pc1_residualized_resid_sharpe_top8_invvo",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 0.8420142179579864,
+      "os_sharpe": -0.45895398493010814,
+      "n_members": 8,
+      "elapsed_seconds": 677.1881982500199
+    },
+    {
+      "n": 17,
+      "composite_id": "auto_017_regime_year_stable_dd_lt25_top8_lw_tange",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 1.4095185307398381,
+      "os_sharpe": 0.25584704587155593,
+      "n_members": 8,
+      "elapsed_seconds": 419.24190104199806
+    },
+    {
+      "n": 18,
+      "composite_id": "auto_018_mean_semivariance_tangency_sortino_top8",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 1.4159743632650532,
+      "os_sharpe": -0.14568149758608606,
+      "n_members": 8,
+      "elapsed_seconds": 559.4793912500027
+    },
+    {
+      "n": 19,
+      "composite_id": "auto_019_hedge_eg_macro_resid_yearstable_dd30_top",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 0.8604665001100359,
+      "os_sharpe": -0.03393816825609072,
+      "n_members": 10,
+      "elapsed_seconds": 519.0569751670118
+    },
+    {
+      "n": 20,
+      "composite_id": "auto_020_ccm_eltongruber_tangency_regime_top8_ded",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 1.2724139809341275,
+      "os_sharpe": 0.312492440272784,
+      "n_members": 8,
+      "elapsed_seconds": 458.63014849997126
+    },
+    {
+      "n": 21,
+      "composite_id": "auto_021_starr_cvar_dnvol_parity_top7_yearstable",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 0.7633714958880661,
+      "os_sharpe": -0.06114293719823663,
+      "n_members": 7,
+      "elapsed_seconds": 511.3481587500428
+    },
+    {
+      "n": 22,
+      "composite_id": "auto_022_calmar_young91_top8_dedup085_linear_weig",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 1.1279492190653702,
+      "os_sharpe": -0.2979240508031053,
+      "n_members": 8,
+      "elapsed_seconds": 486.6043499999796
+    },
+    {
+      "n": 23,
+      "composite_id": "auto_023_quarterly_sharpe_stable_top8_tikhonov_ta",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 1.192499454177953,
+      "os_sharpe": -0.041964343401886095,
+      "n_members": 8,
+      "elapsed_seconds": 407.54843641695334
+    },
+    {
+      "n": 24,
+      "composite_id": "auto_024_michaud_resampled_tangency_yearstable_dd",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 0.9178370380184934,
+      "os_sharpe": -0.5107757981527353,
+      "n_members": 10,
+      "elapsed_seconds": 445.33062404196244
+    },
+    {
+      "n": 25,
+      "composite_id": "auto_025_neumann_minvar_year_robust_top5_dd25_ded",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 1.2457107856853282,
+      "os_sharpe": 0.40874311161867916,
+      "n_members": 5,
+      "elapsed_seconds": 408.02137812500587
+    },
+    {
+      "n": 26,
+      "composite_id": "auto_026_michaud_resampled_tangency_regime_stable",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 0.8211398523733369,
+      "os_sharpe": -0.37382006694352443,
+      "n_members": 8,
+      "elapsed_seconds": 475.0623848750256
+    },
+    {
+      "n": 27,
+      "composite_id": "auto_027_michaud_resampled_tangency_yearstable_dd",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 1.4390384689805578,
+      "os_sharpe": 0.27242495057485044,
+      "n_members": 10,
+      "elapsed_seconds": 453.8894917499856
+    },
+    {
+      "n": 28,
+      "composite_id": "auto_028_psr_baileylopez_gated_top6_icsigned_gros",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 1.3710462883506724,
+      "os_sharpe": -0.07787488100204311,
+      "n_members": 6,
+      "elapsed_seconds": 436.6044411659823
+    },
+    {
+      "n": 29,
+      "composite_id": "auto_029_omega_keating_shadwick_yearstable_cdar_t",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 0.46769181123255443,
+      "os_sharpe": -0.6097617489497149,
+      "n_members": 6,
+      "elapsed_seconds": 406.2080641670036
+    },
+    {
+      "n": 30,
+      "composite_id": "auto_030_ewma_riskmetrics_recency_sharpe_top8_tan",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 1.20676978874108,
+      "os_sharpe": 0.3343547731841869,
+      "n_members": 8,
+      "elapsed_seconds": 423.7669046249939
+    },
+    {
+      "n": 31,
+      "composite_id": "auto_031_michaud_resampled_tangency_stat_block_bo",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 1.4171635628680659,
+      "os_sharpe": -0.14370272498304051,
+      "n_members": 4,
+      "elapsed_seconds": 414.907565624977
+    },
+    {
+      "n": 32,
+      "composite_id": "auto_032_michaud_resampled_tangency_yearstable_dd",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 1.4222226746660418,
+      "os_sharpe": 0.34990374354590176,
+      "n_members": 7,
+      "elapsed_seconds": 410.9109127499978
+    },
+    {
+      "n": 33,
+      "composite_id": "auto_033_psr_dsr_yearstable_dd25_neumann_k4_tange",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 1.353373349035114,
+      "os_sharpe": 0.32981973363506245,
+      "n_members": 8,
+      "elapsed_seconds": 433.7506061249878
+    },
+    {
+      "n": 34,
+      "composite_id": "auto_034_dd_disc_yearstable_top8_mp_denoise_neuma",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 1.386878117971343,
+      "os_sharpe": 0.19429478815170934,
+      "n_members": 8,
+      "elapsed_seconds": 382.183327250008
+    },
+    {
+      "n": 35,
+      "composite_id": "auto_035_eg_ftrl_online_yearstable_dd25_top8_corr",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 1.29460424327123,
+      "os_sharpe": 0.34710938393001495,
+      "n_members": 8,
+      "elapsed_seconds": 391.27548508299515
+    },
+    {
+      "n": 36,
+      "composite_id": "auto_036_psr_baileylopezdeprado_top6_lw_tangency",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 1.4450504572663514,
+      "os_sharpe": 0.023530109756161065,
+      "n_members": 6,
+      "elapsed_seconds": 425.4638405829901
+    },
+    {
+      "n": 37,
+      "composite_id": "auto_037_yearstable_dd20_top5_neumann_k4_tangency",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 0.9015936012055303,
+      "os_sharpe": 0.838006592181136,
+      "n_members": 5,
+      "elapsed_seconds": 432.7877444580081
+    },
+    {
+      "n": 38,
+      "composite_id": "auto_038_mp_denoise_tangency_year3stable_dd20_ded",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 1.3654767906507486,
+      "os_sharpe": 0.2444492758667757,
+      "n_members": 6,
+      "elapsed_seconds": 447.71237925003516
+    },
+    {
+      "n": 39,
+      "composite_id": "auto_039_eb_sharpe_shrink_neumann_k4_top6_yearsta",
+      "status": "ERRORED",
+      "reason": "backtest produced incomplete metrics. tail:     include_os=not args.no_os,\n        ^^^^^^^^^^^^^^^^^^^^^^^^^^\n    )\n    ^\n  File \"/Users/taeyeong/intraday_trading/src/intraday/composites/_runner.py\", line 250, in build_and_backtest\n    raise ValueError(\"select_members returned an empty list\")\nValueError: select_members returned an empty list\n",
+      "is_sharpe": null,
+      "os_sharpe": null,
+      "n_members": null,
+      "elapsed_seconds": 193.1310196670238
+    },
+    {
+      "n": 40,
+      "composite_id": "auto_040_psr_yearstable_dd25_neumann_k4_tangency",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 1.4358947171516996,
+      "os_sharpe": -0.12112167226234309,
+      "n_members": 6,
+      "elapsed_seconds": 402.13356670801295
+    },
+    {
+      "n": 41,
+      "composite_id": "auto_041_neumann_k3_tangency_top6_yearstable_dd22",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 1.3055666118014222,
+      "os_sharpe": 0.26513637095268494,
+      "n_members": 6,
+      "elapsed_seconds": 382.3282488340046
+    },
+    {
+      "n": 42,
+      "composite_id": "auto_042_neumann_k5_tangency_top6_yearstable_dd22",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 1.3772043486715848,
+      "os_sharpe": 0.28517387253587784,
+      "n_members": 6,
+      "elapsed_seconds": 396.34587137500057
+    },
+    {
+      "n": 43,
+      "composite_id": "auto_043_gerber_robust_cov_neumann_k5_tangency_ye",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 1.4871996400109253,
+      "os_sharpe": 0.2368681384084148,
+      "n_members": 6,
+      "elapsed_seconds": 423.71319912502076
+    },
+    {
+      "n": 44,
+      "composite_id": "auto_044_blockboot_sharpe_tertile_stable_dd22_neu",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 1.2132184527918566,
+      "os_sharpe": 0.4060753589897453,
+      "n_members": 3,
+      "elapsed_seconds": 468.73902379197534
+    },
+    {
+      "n": 45,
+      "composite_id": "auto_045_tikhonov_tangency_yearstable_dd20_top8_s",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 1.4717761075527913,
+      "os_sharpe": 0.30782823829070877,
+      "n_members": 7,
+      "elapsed_seconds": 416.4648263330455
+    },
+    {
+      "n": 46,
+      "composite_id": "auto_046_constcorr_lw_neumann_k4_tang_sortino_yea",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 1.5357164684797924,
+      "os_sharpe": -0.09422877376125377,
+      "n_members": 6,
+      "elapsed_seconds": 465.57283912500134
+    },
+    {
+      "n": 47,
+      "composite_id": "auto_047_greedy_gram_schmidt_resid_sharpe_yearsta",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 1.4416750483649887,
+      "os_sharpe": -0.6502515722225285,
+      "n_members": 6,
+      "elapsed_seconds": 374.96373004099587
+    },
+    {
+      "n": 48,
+      "composite_id": "auto_048_greedy_gram_schmidt_residual_sharpe_top8",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 1.676951858680439,
+      "os_sharpe": -0.27681568498516906,
+      "n_members": 6,
+      "elapsed_seconds": 398.5024774589692
+    },
+    {
+      "n": 49,
+      "composite_id": "auto_049_gram_schmidt_residual_sharpe_top8_yearst",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 1.499164349832988,
+      "os_sharpe": -0.5906516098914321,
+      "n_members": 6,
+      "elapsed_seconds": 399.64622241602046
+    },
+    {
+      "n": 50,
+      "composite_id": "auto_050_greedy_gram_schmidt_resid_sharpe_yearsta",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 1.187028686636477,
+      "os_sharpe": 0.36401702127493885,
+      "n_members": 3,
+      "elapsed_seconds": 145.29834229202243
+    },
+    {
+      "n": 51,
+      "composite_id": "auto_051_greedy_gram_schmidt_resid_sharpe_top8_ye",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 1.5947141797890672,
+      "os_sharpe": -0.4973907782309593,
+      "n_members": 6,
+      "elapsed_seconds": 387.8749150839867
+    },
+    {
+      "n": 52,
+      "composite_id": "auto_052_greedy_gs_residual_sharpe_yearstable_dd2",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 0.9993507260123113,
+      "os_sharpe": 0.30934684958496766,
+      "n_members": 6,
+      "elapsed_seconds": 420.39357779099373
+    },
+    {
+      "n": 53,
+      "composite_id": "auto_053_gram_schmidt_residual_sharpe_top8_yearst",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 0.49767850472203173,
+      "os_sharpe": 0.0,
+      "n_members": 2,
+      "elapsed_seconds": 377.50587549997726
+    },
+    {
+      "n": 54,
+      "composite_id": "auto_054_greedy_gram_schmidt_residsharpe_yearstab",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 1.4008225974070385,
+      "os_sharpe": -0.6808219298771977,
+      "n_members": 6,
+      "elapsed_seconds": 396.7059477919829
+    },
+    {
+      "n": 55,
+      "composite_id": "auto_055_greedy_gs_orth_resid_yearstable_dd20_n8",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 1.4528536014781999,
+      "os_sharpe": -0.5977668948256473,
+      "n_members": 6,
+      "elapsed_seconds": 375.00749441602966
+    },
+    {
+      "n": 56,
+      "composite_id": "auto_056_gram_schmidt_resid_sharpe_yearstab_dd25",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 1.225615344431834,
+      "os_sharpe": -0.06568614580733396,
+      "n_members": 6,
+      "elapsed_seconds": 387.7826868330012
+    },
+    {
+      "n": 57,
+      "composite_id": "auto_057_gram_schmidt_resid_sharpe_year_stable_dd",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 1.5941876063888605,
+      "os_sharpe": -0.49111492078435165,
+      "n_members": 6,
+      "elapsed_seconds": 408.4123567919596
+    },
+    {
+      "n": 58,
+      "composite_id": "auto_058_gram_schmidt_resid_sharpe_yearstable_dd2",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 1.457944795216601,
+      "os_sharpe": -0.6520673565454894,
+      "n_members": 6,
+      "elapsed_seconds": 417.36010308301775
+    },
+    {
+      "n": 59,
+      "composite_id": "auto_059_gramschmidt_resid_sharpe_yearstable_dd25",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 1.5628803796000874,
+      "os_sharpe": -0.5423901529850385,
+      "n_members": 6,
+      "elapsed_seconds": 373.0243117499631
+    },
+    {
+      "n": 60,
+      "composite_id": "auto_060_gram_schmidt_resid_sharpe_dd20_n6_gross",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 1.241001853297837,
+      "os_sharpe": 0.029889147972796973,
+      "n_members": 6,
+      "elapsed_seconds": 395.3091088330257
+    },
+    {
+      "n": 61,
+      "composite_id": "auto_061_gram_schmidt_resid_sharpe_yearstable_dd2",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 1.4506325610404536,
+      "os_sharpe": -0.6151422040841883,
+      "n_members": 6,
+      "elapsed_seconds": 419.9773877080297
+    },
+    {
+      "n": 62,
+      "composite_id": "auto_062_rank_blend_sharpe_orth_yearstable_dd20_t",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 0.8874958642391082,
+      "os_sharpe": -0.10987963215949853,
+      "n_members": 6,
+      "elapsed_seconds": 384.3022328329971
+    },
+    {
+      "n": 63,
+      "composite_id": "auto_063_rank_sum_greedy_year_stable_dd25_top6_co",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 0.8364163098508007,
+      "os_sharpe": -0.2408688688931459,
+      "n_members": 6,
+      "elapsed_seconds": 394.56485224998323
+    },
+    {
+      "n": 64,
+      "composite_id": "auto_064_ward_cluster_centroid_k6_yearstable_dd25",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 1.4506325610404527,
+      "os_sharpe": -0.6151422040841883,
+      "n_members": 6,
+      "elapsed_seconds": 370.1280331669841
+    },
+    {
+      "n": 65,
+      "composite_id": "auto_065_covfree_greedy_corrank_sharperank_yearst",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 1.0268931044256728,
+      "os_sharpe": 0.026905842618348014,
+      "n_members": 7,
+      "elapsed_seconds": 441.7461781249731
+    },
+    {
+      "n": 66,
+      "composite_id": "auto_066_corr_rank_sharpe_rank_greedy_yearstable",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 1.1246646049917697,
+      "os_sharpe": -0.325097830383066,
+      "n_members": 7,
+      "elapsed_seconds": 422.24323866702616
+    },
+    {
+      "n": 67,
+      "composite_id": "auto_067_borda_sharpe_orth_rank_yrstable_dd22_eqw",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 1.4771830325344852,
+      "os_sharpe": -0.10328485691823115,
+      "n_members": 7,
+      "elapsed_seconds": 411.82176491600694
+    },
+    {
+      "n": 68,
+      "composite_id": "auto_068_ward_centroid_k6_yearstable_dd25_dedup08",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 1.0576267823420684,
+      "os_sharpe": -0.8015525841464871,
+      "n_members": 6,
+      "elapsed_seconds": 406.0877583749825
+    },
+    {
+      "n": 69,
+      "composite_id": "auto_069_ward_cluster_centroid_yearstable_dd25_k6",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 1.069394575920138,
+      "os_sharpe": -0.8232771976011275,
+      "n_members": 6,
+      "elapsed_seconds": 370.56722666701535
+    },
+    {
+      "n": 70,
+      "composite_id": "auto_070_ward_centroid_yearstable_dd22_k6_eqwt_co",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 1.1194302133974419,
+      "os_sharpe": -0.2510791889574788,
+      "n_members": 6,
+      "elapsed_seconds": 438.84131375001743
+    },
+    {
+      "n": 71,
+      "composite_id": "auto_071_herc_ward_centroids_yearstable_dd20_dedu",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 1.0475155898183677,
+      "os_sharpe": -0.7812296207186303,
+      "n_members": 6,
+      "elapsed_seconds": 374.19501274998765
+    },
+    {
+      "n": 72,
+      "composite_id": "auto_072_ward_hc_centroid_k6_yearstable_dd22_eqwe",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 1.096875234312335,
+      "os_sharpe": -0.33077188393505447,
+      "n_members": 6,
+      "elapsed_seconds": 386.0035197089892
+    },
+    {
+      "n": 73,
+      "composite_id": "auto_073_ward_corrdist_k6_yearstable_dd20_dedup08",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 1.4361380630956235,
+      "os_sharpe": -0.570456891277813,
+      "n_members": 6,
+      "elapsed_seconds": 430.53394279204076
+    },
+    {
+      "n": 74,
+      "composite_id": "auto_074_corr_sharpe_rank_greedy_yearstable_dd25",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 1.3736875982524523,
+      "os_sharpe": -0.11354024029744972,
+      "n_members": 8,
+      "elapsed_seconds": 420.38280337501783
+    },
+    {
+      "n": 75,
+      "composite_id": "auto_075_rank_sharpe_plus_orth_greedy_yearstable",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 0.8459340913291998,
+      "os_sharpe": -0.09390842375024999,
+      "n_members": 7,
+      "elapsed_seconds": 366.94608966598753
+    },
+    {
+      "n": 76,
+      "composite_id": "auto_076_ward_centroid_yearstable_dd22_k6_eqweigh",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 1.0164899757881403,
+      "os_sharpe": -0.379361157779365,
+      "n_members": 6,
+      "elapsed_seconds": 403.52989895798964
+    },
+    {
+      "n": 77,
+      "composite_id": "auto_077_ward_cluster_centroid_sharpe_tilt_yearst",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 1.5302189745055967,
+      "os_sharpe": -0.47350196882831,
+      "n_members": 6,
+      "elapsed_seconds": 459.436833707965
+    },
+    {
+      "n": 78,
+      "composite_id": "auto_078_ward_cluster_centroid_yearstable_dd20_k6",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 0.9051836814021049,
+      "os_sharpe": -0.3208497048552542,
+      "n_members": 6,
+      "elapsed_seconds": 360.07930145895807
+    },
+    {
+      "n": 79,
+      "composite_id": "auto_079_rank_sharpe_plus_orthog_greedy_yearstabl",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 1.3163088427433276,
+      "os_sharpe": 0.2658406268075518,
+      "n_members": 8,
+      "elapsed_seconds": 439.70531533297617
+    },
+    {
+      "n": 80,
+      "composite_id": "auto_080_herc_ward_centroid_yearstable_dd25_k6_eq",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 1.4273249131343024,
+      "os_sharpe": -0.5623925106060866,
+      "n_members": 6,
+      "elapsed_seconds": 412.2988743339665
+    },
+    {
+      "n": 81,
+      "composite_id": "auto_081_herc_clust_centroid_yearstable_dd25_k6_e",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 1.2871805687093216,
+      "os_sharpe": -0.5560970893575788,
+      "n_members": 6,
+      "elapsed_seconds": 394.84085699997377
+    },
+    {
+      "n": 82,
+      "composite_id": "auto_082_ward_centroid_k6_yearstable_dd22_dedup08",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 1.4271205991100735,
+      "os_sharpe": -0.562201403559003,
+      "n_members": 6,
+      "elapsed_seconds": 362.62700312497327
+    },
+    {
+      "n": 83,
+      "composite_id": "auto_083_ward_corrdist_yearstable_dd25_k6_centroi",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 1.4399844304428786,
+      "os_sharpe": -0.5737187125757158,
+      "n_members": 6,
+      "elapsed_seconds": 444.22887045895914
+    },
+    {
+      "n": 84,
+      "composite_id": "auto_084_ward_cluster_centroid_k6_yearstable_dd25",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 1.4487149275894666,
+      "os_sharpe": -0.5767880864303682,
+      "n_members": 6,
+      "elapsed_seconds": 380.26017283299007
+    },
+    {
+      "n": 85,
+      "composite_id": "auto_085_ward_centroid_yearstable_dd20_k6_covfree",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 1.2871805687093216,
+      "os_sharpe": -0.5560970893575788,
+      "n_members": 6,
+      "elapsed_seconds": 402.30903904198203
+    },
+    {
+      "n": 86,
+      "composite_id": "auto_086_ward_cluster_centroid_yearstable_dd25_k6",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 0.883309576013729,
+      "os_sharpe": -0.36033921566370486,
+      "n_members": 6,
+      "elapsed_seconds": 374.68206083303085
+    },
+    {
+      "n": 87,
+      "composite_id": "auto_087_rank_sharpe_corr_greedy_yearstable_dd25",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 1.2173246046737853,
+      "os_sharpe": 0.1928522296108966,
+      "n_members": 6,
+      "elapsed_seconds": 455.36526808404597
+    },
+    {
+      "n": 88,
+      "composite_id": "auto_088_ward_cluster_centroid_k6_yearstable_dd25",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 1.4506325610404527,
+      "os_sharpe": -0.6151422040841883,
+      "n_members": 6,
+      "elapsed_seconds": 381.8351489160559
+    },
+    {
+      "n": 89,
+      "composite_id": "auto_089_eb_sharpe_ward_centroid_k6_dd22_yearstab",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 1.4482494864158768,
+      "os_sharpe": -0.6338151616176824,
+      "n_members": 6,
+      "elapsed_seconds": 412.206806415983
+    },
+    {
+      "n": 90,
+      "composite_id": "auto_090_ward_centroid_k6_yearstable_dd25_dedup09",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 1.2871805687093216,
+      "os_sharpe": -0.5560970893575788,
+      "n_members": 6,
+      "elapsed_seconds": 399.63802966702497
+    },
+    {
+      "n": 91,
+      "composite_id": "auto_091_rank_agg_sharpe_orth_yearstable_dd25_top",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 1.329062407859052,
+      "os_sharpe": 0.2504521160506791,
+      "n_members": 6,
+      "elapsed_seconds": 465.73920333298156
+    },
+    {
+      "n": 92,
+      "composite_id": "auto_092_corr_rank_sharpe_rank_yearstable_dd25_to",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 1.555449558979579,
+      "os_sharpe": 0.008931028050862192,
+      "n_members": 8,
+      "elapsed_seconds": 439.6248705839971
+    },
+    {
+      "n": 93,
+      "composite_id": "auto_093_bl_eb_shrink_yearstable_dd25_dedup085_to",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 1.2540004535003584,
+      "os_sharpe": 0.22132856831064535,
+      "n_members": 6,
+      "elapsed_seconds": 440.6565885830205
+    },
+    {
+      "n": 94,
+      "composite_id": "auto_094_ward_centroid_yearstable_dd20_rho085_k6",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 1.4271205991100735,
+      "os_sharpe": -0.562201403559003,
+      "n_members": 6,
+      "elapsed_seconds": 340.91378908400657
+    },
+    {
+      "n": 95,
+      "composite_id": "auto_095_ward_corrdist_yearstable_centroid_eq_sig",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 1.2412129706781911,
+      "os_sharpe": -0.5875944952905326,
+      "n_members": 6,
+      "elapsed_seconds": 420.2439426659839
+    },
+    {
+      "n": 96,
+      "composite_id": "auto_096_corr_rank_sharpe_rank_greedy_n6_yearstab",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 1.725120739528275,
+      "os_sharpe": 0.0741822765708493,
+      "n_members": 6,
+      "elapsed_seconds": 405.58775295800297
+    },
+    {
+      "n": 97,
+      "composite_id": "auto_097_ward_centroid_eqw_yearstable_dd20_dedup0",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 1.2173978316472205,
+      "os_sharpe": -0.5374498826912746,
+      "n_members": 6,
+      "elapsed_seconds": 383.64905962499324
+    },
+    {
+      "n": 98,
+      "composite_id": "auto_098_ward_hc_cluster_max_sharpe_centroid_eqw",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 1.0576267823420684,
+      "os_sharpe": -0.8015525841464871,
+      "n_members": 6,
+      "elapsed_seconds": 382.05760041601025
+    },
+    {
+      "n": 99,
+      "composite_id": "auto_099_ward_cluster_centroid_k6_yearstable_dd25",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 1.134033786107349,
+      "os_sharpe": -0.26399372171089647,
+      "n_members": 6,
+      "elapsed_seconds": 374.99212129204534
+    },
+    {
+      "n": 100,
+      "composite_id": "auto_100_ward_cluster_centroid_eqw_yearstable_dd2",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 1.0638486587234481,
+      "os_sharpe": -0.812244706290258,
+      "n_members": 6,
+      "elapsed_seconds": 381.37917966698296
+    },
+    {
+      "n": 101,
+      "composite_id": "auto_101_ward_centroid_k6_yearstable_dd25_eq_gros",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 0.8815742653549054,
+      "os_sharpe": -0.35955952659858437,
+      "n_members": 6,
+      "elapsed_seconds": 373.838178667007
+    },
+    {
+      "n": 102,
+      "composite_id": "auto_102_herc_centroid_yearstable_dd25_dedup085_k",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 1.4361380630956235,
+      "os_sharpe": -0.570456891277813,
+      "n_members": 6,
+      "elapsed_seconds": 413.9179056250141
+    },
+    {
+      "n": 103,
+      "composite_id": "auto_103_ward_centroid_n6_yearstable_dd22_sharpew",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 1.5204660324889667,
+      "os_sharpe": -0.461705936373908,
+      "n_members": 6,
+      "elapsed_seconds": 429.28649500000756
+    },
+    {
+      "n": 104,
+      "composite_id": "auto_104_sharpe_orth_rank_greedy_n8_yearstable_dd",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 1.243877022860266,
+      "os_sharpe": -0.27773597339024614,
+      "n_members": 8,
+      "elapsed_seconds": 475.5191203340073
+    },
+    {
+      "n": 105,
+      "composite_id": "auto_105_cluster_centroid_ward_k6_yearstable_dd25",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 1.4400000570541396,
+      "os_sharpe": -0.6245543854681155,
+      "n_members": 6,
+      "elapsed_seconds": 445.7494569160044
+    },
+    {
+      "n": 106,
+      "composite_id": "auto_106_ward_centroid_k6_yearstable_dd25_dedup08",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 1.445999268112891,
+      "os_sharpe": -0.6365594309915285,
+      "n_members": 6,
+      "elapsed_seconds": 381.1864068330033
+    },
+    {
+      "n": 107,
+      "composite_id": "auto_107_ward_corr_dist_k6_centroid_yearstable_dd",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 1.2181389308869777,
+      "os_sharpe": -0.2599386627299112,
+      "n_members": 6,
+      "elapsed_seconds": 445.5199567079544
+    },
+    {
+      "n": 108,
+      "composite_id": "auto_108_ward_centroid_k6_yearstable_dd20_eqw_gro",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 1.0114577487923164,
+      "os_sharpe": 0.2552421442300076,
+      "n_members": 6,
+      "elapsed_seconds": 389.99696324998513
+    },
+    {
+      "n": 109,
+      "composite_id": "auto_109_covfree_rankblend_sharpe_ortho_yearstabl",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 1.121565636069597,
+      "os_sharpe": 0.17869839976125249,
+      "n_members": 7,
+      "elapsed_seconds": 388.62869333301205
+    },
+    {
+      "n": 110,
+      "composite_id": "auto_110_ward_centroid_eqw_signaligned_yearstable",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 1.3260317993247248,
+      "os_sharpe": -0.5400011174420304,
+      "n_members": 6,
+      "elapsed_seconds": 389.4219034999842
+    },
+    {
+      "n": 111,
+      "composite_id": "auto_111_corrrank_sharperank_yrstable_dd25_top7_g",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 0.9129433877403941,
+      "os_sharpe": -0.09414296722046378,
+      "n_members": 7,
+      "elapsed_seconds": 415.7917696670047
+    },
+    {
+      "n": 112,
+      "composite_id": "auto_112_corr_rank_sharpe_rank_greedy_n8_yearstab",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 1.446215137613999,
+      "os_sharpe": 0.33741412915898605,
+      "n_members": 8,
+      "elapsed_seconds": 409.6582512090099
+    },
+    {
+      "n": 113,
+      "composite_id": "auto_113_ward_centroid_max_sharpe_yearstable_dd20",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 1.445999268112891,
+      "os_sharpe": -0.6365594309915285,
+      "n_members": 6,
+      "elapsed_seconds": 382.39934820903
+    },
+    {
+      "n": 114,
+      "composite_id": "auto_114_cluster_centroid_eqw_yearstab_dd25_k6_gr",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 1.445999268112891,
+      "os_sharpe": -0.6365594309915285,
+      "n_members": 6,
+      "elapsed_seconds": 411.5933942500269
+    },
+    {
+      "n": 115,
+      "composite_id": "auto_115_borda_rank_sharpe_x_orthogonality_k6_yea",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 1.2885429043518253,
+      "os_sharpe": 0.2357699365793388,
+      "n_members": 6,
+      "elapsed_seconds": 406.8396257919958
+    },
+    {
+      "n": 116,
+      "composite_id": "auto_116_herc_centroid_yearstable_dd25_top6_covfr",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 1.1161553849030685,
+      "os_sharpe": 0.08145861456630611,
+      "n_members": 6,
+      "elapsed_seconds": 409.72678950004047
+    },
+    {
+      "n": 117,
+      "composite_id": "auto_117_ward_cluster_centroid_k6_yearstable_dd25",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 1.3260317993247248,
+      "os_sharpe": -0.5400011174420304,
+      "n_members": 6,
+      "elapsed_seconds": 400.59445170796243
+    },
+    {
+      "n": 118,
+      "composite_id": "auto_118_rank_score_sharpe_corr_orth_yearstable_d",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 1.3091774831605372,
+      "os_sharpe": -0.336672746407017,
+      "n_members": 6,
+      "elapsed_seconds": 375.08303500001784
+    },
+    {
+      "n": 119,
+      "composite_id": "auto_119_ward_corrdist_topsharpe_centroid_yearsta",
+      "status": "EVALUATED",
+      "reason": "ok",
+      "is_sharpe": 1.0693945759201378,
+      "os_sharpe": -0.8232771976011275,
+      "n_members": 6,
+      "elapsed_seconds": 378.3251542079961
+    }
+  ],
+  "status": "exhausted",
+  "elapsed_seconds": 29137,
+  "stop_reason": "wall clock"
+}

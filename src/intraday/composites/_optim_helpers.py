@@ -11,6 +11,7 @@ mean / PCA estimation.
 from __future__ import annotations
 
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -93,6 +94,71 @@ def member_signs_ic(run_id: str, alpha_ids: list[str],
         else:
             signs[aid] = -1 if v < 0 else 1
     return signs
+
+
+_ZOO_TAIL_RE = re.compile(r"_(fwd|rev)_c\d+$")
+
+
+def family_key(alpha_id: str, level: str = "signal_dir") -> tuple[str, ...]:
+    """Return a tuple identifying the parameter-sweep family of ``alpha_id``.
+
+    The zoo generator (``scripts/tools/generate_factor_zoo.py``) mass-produces
+    ``xs_factor_<signal>_<dir>_c<K>`` and ``xs_reg_<...>_<dir>_c<K>`` modules
+    — same signal in many K (concentration) and window variants. For
+    composite selection these cousins are not independent alphas; the
+    correlation between them is high by construction. ``family_key`` groups
+    them so a downstream dedup keeps one representative per family.
+
+    ``level``:
+        - ``"signal_window_dir"`` — collapse only K. ``atrproxy14d_rev_c40``
+          and ``atrproxy14d_rev_c50`` share a key; ``atrproxy7d_rev`` does
+          NOT (different window).
+        - ``"signal_dir"`` (default) — also collapse window/alpha-numerics.
+          All of ``atrproxy7d_rev_*``, ``atrproxy14d_rev_*``,
+          ``atrproxy21d_rev_*`` share a single key.
+
+    Non-zoo alphas (``xs_volume_rank``, hand-written ``ts_*`` strategies,
+    etc.) do not match the pattern — they return a unique singleton key so
+    they are never deduped against anything.
+    """
+    m = _ZOO_TAIL_RE.search(alpha_id)
+    if not m:
+        return ("__individual__", alpha_id)
+    prefix = alpha_id[: m.start()]
+    direction = m.group(1)
+    if level == "signal_window_dir":
+        return (prefix, direction)
+    if level == "signal_dir":
+        signal = re.sub(r"\d+d?$", "", prefix)
+        signal = signal.rstrip("_") or prefix
+        return (signal, direction)
+    raise ValueError(f"unknown family_key level: {level!r}")
+
+
+def family_dedup(alpha_ids: list[str], keep_metric: dict[str, float],
+                 level: str = "signal_dir") -> list[str]:
+    """Keep one representative per parameter-sweep family.
+
+    Within each family (as identified by ``family_key``) keep the alpha
+    with the highest ``keep_metric`` value. Alphas missing from the
+    metric default to ``-inf`` (lose every tie). Non-zoo alphas always
+    pass through — each has its own singleton family.
+
+    Default ``level='signal_dir'`` is the most aggressive: a robust factor
+    that produced 6 cousin-cell winners collapses to 1. Use
+    ``level='signal_window_dir'`` to preserve different windows of the
+    same signal as independent.
+    """
+    best: dict[tuple[str, ...], tuple[float, str]] = {}
+    order: dict[tuple[str, ...], int] = {}
+    for i, aid in enumerate(alpha_ids):
+        key = family_key(aid, level=level)
+        score = float(keep_metric.get(aid, float("-inf")))
+        prev = best.get(key)
+        if prev is None or score > prev[0]:
+            best[key] = (score, aid)
+            order.setdefault(key, i)
+    return [best[k][1] for k in sorted(order.keys(), key=lambda k: order[k])]
 
 
 def correlation_dedup(R: pd.DataFrame, threshold: float = 0.9,

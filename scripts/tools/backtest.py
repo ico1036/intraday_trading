@@ -158,6 +158,7 @@ def run_backtest(args: argparse.Namespace) -> dict[str, Any]:
     )
     result = runner.run(start_time=parse_dt(args.start), end_time=parse_dt(args.end))
     runner.save_report(output_dir)
+    _snapshot_strategy_source(strategy_cls, output_dir)
     verification = verify_artifact(output_dir)
 
     # Compute display-only summary metrics that the dashboard previously
@@ -210,6 +211,44 @@ def _strategy_module_path(strategy_cls: type) -> Path | None:
         return Path(inspect.getfile(strategy_cls))
     except (TypeError, OSError):
         return None
+
+
+def _snapshot_strategy_source(strategy_cls: type, output_dir: Path) -> None:
+    """Copy the strategy module into the archive so the alpha stays
+    reproducible even if the source file is later deleted or refactored.
+
+    Past trap: xs_factor_amihud60d_fwd_c20 lost its strategy file during
+    a variant-sweep cleanup; the archive metrics remained but the code
+    that produced them was gone. Snapshotting here breaks that linkage.
+    Also persists the strategy class name + git HEAD so the alpha can be
+    bound back to the exact module identity later.
+    """
+    import shutil
+    import subprocess
+    src = _strategy_module_path(strategy_cls)
+    if src is None or not src.exists():
+        return
+    try:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, output_dir / "strategy_source.py")
+        git_sha = ""
+        try:
+            git_sha = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=src.parent, capture_output=True, text=True, timeout=3,
+            ).stdout.strip()
+        except Exception:
+            pass
+        meta = {
+            "strategy_class": strategy_cls.__name__,
+            "source_relpath": str(src),
+            "git_head": git_sha,
+        }
+        (output_dir / "strategy_source.meta.json").write_text(
+            json.dumps(meta, indent=2)
+        )
+    except Exception:
+        pass
 
 
 def _existing_cells_in_run(run_dir: Path, *, exclude: Path | None = None) -> set[tuple]:

@@ -64,6 +64,19 @@ def _load_member_events(run_id: str, alpha_id: str, split: str) -> pd.DataFrame:
     df = df.copy()
     df["timestamp"] = pd.to_datetime(df["timestamp"])
     df["symbol"] = df["symbol"].astype(str).str.upper()
+    # Snap events to the next daily-bar boundary so composite weights
+    # align with PrecomputedWeightsStrategy's exact-timestamp lookup
+    # under the daily-bar backtest path. Events already at midnight UTC
+    # remain put; intraday events shift forward to the NEXT 00:00 UTC
+    # (causal — never moves an event earlier).
+    ts = df["timestamp"]
+    snap = ts.dt.normalize() + pd.Timedelta(days=1)
+    df["timestamp"] = ts.where(ts == ts.dt.normalize(), snap)
+    df = (
+        df.sort_values("timestamp")
+          .groupby(["timestamp", "symbol"], as_index=False, sort=False)
+          .agg(target_weight=("target_weight", "last"))
+    )
     return df
 
 

@@ -12,6 +12,7 @@ import argparse
 import html
 import json
 import os
+import re
 import subprocess
 import sys
 from datetime import datetime
@@ -141,6 +142,7 @@ METRIC_COLUMNS = [
 TABLE_COLUMNS = [
     ("run_id", "run", "left"),
     ("alpha_id", "alpha_id", "left"),
+    ("family_size_fmt", "Cousins", "right"),
     ("category", "Category", "left"),
     ("bar_label", "Bar", "left"),
     ("backtest_period_fmt", "Backtest Period (start~end, days)", "left"),
@@ -815,6 +817,19 @@ def load_index(run_dir: Path) -> pd.DataFrame:
     # the same factor and only differ in concentration or direction.
     result = _apply_corr_dedup_to_index(result, run_dir, tau=0.7)
 
+    # Name-based parameter-sweep family key. The zoo generator produces
+    # xs_factor_<signal>_<dir>_c<K> in bulk; cousin cells share the same
+    # (signal, dir) and are double-counts at display time. The Alphas tab
+    # uses this column to collapse cousins to a single representative.
+    if not result.empty and "alpha_id" in result.columns:
+        try:
+            from intraday.composites._optim_helpers import family_key as _fk
+            result["family"] = result["alpha_id"].map(
+                lambda a: "/".join(_fk(str(a), level="signal_dir"))
+            )
+        except Exception:
+            result["family"] = result["alpha_id"]
+
     _INDEX_CACHE[str(key)] = (now, result.copy())
     try:
         result.to_parquet(cache_pq, index=False)
@@ -1031,6 +1046,124 @@ def forward_session_figure(run_dir: Path, alpha_id: str) -> go.Figure:
     fig.update_yaxes(tickformat=".2%")
     fig.add_hline(y=0, line_dash="dash", line_width=1, line_color="#94a3b8")
     return fig
+
+
+def forward_climber_html(run_dir: Path, alpha_id: str) -> tuple[str, str]:
+    """Returns (body_html, script_html) for the climber overlay.
+    NiceGUI blocks <script> inside ui.html — body goes through ui.html,
+    script through ui.add_body_html."""
+    p = alpha_dir(run_dir, alpha_id) / "forward" / "equity_curve.parquet"
+    if not p.exists():
+        return ("", "")
+    df = _equity_chart_series_cached(str(p))
+    if df.empty or "cumret" not in df.columns:
+        return ("", "")
+    cumret = (df["cumret"].astype(float) - float(df["cumret"].iloc[0])).to_numpy()
+    n_raw = len(cumret)
+    if n_raw < 2:
+        return ("", "")
+    N = min(250, n_raw)
+    idx = [int(round(i * (n_raw - 1) / (N - 1))) for i in range(N)]
+    cr = [float(cumret[i]) for i in idx]
+    # running peak + drawdown relative to NAV at peak
+    peak = cr[0]
+    dd = []
+    for v in cr:
+        if v > peak:
+            peak = v
+        dd.append((peak - v) / (1.0 + peak))
+    W, H = 800, 260
+    PAD_T, PAD_B, PAD_L, PAD_R = 30, 30, 40, 20
+    cw = W - PAD_L - PAD_R
+    ch = H - PAD_T - PAD_B
+    y_lo = min(cr)
+    y_hi = max(cr)
+    yrng = (y_hi - y_lo) if y_hi != y_lo else 1.0
+    pts = []
+    for i in range(N):
+        x = PAD_L + (i / (N - 1)) * cw
+        y = PAD_T + (1.0 - (cr[i] - y_lo) / yrng) * ch
+        pts.append([round(x, 1), round(y, 1), round(dd[i], 4)])
+    d_path = "M " + " L ".join(f"{p[0]},{p[1]}" for p in pts)
+    aid_safe = re.sub(r"\W", "_", alpha_id)
+    pts_json = json.dumps(pts)
+    body_html = f"""
+<div class="climber-wrap" style="position:relative;width:100%;height:{H}px;background:linear-gradient(180deg,#fef3c7 0%,#fff 60%,#fee2e2 100%);border:1px solid #e5e7eb;border-radius:8px;overflow:hidden;margin-top:8px">
+  <div style="position:absolute;top:6px;left:12px;font-size:13px;font-weight:600;color:#334155;z-index:2">
+    🏔 Live Climber — fall at MDD &ge; 20%
+  </div>
+  <div style="position:absolute;top:6px;right:12px;font-size:12px;color:#334155;z-index:2">
+    DD: <span id="cl-dd-{aid_safe}" style="font-variant-numeric:tabular-nums">0.00%</span>
+    &middot; <span id="cl-st-{aid_safe}" style="font-weight:600">walking</span>
+    <button id="cl-rs-{aid_safe}" style="margin-left:10px;border:1px solid #d1d5db;background:#fff;border-radius:4px;padding:1px 8px;cursor:pointer;font-size:12px">↺ replay</button>
+  </div>
+  <svg viewBox="0 0 {W} {H}" preserveAspectRatio="none" style="width:100%;height:100%;display:block">
+    <path d="{d_path}" stroke="#16a34a" stroke-width="1.8" fill="none"/>
+    <text id="cl-sp-{aid_safe}" x="{pts[0][0]}" y="{pts[0][1]-12}" font-size="24" text-anchor="middle" style="transition:none">🚶</text>
+  </svg>
+</div>
+"""
+    script_html = f"""
+<script>
+(function(){{
+  const pts = {pts_json};
+  const dur_ms = 9000;
+  const step_ms = Math.max(20, Math.floor(dur_ms / pts.length));
+  let i = 0, dead = false, timer = null;
+  let sp, dd_el, st_el, rs;
+  function tick(){{
+    if (i >= pts.length) {{ clearInterval(timer); timer = null; st_el.textContent = 'session complete ✓'; st_el.style.color = '#16a34a'; return; }}
+    const [x, y, dd] = pts[i];
+    dd_el.textContent = (dd*100).toFixed(2) + '%';
+    if (!dead && dd >= 0.20) {{
+      dead = true;
+      st_el.textContent = '☠ MDD 20% breached — FELL';
+      st_el.style.color = '#dc2626';
+      sp.textContent = '🪂';
+      sp.style.transition = 'all 1.2s cubic-bezier(.4,0,.6,1)';
+      sp.setAttribute('x', x);
+      sp.setAttribute('y', {H - 8});
+      sp.setAttribute('transform', `rotate(160 ${{x}} ${{ {H} - 8 }})`);
+      setTimeout(()=>{{ sp.textContent = '💀'; }}, 1200);
+      clearInterval(timer); timer = null;
+      return;
+    }}
+    sp.setAttribute('x', x);
+    sp.setAttribute('y', y - 12);
+    st_el.style.color = dd >= 0.15 ? '#dc2626' : dd >= 0.10 ? '#f59e0b' : '#16a34a';
+    i++;
+  }}
+  function start(){{
+    if (timer) {{ clearInterval(timer); timer = null; }}
+    i = 0; dead = false;
+    sp.textContent = '🚶';
+    sp.style.transition = 'none';
+    sp.removeAttribute('transform');
+    sp.setAttribute('x', pts[0][0]);
+    sp.setAttribute('y', pts[0][1] - 12);
+    st_el.textContent = 'walking';
+    st_el.style.color = '#16a34a';
+    dd_el.textContent = '0.00%';
+    timer = setInterval(tick, step_ms);
+  }}
+  function init(){{
+    sp = document.getElementById('cl-sp-{aid_safe}');
+    dd_el = document.getElementById('cl-dd-{aid_safe}');
+    st_el = document.getElementById('cl-st-{aid_safe}');
+    rs = document.getElementById('cl-rs-{aid_safe}');
+    if (!sp || !dd_el || !st_el || !rs) {{ return setTimeout(init, 100); }}
+    rs.addEventListener('click', start);
+    start();
+  }}
+  if (document.readyState === 'loading') {{
+    document.addEventListener('DOMContentLoaded', init);
+  }} else {{
+    init();
+  }}
+}})();
+</script>
+"""
+    return (body_html, script_html)
 
 
 def drawdown_figure(run_dir: Path, alpha_id: str) -> go.Figure:
@@ -1477,9 +1610,16 @@ def _fmt_generated_at(value: Any) -> str:
 
 def display_rows(df: pd.DataFrame) -> list[dict[str, Any]]:
     rows = []
-    cols = [col for col in METRIC_COLUMNS if col in df.columns]
+    extra_cols = [c for c in ("family", "family_size") if c in df.columns]
+    cols = [col for col in METRIC_COLUMNS if col in df.columns] + extra_cols
     for raw in df[cols].to_dict("records"):
         row = dict(raw)
+        fs = raw.get("family_size")
+        try:
+            fs_int = int(fs) if fs is not None and fs == fs else None
+        except (TypeError, ValueError):
+            fs_int = None
+        row["family_size_fmt"] = str(fs_int) if fs_int and fs_int > 1 else "-"
         row["os_return_fmt"] = _fmt_pct(raw.get("os_return"))
         row["is_return_fmt"] = _fmt_pct(raw.get("is_return"))
         row["os_sharpe_fmt"] = _fmt_sharpe_pair(raw.get("os_sharpe"))
@@ -1998,6 +2138,10 @@ def main() -> None:
                         ).classes("w-48")
                         min_is_sharpe = ui.number("Min IS Sharpe(daily)", value=None, step=0.01).classes("w-40")
                         min_trades = ui.number("Min trades", value=0, min=0, step=1).classes("w-40")
+                        family_dedup_toggle = ui.switch("Collapse cousins", value=True).tooltip(
+                            "Group xs_factor_* parameter-sweep cousins by (signal, direction); "
+                            "show only the best-IS-Sharpe representative. Off = show every variant."
+                        )
 
                     rows_container = ui.column().classes("w-full")
 
@@ -2023,6 +2167,22 @@ def main() -> None:
                             is_trades = pd.to_numeric(view["is_trades"], errors="coerce").fillna(0)
                             os_trades = pd.to_numeric(view["os_trades"], errors="coerce").fillna(0)
                             view = view[(is_trades >= int(min_trades.value)) | (os_trades >= int(min_trades.value))]
+                        if family_dedup_toggle.value and "family" in view.columns and not view.empty:
+                            # Pick representative by current sort metric — sorting by
+                            # OS Sharpe surfaces OS-best cousin, by IS Sharpe surfaces
+                            # IS-best, etc. Mirrors what the user already prioritized.
+                            sort_col = sort_select.value
+                            dedup_num = pd.to_numeric(view[sort_col], errors="coerce")
+                            view = view.assign(_dedup_key=dedup_num)
+                            sizes = view.groupby("family")["alpha_id"].transform("size")
+                            view = view.assign(family_size=sizes)
+                            view = (
+                                view.sort_values(
+                                    "_dedup_key", ascending=False, na_position="last"
+                                )
+                                .drop_duplicates(subset="family", keep="first")
+                                .drop(columns=["_dedup_key"])
+                            )
                         view = view.sort_values(sort_select.value, ascending=False, na_position="last")
                         return display_rows(view)
 
@@ -2092,7 +2252,8 @@ def main() -> None:
                                     ui.label(f"… and {len(rows)-50} more. Use sort/filter to narrow.").classes("note-text mt-1")
                             table_ref["table"] = table
 
-                    for control in (search_input, status_filter, bar_filter, sort_select, min_is_sharpe, min_trades):
+                    for control in (search_input, status_filter, bar_filter, sort_select,
+                                    min_is_sharpe, min_trades, family_dedup_toggle):
                         control.on_value_change(lambda _: render_table())
 
                     render_table()
@@ -2345,6 +2506,10 @@ def main() -> None:
                         ui.plotly(
                             forward_session_figure(detail_run_dir, alpha_id)
                         ).classes("w-full chart-host mt-2")
+                        _cl_body, _cl_script = forward_climber_html(detail_run_dir, alpha_id)
+                        if _cl_body:
+                            ui.html(_cl_body, sanitize=False).classes("w-full")
+                            ui.add_body_html(_cl_script)
             is_bps_simple, is_bps_w, _ = net_pnl_per_trade_bps(detail_run_dir, alpha_id, "is")
             os_bps_simple, os_bps_w, _ = net_pnl_per_trade_bps(detail_run_dir, alpha_id, "os")
             is_dd_pct, is_dd_dur, is_peak_ts, is_recov_ts = drawdown_metrics(detail_run_dir, alpha_id, "is")
