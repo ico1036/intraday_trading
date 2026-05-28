@@ -6,10 +6,26 @@ matching the schema used by ``data/futures_klines/`` so existing
 ``BarDataLoader`` works unchanged.
 
 Idempotent: skips (symbol, year) pairs whose parquet already exists.
+Public Binance fapi — no API key required.
+
+One-click reproduction (universe + date range pulled from the frozen
+splits.json of a specific run):
+
+    # 274-symbol live universe
+    uv run python scripts/tools/download_daily_klines.py \\
+        --from-splits live/splits/run_2026_05_xs500.splits.json
+
+    # 531-symbol full reproduction baseline
+    uv run python scripts/tools/download_daily_klines.py \\
+        --from-splits live/splits/run_2026_05_full531.splits.json
+
+``--symbols`` / ``--start`` / ``--end`` override the splits values when
+both are passed.
 """
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 import time
 from pathlib import Path
@@ -112,30 +128,45 @@ def already_complete(out_dir: Path, symbol: str, years: range) -> bool:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--start", default="2020-01-01")
-    ap.add_argument("--end", default="2026-05-31")
+    ap.add_argument("--start", default=None, help="default 2020-01-01 unless --from-splits")
+    ap.add_argument("--end", default=None, help="default 2026-05-31 unless --from-splits")
     ap.add_argument("--out", default="data/futures_klines_daily")
     ap.add_argument("--symbols", nargs="*", help="explicit symbol list (skip exchangeInfo)")
+    ap.add_argument("--from-splits", default=None,
+                    help="path to splits.json — seeds universe + start (IS) + end (OS) for full reproduction")
     ap.add_argument("--limit", type=int, default=None, help="process at most N symbols")
     ap.add_argument("--force", action="store_true", help="re-download even if files exist")
     args = ap.parse_args(argv)
 
+    splits_universe: list[str] | None = None
+    splits_start: str | None = None
+    splits_end: str | None = None
+    if args.from_splits:
+        sp = json.loads(Path(args.from_splits).read_text())
+        splits_universe = list(sp.get("universe", []))
+        splits_start = sp.get("is", {}).get("start")
+        splits_end = sp.get("os", {}).get("end") or sp.get("is", {}).get("end")
+
+    start_str = args.start or splits_start or "2020-01-01"
+    end_str = args.end or splits_end or "2026-05-31"
     out_dir = Path(args.out)
-    start_ts = pd.Timestamp(args.start)
-    end_ts = pd.Timestamp(args.end)
+    start_ts = pd.Timestamp(start_str)
+    end_ts = pd.Timestamp(end_str)
     start_ms = int(start_ts.timestamp() * 1000)
     end_ms = int(end_ts.timestamp() * 1000)
     years = range(start_ts.year, end_ts.year + 1)
 
     if args.symbols:
         symbols = sorted({s.upper() for s in args.symbols})
+    elif splits_universe is not None:
+        symbols = sorted({s.upper() for s in splits_universe})
     else:
         symbols = fetch_perp_symbols()
     if args.limit:
         symbols = symbols[: args.limit]
 
     print(
-        f"target: {len(symbols)} symbols  range: {args.start} → {args.end}  out: {out_dir}",
+        f"target: {len(symbols)} symbols  range: {start_str} → {end_str}  out: {out_dir}",
         file=sys.stderr,
     )
 
