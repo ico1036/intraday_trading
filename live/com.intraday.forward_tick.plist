@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.intraday.forward_tick</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/zsh</string>
+    <string>-lc</string>
+    <string>cd /Users/taeyeong/intraday_trading &amp;&amp; SEAL_OPEN=1 /opt/homebrew/bin/uv run python scripts/run_forward_tick.py --run-id run_2026_05_xs500 --alpha-id xs_volume_rank --strategy XsVolumeRankStrategy --strategy-params '{"reverse": true}' --as-of $(date -u +%Y-%m-%d) --sync-data &gt;&gt; /tmp/forward_cron.log 2&gt;&amp;1</string>
+  </array>
+
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>9</integer>
+    <key>Minute</key>
+    <integer>5</integer>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <false/>
+
+  <key>StandardOutPath</key>
+  <string>/tmp/forward_launchd.out</string>
+
+  <key>StandardErrorPath</key>
+  <string>/tmp/forward_launchd.err</string>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/taeyeong/intraday_trading</string>
+</dict>
+</plist>
