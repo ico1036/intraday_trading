@@ -138,3 +138,6 @@ archive/*
 # Local junk
 .claude/scheduled_tasks.lock
 page_snapshot.yaml
+
+# Composite EDA bundle — uploaded to cloud manually, not via git
+composite_eda/
