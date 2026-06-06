@@ -74,7 +74,7 @@ def main() -> int:
     for offset, variant in enumerate(variants, start=args.start_index):
         alpha_id = variant["alpha_id"]
         alpha_dir = run_dir / "alphas" / alpha_id
-        if args.skip_existing and (alpha_dir / "validation.json").exists():
+        if args.skip_existing and (alpha_dir / "metrics.json").exists():
             print(f"[{offset + 1}] {alpha_id} skip", flush=True)
             continue
         params = dict(variant["params"])

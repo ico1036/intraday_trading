@@ -111,11 +111,24 @@ def test_backtest_cli_writes_artifacts_and_json(tmp_path):
     assert proc.returncode == 0, proc.stdout + proc.stderr
     result = _last_json(proc.stdout)
     assert result["ok"] is True
+    assert result["prefix_invariance"]["ok"] is True
+    assert result["prefix_invariance"]["skipped"] is False
+    assert result["prefix_invariance"]["compared_rows"] > 0
     assert result["artifact_dir"] == str(out)
     assert result["verification"]["ok"] is True
     assert result["verification"]["weights_rows"] > 0
     assert (out / "weights.parquet").exists()
+    assert (out / "trades.parquet").exists()
+    assert (out / "equity_curve.parquet").exists()
     assert (out / "metrics.json").exists()
+    assert (out / "strategy_source.py").exists()
+    assert not (out / "events.parquet").exists()
+    assert not (out / "manifest.json").exists()
+    assert not (out / "summary.json").exists()
+    assert not (out / "summary.csv").exists()
+    metrics = json.loads((out / "metrics.json").read_text())
+    assert metrics["strategy_class"] == "AlphaTemplateStrategy"
+    assert metrics["strategy_source"] == "strategy_source.py"
 
 
 def test_backtest_cli_accepts_bar_data(tmp_path):
@@ -354,3 +367,92 @@ def test_verify_artifact_cli_rejects_missing_artifact(tmp_path):
     result = json.loads(proc.stdout)
     assert result["ok"] is False
     assert "artifact_dir not found" in result["errors"][0]
+
+
+def test_verify_artifact_accepts_reduced_single_directory_contract(tmp_path):
+    out = tmp_path / "artifact"
+    out.mkdir()
+    pd.DataFrame({
+        "timestamp": [pd.Timestamp("2025-03-01")],
+        "alpha_id": ["a"],
+        "symbol": ["BTCUSDT"],
+        "target_weight": [0.1],
+        "target_notional": [100.0],
+        "target_qty": [0.002],
+        "price": [50000.0],
+        "bar_type": ["TIME"],
+        "bar_size": [60],
+        "metadata": ["{}"],
+    }).to_parquet(out / "weights.parquet", index=False)
+    pd.DataFrame({
+        "timestamp": [pd.Timestamp("2025-03-01")],
+        "equity": [10000.0],
+    }).to_parquet(out / "equity_curve.parquet", index=False)
+    pd.DataFrame({
+        "timestamp": [pd.Timestamp("2025-03-01")],
+        "symbol": ["BTCUSDT"],
+        "action": ["BUY"],
+        "price": [50000.0],
+        "quantity": [0.002],
+        "pnl": [0.0],
+        "fee": [0.0],
+    }).to_parquet(out / "trades.parquet", index=False)
+    (out / "strategy_source.py").write_text("class Strategy: pass\n")
+    (out / "metrics.json").write_text(json.dumps({
+        "profit_factor": 1.0,
+        "total_return": 0.01,
+        "max_drawdown": -0.02,
+        "total_trades": 1,
+        "win_rate": 1.0,
+        "sharpe": 0.5,
+        "strategy_class": "Strategy",
+        "strategy_source": "strategy_source.py",
+    }))
+
+    proc = subprocess.run(
+        [
+            "uv",
+            "run",
+            "python",
+            "scripts/tools/verify_artifact.py",
+            str(out),
+            "--json",
+        ],
+        cwd=Path(__file__).resolve().parents[2],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    result = json.loads(proc.stdout)
+    assert result["ok"] is True
+    assert "events.parquet" not in result["files"]
+
+
+def test_prefix_weight_compare_rejects_rewritten_past_weights(tmp_path):
+    from scripts.tools.backtest import _compare_prefix_weights
+
+    parent = tmp_path / "parent.parquet"
+    prefix = tmp_path / "prefix.parquet"
+    pd.DataFrame(
+        {
+            "timestamp": [pd.Timestamp("2025-01-05"), pd.Timestamp("2025-01-06")],
+            "symbol": ["BTCUSDT", "BTCUSDT"],
+            "target_weight": [0.25, 0.30],
+        }
+    ).to_parquet(parent, index=False)
+    pd.DataFrame(
+        {
+            "timestamp": [pd.Timestamp("2025-01-05"), pd.Timestamp("2025-01-06")],
+            "symbol": ["BTCUSDT", "BTCUSDT"],
+            "target_weight": [0.25, -0.30],
+        }
+    ).to_parquet(prefix, index=False)
+
+    result = _compare_prefix_weights(parent, prefix, datetime(2025, 1, 6))
+
+    assert result["ok"] is False
+    assert result["mismatched_rows"] == 1
+    assert result["reason"] == "prefix weights changed when backtest end changed"

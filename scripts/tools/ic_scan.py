@@ -112,8 +112,16 @@ def _compute_ic_fast(weights_df: pd.DataFrame, next_ret: pd.DataFrame,
 
 
 def _load_bar_size(splits_path: Path, alpha_dir: Path) -> float | None:
-    """Read bar_size_sec from the alpha's summary.json. Falls back to the
-    common Forward / IS / OS / flat layouts."""
+    """Read bar_size_sec from metrics.json, with legacy summary fallback."""
+    metrics_path = alpha_dir / "metrics.json"
+    if metrics_path.exists():
+        try:
+            import json as _json
+            v = _json.loads(metrics_path.read_text()).get("bar_size")
+            if v is not None:
+                return float(v)
+        except Exception:
+            pass
     for path in (
         alpha_dir / "summary.json",
         alpha_dir / "is" / "summary.json",

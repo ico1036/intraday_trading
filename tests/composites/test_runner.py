@@ -321,17 +321,18 @@ def test_build_and_backtest_writes_artifacts(tmp_path, monkeypatch):
     # Composite directory & artifacts
     assert comp_dir == tmp_path / "run_demo" / "composites" / "demo_eqw"
     assert (comp_dir / "weights.parquet").exists()
-    assert (comp_dir / "manifest.json").exists()
+    assert (comp_dir / "metrics.json").exists()
+    assert not (comp_dir / "manifest.json").exists()
     assert (comp_dir / "members.csv").exists()
 
-    # Manifest contents
-    manifest = json.loads((comp_dir / "manifest.json").read_text())
-    assert manifest["composite_id"] == "demo_eqw"
-    assert manifest["method"] == "equal_weight_demo"
-    assert manifest["n_members"] == 2
-    assert manifest["is_window"]["start"] == "2025-01-01 00:00:00"
-    assert manifest["os_window"]["start"] == "2025-07-01 00:00:00"
-    assert manifest["selection_bias_warning"]  # populated
+    # Composite metadata is folded into metrics.json.
+    metrics = json.loads((comp_dir / "metrics.json").read_text())
+    assert metrics["composite_id"] == "demo_eqw"
+    assert metrics["method"] == "equal_weight_demo"
+    assert metrics["n_members"] == 2
+    assert metrics["is_window"]["start"] == "2025-01-01 00:00:00"
+    assert metrics["os_window"]["start"] == "2025-07-01 00:00:00"
+    assert metrics["selection_bias_warning"]  # populated
 
     # members.csv contains both alphas with coefficients summing to 1.0
     members = pd.read_csv(comp_dir / "members.csv")
@@ -344,21 +345,19 @@ def test_build_and_backtest_writes_artifacts(tmp_path, monkeypatch):
     assert set(weights.columns) == {"timestamp", "symbol", "target_weight"}
     assert len(weights) > 0
 
-    # Two backtest invocations: IS and OS.
-    assert len(calls) == 2
-    is_cmd, os_cmd = calls
+    # One full-window invocation; IS/OS split is recorded inside metrics.json
+    # via --is-end, not by writing comp_dir/is and comp_dir/os artifacts.
+    assert len(calls) == 1
+    is_cmd = calls[0]
     assert "--start" in is_cmd and is_cmd[is_cmd.index("--start") + 1] == "2025-01-01 00:00:00"
-    assert "--end" in is_cmd and is_cmd[is_cmd.index("--end") + 1] == "2025-06-30 23:59:00"
-    assert is_cmd[is_cmd.index("--output-dir") + 1].endswith("/is")
-    assert os_cmd[os_cmd.index("--start") + 1] == "2025-07-01 00:00:00"
-    assert os_cmd[os_cmd.index("--output-dir") + 1].endswith("/os")
-    # Both invocations point at the SAME weights.parquet — selection frozen.
+    assert "--end" in is_cmd and is_cmd[is_cmd.index("--end") + 1] == "2025-12-31 23:59:00"
+    assert is_cmd[is_cmd.index("--output-dir") + 1].endswith("/demo_eqw")
+    assert is_cmd[is_cmd.index("--is-end") + 1] == "2025-06-30 23:59:00"
     is_params = json.loads(is_cmd[is_cmd.index("--strategy-params") + 1])
-    os_params = json.loads(os_cmd[os_cmd.index("--strategy-params") + 1])
-    assert is_params["weights_path"] == os_params["weights_path"]
+    assert is_params["weights_path"].endswith("/demo_eqw/weights.parquet")
     # Composite backtests must skip the per-alpha gates that would otherwise
     # delete the parent composite directory on failure.
-    for cmd in (is_cmd, os_cmd):
+    for cmd in calls:
         assert "--no-enforce-quality" in cmd
         assert "--no-enforce-governance" in cmd
 
@@ -387,8 +386,8 @@ def test_build_skips_os_when_include_os_false(tmp_path, monkeypatch):
     )
 
     assert len(calls) == 1  # only IS
-    manifest = json.loads((comp_dir / "manifest.json").read_text())
-    assert manifest["os_window"] is None
+    metrics = json.loads((comp_dir / "metrics.json").read_text())
+    assert metrics["os_window"] is None
 
 
 def test_build_rejects_empty_selection(tmp_path, monkeypatch):

@@ -11,7 +11,10 @@
     result = runner.run()
 """
 
+import inspect
 import json
+import shutil
+import subprocess
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -467,25 +470,15 @@ class PortfolioBacktestRunner:
             "equity": [float(v) for v in self.equity_curve],
         })
         trades_df = pd.DataFrame(self.trade_log)
-        summary = {
-            "strategy_name": self.strategy.__class__.__name__,
+        result = self._result_from_current_state()
+        metrics = {
+            "artifact_version": 2,
+            "run_type": "backtest",
+            "strategy_class": self.strategy.__class__.__name__,
+            "strategy_source": "strategy_source.py",
+            "symbols": list(getattr(self.strategy, "symbols", [])),
             "initial_capital": self.initial_capital,
             "final_capital": self.capital,
-        }
-        result = self._result_from_current_state()
-        summary.update({
-            "total_return": result.total_return,
-            "sharpe_ratio": result.sharpe_ratio,
-            "max_drawdown": result.max_drawdown,
-            "total_trades": result.total_trades,
-            "winning_trades": result.winning_trades,
-            "losing_trades": result.losing_trades,
-            "win_rate": result.win_rate,
-            "profit_factor": result.profit_factor,
-        })
-
-        summary_df = pd.DataFrame([summary])
-        metrics = {
             "profit_factor": result.profit_factor,
             "total_return": result.total_return,
             "max_drawdown": result.max_drawdown,
@@ -494,14 +487,7 @@ class PortfolioBacktestRunner:
             "sharpe": result.sharpe_ratio,
             "sharpe_ratio": result.sharpe_ratio,
             "per_symbol": result.get_symbol_breakdown(),
-        }
-        summary_json = {
-            "artifact_version": 1,
-            "run_type": "backtest",
-            "strategy_name": self.strategy.__class__.__name__,
-            "symbols": list(getattr(self.strategy, "symbols", [])),
-            **summary,
-            "metrics": metrics,
+            "validation_flags": [],
         }
 
         equity_by_ts = {
@@ -537,18 +523,10 @@ class PortfolioBacktestRunner:
                 "weight",
             ],
         )
-        events_df = trades_df.copy()
-        if events_df.empty:
-            events_df = pd.DataFrame(columns=["timestamp", "event_type", "symbol", "details"])
-        else:
-            events_df.insert(1, "event_type", "trade")
-
         paths = [
             (equity_df, out_dir / "equity_curve.parquet", out_dir / "equity_curve.csv"),
             (trades_df, out_dir / "trades.parquet", out_dir / "trades.csv"),
-            (summary_df, out_dir / "summary.parquet", out_dir / "summary.csv"),
             (weights_df, out_dir / "weights.parquet", out_dir / "weights.csv"),
-            (events_df, out_dir / "events.parquet", out_dir / "events.csv"),
         ]
 
         for df, pqt, csv in paths:
@@ -558,38 +536,11 @@ class PortfolioBacktestRunner:
                 pass
             df.to_csv(csv, index=False)
 
-        (out_dir / "summary.json").write_text(
-            json.dumps(summary_json, ensure_ascii=False, default=str, indent=2),
-            encoding="utf-8",
-        )
         (out_dir / "metrics.json").write_text(
             json.dumps(metrics, ensure_ascii=False, default=str, indent=2),
             encoding="utf-8",
         )
-        (out_dir / "manifest.json").write_text(
-            json.dumps(
-                {
-                    "artifact_version": 1,
-                    "run_type": "backtest",
-                    "strategy_name": self.strategy.__class__.__name__,
-                    "symbols": list(getattr(self.strategy, "symbols", [])),
-                    "files": {
-                        "summary": "summary.json",
-                        "metrics": "metrics.json",
-                        "summary_table": "summary.parquet",
-                        "summary_csv": "summary.csv",
-                        "equity_curve": "equity_curve.parquet",
-                        "trades": "trades.parquet",
-                        "weights": "weights.parquet",
-                        "events": "events.parquet",
-                        "report": "report.png",
-                    },
-                },
-                ensure_ascii=False,
-                indent=2,
-            ),
-            encoding="utf-8",
-        )
+        self._snapshot_strategy_source(out_dir)
 
         try:
             import matplotlib.pyplot as plt
@@ -608,6 +559,39 @@ class PortfolioBacktestRunner:
             pass
 
         return str(out_dir)
+
+    def _snapshot_strategy_source(self, output_dir: Path) -> None:
+        try:
+            src = Path(inspect.getfile(self.strategy.__class__))
+        except (TypeError, OSError):
+            src = None
+        if src is not None and src.exists():
+            shutil.copy2(src, output_dir / "strategy_source.py")
+        else:
+            (output_dir / "strategy_source.py").write_text(
+                f"# source unavailable for {self.strategy.__class__.__name__}\n"
+            )
+        try:
+            git_head = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=Path(__file__).resolve().parents[3],
+                capture_output=True,
+                text=True,
+                timeout=3,
+            ).stdout.strip()
+        except Exception:
+            git_head = ""
+        metrics_path = output_dir / "metrics.json"
+        try:
+            metrics = json.loads(metrics_path.read_text())
+            metrics["source_original_path"] = str(src) if src is not None else ""
+            metrics["git_head"] = git_head
+            metrics_path.write_text(
+                json.dumps(metrics, ensure_ascii=False, default=str, indent=2),
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
 
 
     def run(self) -> PortfolioBacktestResult:

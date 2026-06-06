@@ -92,6 +92,7 @@ class PrecomputedWeightsStrategy:
         self._weights_path = str(path)
         self._row_count = len(df)
         self._n_timestamps = len(self._schedule)
+        self._emitted_timestamps: set[pd.Timestamp] = set()
 
     @staticmethod
     def _close_order(side: str | None) -> Order | None:
@@ -105,9 +106,13 @@ class PrecomputedWeightsStrategy:
         ts = getattr(state, "timestamp", None)
         if ts is None:
             return None
-        targets = self._schedule.get(pd.Timestamp(ts))
+        ts_key = pd.Timestamp(ts)
+        if ts_key in self._emitted_timestamps:
+            return None
+        targets = self._schedule.get(ts_key)
         if not targets:
             return None
+        self._emitted_timestamps.add(ts_key)
 
         positions = getattr(state, "positions", None) or {}
         orders: dict[str, Order | None] = {}

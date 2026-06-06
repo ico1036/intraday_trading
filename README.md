@@ -15,6 +15,7 @@ Compact intraday alpha research repo.
 - `src/intraday/backtest/multi_tick_runner.py`: portfolio tick backtest runner.
 - `scripts/tools/backtest.py`: deterministic backtest CLI.
 - `scripts/tools/verify_artifact.py`: deterministic artifact validator.
+- `scripts/tools/research_wiki.py`: research wiki and loop harness metadata.
 - `scripts/run_portfolio_forward_test.py`: portfolio forward test runner.
 
 ## Setup
@@ -38,7 +39,7 @@ The default trading universe is the 7-symbol list declared in each run's
 
 All alphas use a picking-and-weighting contract: receive the run's
 `symbols`, return target weights via `PortfolioOrder`. The governance
-check ensures every alpha's `manifest.json` `symbols` matches the run's
+check ensures every alpha's `metrics.json` `symbols` matches the run's
 `universe`.
 
 ## Governance
@@ -92,10 +93,31 @@ uv run python scripts/tools/verify_artifact.py archive/<run_id>/alphas/<alpha_id
 uv run python scripts/tools/validate_is_os.py --alpha-dir archive/<run_id>/alphas/<alpha_id> --json
 ```
 
-Store exploration runs as `archive/<run_id>/alphas/<alpha_id>/{is,os}/`.
-Keep fixed periods in `archive/<run_id>/splits.json`.
-OS validation writes `validation.json` warning labels only; do not revise a
-strategy from OS results.
+Store exploration runs as one artifact directory:
+`archive/<run_id>/alphas/<alpha_id>/`. Do not split new artifacts into `is/`
+and `os/` directories. Keep fixed periods in `archive/<run_id>/splits.json`;
+IS/OS metric blocks and validation flags live in `metrics.json`. Do not revise
+a strategy from OS results.
+
+Before starting a goal-driven loop, initialize the research wiki and harness
+version:
+
+```bash
+uv run python scripts/tools/research_wiki.py init-run \
+  --run-id <run_id> \
+  --goal "<user goal>" \
+  --harness-id loop_v1_post_analysis_wiki \
+  --attempt-budget <N>
+```
+
+After each backtest, write `research/wiki/post_analysis/<run_id>/<alpha_id>.md`
+and upsert `research/wiki/alpha_memory.jsonl`. The wiki is intentionally a
+small retrieval index plus post-analysis links; it should not become a
+best-parameter recommender.
+
+Every normal `scripts/tools/backtest.py` run performs a prefix-invariance
+check: a shorter same-start backtest must emit identical past weights. This is
+the hard look-ahead guard for generated alpha ledgers.
 
 The default backtest data path is 1m futures bars:
 

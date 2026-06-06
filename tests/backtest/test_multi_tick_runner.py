@@ -6,6 +6,7 @@ tick-level 포트폴리오 백테스트 러너.
 심볼별 캔들을 독립 빌드하며, 패널 데이터를 전략에 전달한다.
 """
 
+import json
 from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -636,6 +637,47 @@ class TestPortfolioOrderExecution:
         with pytest.raises(ValueError):
             runner.run()
 
+    def test_weight_sum_exceed_allowed_with_explicit_portfolio_cap(self):
+        """레버리지 composite replay는 명시된 gross cap 안에서만 허용된다."""
+        from intraday.backtest.multi_tick_runner import PortfolioTickBacktestRunner
+
+        base = datetime(2025, 3, 1, 9, 0, 0)
+        loader = {
+            "BTCUSDT": FakeTickLoader([
+                make_trade("BTC", 50000.0 + i, 0.1, base + timedelta(seconds=i))
+                for i in range(121)
+            ]),
+            "ETHUSDT": FakeTickLoader([
+                make_trade("ETH", 3000.0 + i, 0.5, base + timedelta(seconds=i))
+                for i in range(121)
+            ]),
+        }
+
+        strategy = WeightedPortfolioStrategy(
+            symbols=["BTCUSDT", "ETHUSDT"],
+            weights={"BTCUSDT": 2.5, "ETHUSDT": -2.5},
+        )
+
+        runner = PortfolioTickBacktestRunner(
+            strategy=strategy,
+            data_loaders=loader,
+            bar_type=CandleType.TIME,
+            bar_size=60,
+            initial_capital=10000.0,
+            position_size_pct=1.0,
+            maker_fee_rate=0.0,
+            taker_fee_rate=0.0,
+            max_portfolio_weight=5.0,
+        )
+
+        runner.run()
+
+        opened = [t for t in runner._trade_log if t["action"].startswith("OPEN")]
+        assert len(opened) == 2
+        weights = {row["symbol"]: row["target_weight"] for row in runner._weight_events}
+        assert weights["BTCUSDT"] == pytest.approx(2.5)
+        assert weights["ETHUSDT"] == pytest.approx(-2.5)
+
 
 class TestSingleOrderFallback:
     """단일 Order 반환 전략과의 호환성"""
@@ -861,17 +903,17 @@ class TestResultOutput:
         out = runner.save_report(tmp_path)
 
         expected = {
-            "manifest.json",
             "weights.parquet",
             "metrics.json",
-            "summary.json",
-            "summary.csv",
             "equity_curve.parquet",
             "trades.parquet",
-            "events.parquet",
-            "backtest_report.md",
+            "strategy_source.py",
         }
         assert expected.issubset({p.name for p in out.iterdir()})
+        assert not (out / "events.parquet").exists()
+        assert not (out / "manifest.json").exists()
+        assert not (out / "summary.json").exists()
+        assert not (out / "summary.csv").exists()
 
         import pandas as pd
 
@@ -889,6 +931,9 @@ class TestResultOutput:
             "metadata",
         }.issubset(weights.columns)
         assert not weights.empty
+        metrics = json.loads((out / "metrics.json").read_text())
+        assert metrics["strategy_class"] == "AlwaysBuyStrategy"
+        assert metrics["strategy_source"] == "strategy_source.py"
 
 
 class TestDeterministicBacktestAccounting:

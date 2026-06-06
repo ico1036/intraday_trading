@@ -15,7 +15,7 @@ Outputs land in ``reports/oracle_eda/<run_id>/``:
 - ``metrics.json``  — comparison table
 - ``heatmap_before.png`` / ``heatmap_after.png``
 - ``dendrogram.png`` (Ward, cut-off line marked)
-- ``equity_curve.png`` (log-scale cumret of the 3 portfolios)
+- ``equity_curve.png`` (linear cumulative simple return of the portfolios)
 
 Example::
 
@@ -272,6 +272,11 @@ def affinity_propagation_then_greedy(
 # plots
 # ---------------------------------------------------------------------------
 
+def cumulative_simple_return(daily_returns: pd.Series) -> pd.Series:
+    """Chart cumulative simple return without compounding."""
+    return daily_returns.fillna(0.0).cumsum()
+
+
 def plot_heatmap(corr: pd.DataFrame, title: str, path: Path,
                  max_show: int = 200) -> None:
     """Heatmap of correlation matrix. Big matrices are sub-sampled."""
@@ -314,11 +319,10 @@ def plot_dendrogram(Z: np.ndarray, cut_distance: float, path: Path,
 def plot_equity(curves: dict[str, pd.Series], path: Path) -> None:
     fig, ax = plt.subplots(figsize=(11, 5))
     for name, ret in curves.items():
-        cum = (1.0 + ret.fillna(0.0)).cumprod()
+        cum = cumulative_simple_return(ret)
         ax.plot(cum.index, cum.values, label=name, linewidth=1.5)
-    ax.set_yscale("log")
-    ax.set_title("Oracle ceiling — cumulative return (log scale)")
-    ax.set_xlabel("date"); ax.set_ylabel("cum equity (×1.0 start)")
+    ax.set_title("Oracle ceiling — cumulative simple return")
+    ax.set_xlabel("date"); ax.set_ylabel("cumulative simple return")
     ax.legend(loc="upper left")
     ax.grid(True, alpha=0.3)
     fig.tight_layout()
@@ -331,7 +335,7 @@ def plot_equity_is_to_os(
     is_end: pd.Timestamp,
     path: Path,
 ) -> None:
-    """One continuous cumret curve per pipeline spanning IS→OS, with the
+    """One continuous cumulative simple-return curve per pipeline spanning IS→OS, with the
     IS portion drawn faded (alpha=0.35) and the OS portion solid. A red
     dashed vertical separator marks the IS/OS boundary."""
     fig, ax = plt.subplots(figsize=(12, 5.5))
@@ -341,10 +345,9 @@ def plot_equity_is_to_os(
         sh_is = payload["sh_is"];   sh_os = payload["sh_os"]
         color = colors[i % len(colors)]
 
-        # Combine IS+OS, cumprod continuously so OS picks up where IS left off.
         ret_full = pd.concat([ret_is, ret_os])
         ret_full = ret_full[~ret_full.index.duplicated(keep="first")].sort_index()
-        cum = (1.0 + ret_full.fillna(0.0)).cumprod()
+        cum = cumulative_simple_return(ret_full)
 
         is_mask = cum.index <= is_end
         os_mask = cum.index >  is_end
@@ -358,9 +361,8 @@ def plot_equity_is_to_os(
 
     ax.axvline(is_end, color="red", linestyle="--", linewidth=1.0,
                label=f"IS / OS split @ {is_end.date()}")
-    ax.set_yscale("log")
     ax.set_title("Oracle replay — IS-decided sign + selection, OS evaluation")
-    ax.set_xlabel("date"); ax.set_ylabel("cum equity (×1.0 start)")
+    ax.set_xlabel("date"); ax.set_ylabel("cumulative simple return")
     ax.grid(True, alpha=0.3)
     ax.legend(loc="upper left", fontsize=9)
     fig.tight_layout()
@@ -806,7 +808,7 @@ def run_rolling(run_id: str, threshold: float, cost_bps: float,
     for i, (name, ret) in enumerate(pipelines_curves.items()):
         if ret.empty:
             continue
-        cum = (1.0 + ret.fillna(0.0)).cumprod()
+        cum = cumulative_simple_return(ret)
         m = metrics[name]
         label = (f"{name}  (OOS Sh={m['sharpe']:+.2f}, "
                  f"AnnRet={m['annualized_return']:+.1%}, N̄={m['N_avg']:.0f})")
@@ -814,10 +816,9 @@ def run_rolling(run_id: str, threshold: float, cost_bps: float,
                 color=colors[i % len(colors)])
     for rd in rebal_dates:
         ax.axvline(rd, color="grey", linestyle=":", alpha=0.15, linewidth=0.5)
-    ax.set_yscale("log")
     ax.set_title(f"Rolling oracle — lookback={lookback_days}d, rebal={rebalance_freq} "
                  f"(walk-forward OOS only)")
-    ax.set_xlabel("date"); ax.set_ylabel("cum equity (×1.0 start)")
+    ax.set_xlabel("date"); ax.set_ylabel("cumulative simple return")
     ax.grid(True, alpha=0.3)
     ax.legend(loc="upper left", fontsize=9)
     fig.tight_layout()
@@ -860,22 +861,21 @@ def run_rolling_compare(run_id: str, threshold: float, cost_bps: float,
         ret_s = curves_signed.get(name, pd.Series(dtype=float))
         ret_r = curves_raw.get(name, pd.Series(dtype=float))
         if not ret_s.empty:
-            cum = (1.0 + ret_s.fillna(0.0)).cumprod()
+            cum = cumulative_simple_return(ret_s)
             sh = m_signed[name].get("sharpe", 0.0)
             ax.plot(cum.index, cum.values, color=color, linewidth=1.6,
                     label=f"{name}  signed (Sh={sh:+.2f})")
         if not ret_r.empty:
-            cum = (1.0 + ret_r.fillna(0.0)).cumprod()
+            cum = cumulative_simple_return(ret_r)
             sh = m_raw[name].get("sharpe", 0.0)
             ax.plot(cum.index, cum.values, color=color, linewidth=1.2,
                     linestyle="--", alpha=0.65,
                     label=f"{name}  raw    (Sh={sh:+.2f})")
     for rd in rebal_dates:
         ax.axvline(rd, color="grey", linestyle=":", alpha=0.10, linewidth=0.5)
-    ax.set_yscale("log")
     ax.set_title(f"Rolling oracle — sign-align vs raw "
                  f"(lookback={lookback_days}d, rebal={rebalance_freq})")
-    ax.set_xlabel("date"); ax.set_ylabel("cum equity (×1.0 start)")
+    ax.set_xlabel("date"); ax.set_ylabel("cumulative simple return")
     ax.grid(True, alpha=0.3)
     ax.legend(loc="upper left", fontsize=8, ncols=2)
     fig.tight_layout()
@@ -919,7 +919,7 @@ def _plot_stage(curves: dict, is_end: pd.Timestamp, path: Path, title: str,
     for name, ret in curves.items():
         if ret.empty:
             continue
-        cum = (1.0 + ret.fillna(0.0)).cumprod()
+        cum = cumulative_simple_return(ret)
         sh_is, sh_os, sh_full = _split_sharpes(ret, is_end)
         bn = name.split(" — ")[0]
         color = color_for[bn]
@@ -940,9 +940,8 @@ def _plot_stage(curves: dict, is_end: pd.Timestamp, path: Path, title: str,
                     linewidth=1.5, linestyle=linestyle, label=label)
     ax.axvline(is_end, color="red", linestyle="--", linewidth=1.0,
                label=f"IS / OS split @ {is_end.date()}")
-    ax.set_yscale("log")
     ax.set_title(title)
-    ax.set_xlabel("date"); ax.set_ylabel("cum equity (×1.0 start)")
+    ax.set_xlabel("date"); ax.set_ylabel("cumulative simple return")
     ax.grid(True, alpha=0.3)
     ax.legend(loc="upper left", fontsize=8, ncols=1)
     fig.tight_layout()

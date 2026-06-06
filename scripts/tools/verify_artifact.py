@@ -12,15 +12,11 @@ import pandas as pd
 
 
 REQUIRED_FILES = {
-    "manifest.json",
     "weights.parquet",
     "metrics.json",
-    "summary.json",
-    "summary.csv",
     "equity_curve.parquet",
     "trades.parquet",
-    "events.parquet",
-    "backtest_report.md",
+    "strategy_source.py",
 }
 
 WEIGHT_COLUMNS = {
@@ -43,6 +39,8 @@ METRIC_KEYS = {
     "total_trades",
     "win_rate",
     "sharpe",
+    "strategy_class",
+    "strategy_source",
 }
 
 
@@ -102,7 +100,7 @@ def verify_artifact(artifact_dir: Path) -> dict[str, Any]:
         except Exception as exc:
             errors.append(f"weights.parquet unreadable: {exc}")
 
-    for parquet_name in ("equity_curve.parquet", "trades.parquet", "events.parquet"):
+    for parquet_name in ("equity_curve.parquet", "trades.parquet"):
         path = artifact_dir / parquet_name
         if not path.exists():
             continue

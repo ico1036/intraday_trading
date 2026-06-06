@@ -6,11 +6,16 @@ import argparse
 import importlib
 import inspect
 import json
+import os
+import subprocess
 import sys
+import tempfile
 import traceback
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+import pandas as pd
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SRC_ROOT = PROJECT_ROOT / "src"
@@ -155,6 +160,7 @@ def run_backtest(args: argparse.Namespace) -> dict[str, Any]:
         taker_fee_rate=args.taker_fee_rate,
         leverage=args.leverage,
         fixed_aum_sizing=getattr(args, "fixed_aum_sizing", False),
+        max_portfolio_weight=args.max_portfolio_weight,
     )
     result = runner.run(start_time=parse_dt(args.start), end_time=parse_dt(args.end))
     runner.save_report(output_dir)
@@ -181,19 +187,31 @@ def run_backtest(args: argparse.Namespace) -> dict[str, Any]:
         "per_symbol": result.get_symbol_breakdown(),
     }
 
+    prefix_report = _enforce_prefix_invariance(output_dir, args)
+
     quality_report = _enforce_quality_gates(output_dir, enforce=args.enforce_quality)
 
     reject_report = _enforce_reject_rules(output_dir, enforce=args.enforce_quality)
 
-    overall_ok = verification["ok"] and quality_report["ok"] and reject_report["ok"]
+    if not prefix_report["ok"] and args.enforce_quality and quality_report["kept"] and reject_report["kept"]:
+        _delete_artifact_scope(output_dir)
+        prefix_report["kept"] = False
+
+    overall_ok = (
+        verification["ok"]
+        and prefix_report["ok"]
+        and quality_report["ok"]
+        and reject_report["ok"]
+    )
     return {
         "ok": overall_ok,
-        "artifact_dir": str(output_dir) if quality_report["kept"] else None,
-        "artifact_kept": quality_report["kept"],
+        "artifact_dir": str(output_dir) if quality_report["kept"] and reject_report["kept"] and prefix_report["kept"] else None,
+        "artifact_kept": quality_report["kept"] and reject_report["kept"] and prefix_report["kept"],
         "strategy": args.strategy,
         "symbols": symbols,
         "metrics": metrics,
         "verification": verification,
+        "prefix_invariance": prefix_report,
         "quality": quality_report,
         "summary": {
             "initial_capital": result.initial_capital,
@@ -239,14 +257,19 @@ def _snapshot_strategy_source(strategy_cls: type, output_dir: Path) -> None:
             ).stdout.strip()
         except Exception:
             pass
-        meta = {
-            "strategy_class": strategy_cls.__name__,
-            "source_relpath": str(src),
-            "git_head": git_sha,
-        }
-        (output_dir / "strategy_source.meta.json").write_text(
-            json.dumps(meta, indent=2)
-        )
+        metrics_path = output_dir / "metrics.json"
+        if metrics_path.exists():
+            try:
+                metrics = json.loads(metrics_path.read_text())
+            except Exception:
+                metrics = {}
+            metrics.update({
+                "strategy_class": strategy_cls.__name__,
+                "strategy_source": "strategy_source.py",
+                "source_original_path": str(src),
+                "git_head": git_sha,
+            })
+            metrics_path.write_text(json.dumps(metrics, indent=2, default=str))
     except Exception:
         pass
 
@@ -262,11 +285,16 @@ def _existing_cells_in_run(run_dir: Path, *, exclude: Path | None = None) -> set
             continue
         if exclude is not None and alpha_dir.resolve() == exclude.resolve():
             continue
-        for split in ("is", "os"):
-            manifest = alpha_dir / split / "manifest.json"
+        metadata_paths = [alpha_dir / "metrics.json"]
+        metadata_paths.extend(alpha_dir / split / name for split in ("is", "os") for name in ("metrics.json", "manifest.json"))
+        metadata_paths.append(alpha_dir / "manifest.json")
+        for manifest in metadata_paths:
             if not manifest.exists():
                 continue
             strat_path = _resolve_strategy_path_from_manifest(manifest)
+            if strat_path is None:
+                snap = alpha_dir / "strategy_source.py"
+                strat_path = snap if snap.exists() else None
             if strat_path is None:
                 continue
             consts = _parse_module_constants(strat_path)
@@ -350,7 +378,7 @@ def _preflight_governance(
         # narrowly defined (variant-level) to act as a real coverage
         # guard, and the owner prefers free-form alpha exploration with
         # per-attempt feedback instead of an enforced taxonomy.
-        # The cell signature is still recorded in manifest.json for
+        # The cell signature is still recorded in metrics/strategy source for
         # post-hoc analysis, but does not block runs.
         _ = _cell_signature  # keep import alive for governance check
         del existing
@@ -605,6 +633,204 @@ def _compute_split_metrics(output_dir: Path, is_end_str: str | None) -> None:
         report_path.write_text(new_report)
 
 
+def _delete_artifact_scope(output_dir: Path) -> None:
+    """Delete the same durable scope other hard gates remove.
+
+    Split runs write to ``.../alphas/<alpha>/<split>`` and should remove the
+    whole alpha directory. Flat/debug runs remove only their output dir.
+    """
+    try:
+        resolved = output_dir.resolve()
+        if resolved.name in {"is", "os", "forward"}:
+            shutil.rmtree(resolved.parent, ignore_errors=True)
+        else:
+            shutil.rmtree(resolved, ignore_errors=True)
+    except Exception:
+        shutil.rmtree(output_dir, ignore_errors=True)
+
+
+def _prefix_child_end(args: argparse.Namespace) -> datetime | None:
+    start = parse_dt(args.start)
+    end = parse_dt(args.end)
+    if start is None or end is None or end <= start:
+        return None
+    span = end - start
+    return start + span * 0.8
+
+
+def _prefix_compare_cutoff(args: argparse.Namespace, child_end: datetime) -> datetime:
+    return child_end
+
+
+def _weight_events_for_compare(path: Path, cutoff: datetime, tol: float) -> pd.DataFrame:
+    import pandas as _pd
+
+    df = _pd.read_parquet(path)
+    required = {"timestamp", "symbol", "target_weight"}
+    missing = required - set(df.columns)
+    if missing:
+        raise ValueError(f"{path.name} missing columns: {sorted(missing)}")
+    if df.empty:
+        return _pd.DataFrame(columns=["timestamp", "symbol", "target_weight"])
+    out = df[["timestamp", "symbol", "target_weight"]].copy()
+    out["timestamp"] = _pd.to_datetime(out["timestamp"])
+    out["symbol"] = out["symbol"].astype(str).str.upper()
+    out["target_weight"] = _pd.to_numeric(out["target_weight"], errors="coerce")
+    out = out[out["timestamp"] <= _pd.Timestamp(cutoff)]
+    out = out.dropna(subset=["timestamp", "symbol", "target_weight"])
+    out["target_weight"] = out["target_weight"].where(out["target_weight"].abs() > tol, 0.0)
+    return (
+        out.sort_values(["timestamp", "symbol"])
+        .groupby(["timestamp", "symbol"], as_index=False)
+        .last()
+        .sort_values(["timestamp", "symbol"])
+        .reset_index(drop=True)
+    )
+
+
+def _compare_prefix_weights(parent_path: Path, child_path: Path, cutoff: datetime, tol: float = 1e-9) -> dict:
+    import pandas as _pd
+
+    parent = _weight_events_for_compare(parent_path, cutoff, tol)
+    child = _weight_events_for_compare(child_path, cutoff, tol)
+    if parent.empty and child.empty:
+        return {
+            "ok": False,
+            "reason": "no comparable weight rows before prefix cutoff",
+            "compared_rows": 0,
+            "parent_rows": 0,
+            "child_rows": 0,
+        }
+    joined = parent.merge(
+        child,
+        on=["timestamp", "symbol"],
+        how="outer",
+        suffixes=("_parent", "_prefix"),
+        indicator=True,
+    )
+    both = joined["_merge"] == "both"
+    joined["abs_diff"] = (joined["target_weight_parent"] - joined["target_weight_prefix"]).abs()
+    mismatched = joined[(~both) | (joined["abs_diff"] > tol)]
+    sample_cols = ["timestamp", "symbol", "target_weight_parent", "target_weight_prefix", "_merge", "abs_diff"]
+    samples = []
+    for row in mismatched.head(20)[sample_cols].to_dict("records"):
+        samples.append({k: (str(v) if isinstance(v, _pd.Timestamp) else v) for k, v in row.items()})
+    return {
+        "ok": bool(mismatched.empty),
+        "reason": None if mismatched.empty else "prefix weights changed when backtest end changed",
+        "compared_rows": int(len(joined)),
+        "parent_rows": int(len(parent)),
+        "child_rows": int(len(child)),
+        "mismatched_rows": int(len(mismatched)),
+        "max_abs_diff": float(joined.loc[both, "abs_diff"].max()) if bool(both.any()) else None,
+        "cutoff": str(pd.Timestamp(cutoff)),
+        "samples": samples,
+    }
+
+
+def _enforce_prefix_invariance(output_dir: Path, args: argparse.Namespace) -> dict:
+    """Hard lookahead guard: changing backtest end must not rewrite past weights."""
+    report: dict[str, Any] = {
+        "ok": True,
+        "kept": True,
+        "enforced": True,
+        "skipped": False,
+        "reason": None,
+    }
+    if os.environ.get("INTRADAY_PREFIX_INTEGRITY_CHILD") == "1":
+        report["skipped"] = True
+        report["reason"] = "internal prefix child run"
+        return report
+
+    child_end = _prefix_child_end(args)
+    if child_end is None:
+        report.update({"ok": False, "reason": "cannot compute prefix window from --start/--end"})
+        return report
+
+    parent_weights = output_dir / "weights.parquet"
+    if not parent_weights.exists():
+        report.update({"ok": False, "reason": "parent weights.parquet missing"})
+        return report
+
+    cutoff = _prefix_compare_cutoff(args, child_end)
+    with tempfile.TemporaryDirectory(prefix="prefix_invariance_") as tmp:
+        child_dir = Path(tmp) / "prefix"
+        cmd = [
+            sys.executable,
+            "-u",
+            str(Path(__file__).resolve()),
+            "--strategy",
+            args.strategy,
+            "--symbols",
+            *args.symbols,
+            "--data-type",
+            args.data_type,
+            "--data-path",
+            args.data_path,
+            "--start",
+            str(args.start),
+            "--end",
+            child_end.isoformat(sep=" "),
+            "--bar-type",
+            args.bar_type,
+            "--bar-size",
+            str(args.bar_size),
+            "--initial-capital",
+            str(args.initial_capital),
+            "--position-size-pct",
+            str(args.position_size_pct),
+            "--leverage",
+            str(args.leverage),
+            "--max-portfolio-weight",
+            str(args.max_portfolio_weight),
+            "--maker-fee-rate",
+            str(args.maker_fee_rate),
+            "--taker-fee-rate",
+            str(args.taker_fee_rate),
+            "--output-dir",
+            str(child_dir),
+            "--no-enforce-quality",
+            "--no-enforce-governance",
+            "--json",
+        ]
+        if getattr(args, "fixed_aum_sizing", False):
+            cmd.append("--fixed-aum-sizing")
+        if getattr(args, "symbol_data_paths", ""):
+            cmd.extend(["--symbol-data-paths", args.symbol_data_paths])
+        if getattr(args, "strategy_params", ""):
+            cmd.extend(["--strategy-params", args.strategy_params])
+
+        env = {**os.environ, "INTRADAY_PREFIX_INTEGRITY_CHILD": "1"}
+        proc = subprocess.run(
+            cmd,
+            cwd=PROJECT_ROOT,
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        child_weights = child_dir / "weights.parquet"
+        if proc.returncode not in (0, 2) or not child_weights.exists():
+            report.update(
+                {
+                    "ok": False,
+                    "reason": f"prefix child backtest failed rc={proc.returncode}",
+                    "child_end": child_end.isoformat(sep=" "),
+                    "cutoff": pd.Timestamp(cutoff).isoformat(),
+                }
+            )
+            return report
+        try:
+            compare = _compare_prefix_weights(parent_weights, child_weights, cutoff)
+        except Exception as exc:
+            report.update({"ok": False, "reason": f"prefix comparison failed: {exc}"})
+            return report
+
+    report.update(compare)
+    report["child_end"] = child_end.isoformat(sep=" ")
+    return report
+
+
 def _enforce_reject_rules(output_dir: Path, *, enforce: bool) -> dict:
     """Apply user-defined reject rules and delete the alpha dir on failure.
 
@@ -714,6 +940,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--initial-capital", type=float, default=10000.0)
     parser.add_argument("--position-size-pct", type=float, default=1.0)
     parser.add_argument("--leverage", type=int, default=1)
+    parser.add_argument("--max-portfolio-weight", type=float, default=1.0)
     parser.add_argument(
         "--fixed-aum-sizing", action="store_true",
         help="Scale leg notional off initial_capital instead of running "

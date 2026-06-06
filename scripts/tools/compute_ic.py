@@ -94,8 +94,13 @@ def _daily_positions(weights: pd.DataFrame, dates: pd.DatetimeIndex, symbols: li
 
 def compute_ic(artifact_dir: Path) -> dict:
     artifact_dir = Path(artifact_dir).resolve()
-    manifest = json.loads((artifact_dir / "manifest.json").read_text())
-    universe = manifest["symbols"]
+    metrics_path = artifact_dir / "metrics.json"
+    manifest_path = artifact_dir / "manifest.json"
+    if metrics_path.exists():
+        meta = json.loads(metrics_path.read_text())
+    else:
+        meta = json.loads(manifest_path.read_text())
+    universe = meta["symbols"]
     weights = pd.read_parquet(artifact_dir / "weights.parquet")
     if weights.empty:
         return {"ok": False, "reason": "weights.parquet empty"}

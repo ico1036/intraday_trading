@@ -35,14 +35,15 @@ combining saved alpha weights. Composite research should read saved
 
 Every alpha run should write these core files under its artifact directory:
 
-- `manifest.json`
 - `weights.parquet`
 - `metrics.json`
-- `summary.json`
-- `summary.csv`
 - `equity_curve.parquet`
 - `trades.parquet`
-- `events.parquet`
+- `strategy_source.py`
+
+Do not split standard IS/OS artifacts into `is/` and `os/` directories for new
+runs. Store one file set under `archive/<run_id>/alphas/<alpha_id>/`; put IS/OS
+metric blocks and validation flags inside `metrics.json`.
 
 `docs/ALPHA_ARTIFACT_CONTRACT.md` is the source of truth. Strategy code should
 only decide target exposure; runners/tools are responsible for writing

@@ -8,15 +8,23 @@ from pathlib import Path
 def _write_artifact_metrics(path: Path, metrics: dict) -> None:
     path.mkdir(parents=True)
     (path / "metrics.json").write_text(json.dumps(metrics))
-    (path / "manifest.json").write_text(
-        json.dumps({"alpha_id": "UnitAlpha", "strategy_name": "UnitAlpha"})
-    )
+
+
+def _write_flat_split_metrics(path: Path, alpha_id: str, is_metrics: dict, os_metrics: dict) -> None:
+    path.mkdir(parents=True)
+    (path / "metrics.json").write_text(json.dumps({
+        "alpha_id": alpha_id,
+        "strategy_class": alpha_id,
+        "is": is_metrics,
+        "os": os_metrics,
+    }))
 
 
 def test_validate_is_os_writes_warning_label(tmp_path):
     alpha_dir = tmp_path / "alphas" / "UnitAlpha"
-    _write_artifact_metrics(
-        alpha_dir / "is",
+    _write_flat_split_metrics(
+        alpha_dir,
+        "UnitAlpha",
         {
             "profit_factor": 2.0,
             "total_return": 0.10,
@@ -25,9 +33,6 @@ def test_validate_is_os_writes_warning_label(tmp_path):
             "win_rate": 0.60,
             "sharpe": 1.50,
         },
-    )
-    _write_artifact_metrics(
-        alpha_dir / "os",
         {
             "profit_factor": 0.7,
             "total_return": 0.01,
@@ -62,8 +67,10 @@ def test_validate_is_os_writes_warning_label(tmp_path):
     assert "RETURN_COLLAPSE" in result["flags"]
     assert "SHARPE_SIGN_FLIP" in result["flags"]
     assert "OS_TRADE_COUNT_TOO_LOW" in result["flags"]
-    saved = json.loads((alpha_dir / "validation.json").read_text())
-    assert saved["flags"] == result["flags"]
+    saved = json.loads((alpha_dir / "metrics.json").read_text())
+    assert saved["validation_flags"] == result["flags"]
+    assert "validation" in saved
+    assert not (alpha_dir / "validation.json").exists()
 
 
 def test_validate_is_os_passes_without_warnings(tmp_path):
@@ -76,8 +83,12 @@ def test_validate_is_os_passes_without_warnings(tmp_path):
         "win_rate": 0.52,
         "sharpe": 0.80,
     }
-    _write_artifact_metrics(alpha_dir / "is", metrics)
-    _write_artifact_metrics(alpha_dir / "os", metrics | {"total_return": 0.035, "sharpe": 0.75})
+    _write_flat_split_metrics(
+        alpha_dir,
+        "StableAlpha",
+        metrics,
+        metrics | {"total_return": 0.035, "sharpe": 0.75},
+    )
 
     proc = subprocess.run(
         [

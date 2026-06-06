@@ -120,7 +120,7 @@ def _split_flat_to_is_os(alpha_dir: Path, is_end: str) -> None:
 def _run_one(class_name: str, alpha_id: str, run_id: str,
              universe: list[str], is_start: str, is_end: str, os_end: str) -> int:
     out_dir = REPO / "archive" / run_id / "alphas" / alpha_id
-    if (out_dir / "is" / "metrics.json").exists():
+    if (out_dir / "metrics.json").exists():
         return 0
     out_dir.mkdir(parents=True, exist_ok=True)
     cmd = [
@@ -148,21 +148,16 @@ def _run_one(class_name: str, alpha_id: str, run_id: str,
     res = subprocess.run(cmd, cwd=REPO, env=env,
                          stdout=subprocess.DEVNULL,
                          stderr=subprocess.DEVNULL)
-    if (out_dir / "metrics.json").exists():
-        try:
-            _split_flat_to_is_os(out_dir, is_end)
-        except Exception as e:
-            print(f"  split failed for {alpha_id}: {e}", flush=True)
     return res.returncode
 
 
 def _classify(alpha_dir: Path) -> tuple[str, str, dict | None, dict | None]:
-    isp = alpha_dir / "is" / "metrics.json"
-    osp = alpha_dir / "os" / "metrics.json"
-    if not isp.exists():
-        return "NO_IS", "no IS metrics", None, None
-    is_m = json.loads(isp.read_text())
-    os_m = json.loads(osp.read_text()) if osp.exists() else None
+    mp = alpha_dir / "metrics.json"
+    if not mp.exists():
+        return "NO_IS", "no metrics", None, None
+    m = json.loads(mp.read_text())
+    is_m = m.get("is") if isinstance(m.get("is"), dict) else m
+    os_m = m.get("os") if isinstance(m.get("os"), dict) else None
     label_is, why_is = classify_alpha(is_m, os_m=None)
     label, why = classify_alpha(is_m, os_m=os_m)
     return label, why, is_m, os_m

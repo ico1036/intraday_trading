@@ -4,7 +4,7 @@
 Independent checks, all run by default:
 
 1. ``editable_surface`` — diff vs ``--baseline`` must stay in whitelist.
-2. ``universe`` — every alpha manifest's ``symbols`` equals run universe.
+2. ``universe`` — every alpha metrics.json ``symbols`` equals run universe.
 3. ``quality`` — every alpha satisfies ``splits.json.quality_gates``.
 4. ``coverage`` — no two alphas share the same ALPHA_CELL six-tuple in a run.
 5. ``research`` — every alpha references at least one existing
@@ -146,6 +146,22 @@ def _load_universe_for_run(run_dir: Path) -> list[str]:
     return []
 
 
+def _alpha_metadata_paths(alpha_dir: Path) -> list[Path]:
+    paths = []
+    flat = alpha_dir / "metrics.json"
+    if flat.exists():
+        paths.append(flat)
+    for split in ("is", "os"):
+        for name in ("metrics.json", "manifest.json"):
+            p = alpha_dir / split / name
+            if p.exists():
+                paths.append(p)
+    legacy = alpha_dir / "manifest.json"
+    if legacy.exists():
+        paths.append(legacy)
+    return paths
+
+
 def check_universe(*, archive_root: Path | None = None) -> UniverseCheckResult:
     res = UniverseCheckResult()
     archive_root = archive_root or (REPO_ROOT / "archive")
@@ -161,10 +177,7 @@ def check_universe(*, archive_root: Path | None = None) -> UniverseCheckResult:
         if not alphas_dir.exists():
             continue
         for alpha_dir in sorted(p for p in alphas_dir.iterdir() if p.is_dir()):
-            for split in ("is", "os"):
-                manifest = alpha_dir / split / "manifest.json"
-                if not manifest.exists():
-                    continue
+            for manifest in _alpha_metadata_paths(alpha_dir):
                 try:
                     rel = manifest.relative_to(REPO_ROOT).as_posix()
                 except ValueError:
@@ -174,13 +187,13 @@ def check_universe(*, archive_root: Path | None = None) -> UniverseCheckResult:
                     m = json.loads(manifest.read_text())
                 except json.JSONDecodeError:
                     res.violations.append(
-                        {"path": rel, "reason": "invalid manifest.json"}
+                        {"path": rel, "reason": f"invalid {manifest.name}"}
                     )
                     continue
                 symbols = m.get("symbols")
                 if not isinstance(symbols, list):
                     res.violations.append(
-                        {"path": rel, "reason": "manifest missing symbols list"}
+                        {"path": rel, "reason": f"{manifest.name} missing symbols list"}
                     )
                     continue
                 symbols_set = sorted({s.upper() for s in symbols})
@@ -419,16 +432,21 @@ class CoverageCheckResult:
 
 
 def _resolve_strategy_path_from_manifest(manifest_path: Path) -> Path | None:
-    """Locate the strategy module referenced by a manifest.
+    """Locate the strategy module referenced by artifact metadata.
 
-    Strategy class is in manifest.json; map class -> module via the same
+    Strategy class is in metrics.json or legacy manifest.json; map class -> module via the same
     snake_case rule the backtest CLI uses.
     """
     try:
         m = json.loads(manifest_path.read_text())
     except (OSError, json.JSONDecodeError):
         return None
-    cls = m.get("strategy_name")
+    cls = m.get("strategy_class") or m.get("strategy_name")
+    source = m.get("source_original_path")
+    if isinstance(source, str) and source:
+        candidate = Path(source)
+        if candidate.exists():
+            return candidate
     if not isinstance(cls, str) or not cls:
         return None
     parts = []
@@ -444,7 +462,7 @@ def _resolve_strategy_path_from_manifest(manifest_path: Path) -> Path | None:
 def check_coverage(*, archive_root: Path | None = None) -> CoverageCheckResult:
     """Detect duplicate (bar, transform, horizon, universe, exit, idea_family).
 
-    For each run, walk all alphas with a manifest, locate their strategy file,
+    For each run, walk all alphas with artifact metadata, locate their strategy file,
     parse ALPHA_CELL, and report any signature that appears more than once.
     """
     res = CoverageCheckResult()
@@ -458,14 +476,10 @@ def check_coverage(*, archive_root: Path | None = None) -> CoverageCheckResult:
             continue
         seen: dict[tuple, list[str]] = {}
         for alpha_dir in sorted(p for p in alphas_dir.iterdir() if p.is_dir()):
-            split_dir = None
-            for split in ("is", "os"):
-                if (alpha_dir / split / "manifest.json").exists():
-                    split_dir = alpha_dir / split
-                    break
-            if split_dir is None:
+            metadata_paths = _alpha_metadata_paths(alpha_dir)
+            if not metadata_paths:
                 continue
-            manifest = split_dir / "manifest.json"
+            manifest = metadata_paths[0]
             strat_path = _resolve_strategy_path_from_manifest(manifest)
             try:
                 rel = alpha_dir.relative_to(REPO_ROOT).as_posix()
@@ -523,14 +537,10 @@ def check_research(*, archive_root: Path | None = None) -> ResearchCheckResult:
         if not alphas_dir.exists():
             continue
         for alpha_dir in sorted(p for p in alphas_dir.iterdir() if p.is_dir()):
-            manifest = None
-            for split in ("is", "os"):
-                m = alpha_dir / split / "manifest.json"
-                if m.exists():
-                    manifest = m
-                    break
-            if manifest is None:
+            metadata_paths = _alpha_metadata_paths(alpha_dir)
+            if not metadata_paths:
                 continue
+            manifest = metadata_paths[0]
             strat_path = _resolve_strategy_path_from_manifest(manifest)
             try:
                 rel = alpha_dir.relative_to(REPO_ROOT).as_posix()

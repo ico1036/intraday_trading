@@ -15,34 +15,26 @@ files:
 
 ```text
 <artifact_dir>/
-  manifest.json
   weights.parquet
-  metrics.json
-  summary.json
-  summary.csv
   equity_curve.parquet
   trades.parquet
-  events.parquet
-  report.png                  # optional for forward, required when rendered
+  metrics.json
+  strategy_source.py
+  report.png                  # optional rendered report
 ```
 
 Forward runs may also keep compatibility files such as `portfolio_nav.parquet`,
 but readers must prefer the core files above.
 
-For alpha exploration, store fixed in-sample and out-of-sample runs under one
-alpha directory:
+For alpha exploration, store one file set under one alpha directory:
 
 ```text
 archive/<run_id>/alphas/<alpha_id>/
-  is/
-    weights.parquet
-    metrics.json
-    ...
-  os/
-    weights.parquet
-    metrics.json
-    ...
-  validation.json
+  weights.parquet
+  equity_curve.parquet
+  trades.parquet
+  metrics.json
+  strategy_source.py
 ```
 
 The fixed split file lives at:
@@ -61,8 +53,11 @@ Example:
 ```
 
 The agent may inspect IS during development. OS is run after strategy code is
-frozen and is used only to write warning labels in `validation.json`; it must not
-drive strategy repair.
+frozen and is used only to write warning labels in `metrics.json`; it must not
+drive strategy repair. Do not create separate `is/` and `os/` artifact
+directories for new runs. When a single run covers both windows, write IS/OS
+sub-metrics under `metrics.json` keys `is` and `os`, with `is_end` recording
+the split boundary.
 
 ## `weights.parquet`
 
@@ -92,29 +87,65 @@ Rules:
 - Composite engines combine `target_weight`, then produce their own
   `weights.parquet` under a new `alpha_id`.
 
+## `trades.parquet`
+
+The realised trade ledger used for execution-level checks and cost analysis.
+It is required because aggregate metrics alone are not enough to inspect
+turnover, win/loss distribution, fees, or suspicious one-off fills.
+
+## `equity_curve.parquet`
+
+The cached NAV/PnL curve used by dashboards and quick comparisons. It avoids
+rerunning portfolio simulation just to inspect an alpha.
+
+## `strategy_source.py`
+
+The strategy module snapshot used for the run. Source metadata such as
+`strategy_class`, original source path, and git commit should live in
+`metrics.json`, not in a separate `strategy_source.meta.json`.
+
 ## `metrics.json`
 
-Flat top-level metrics used for ranking/filtering:
+Top-level metrics and run metadata used for ranking/filtering:
 
 ```json
 {
+  "artifact_version": 2,
+  "run_type": "backtest",
+  "alpha_id": "xs_volume_rank",
+  "strategy_class": "XsVolumeRankStrategy",
+  "strategy_source": "strategy_source.py",
+  "source_original_path": "src/intraday/strategies/multi/xs_volume_rank_strategy.py",
+  "git_head": "abc123",
+  "symbols": ["BTCUSDT", "ETHUSDT"],
+  "bar_type": "TIME",
+  "bar_size": 86400,
+  "started_at": "2025-03-01T00:00:00",
+  "ended_at": "2025-03-14T23:59:59",
   "profit_factor": 1.2,
   "total_return": 0.04,
   "max_drawdown": -0.08,
   "total_trades": 120,
   "win_rate": 0.53,
   "sharpe": 0.9,
-  "per_symbol": {}
+  "per_symbol": {},
+  "is_end": "2025-03-07T23:59:59",
+  "is": {"total_return": 0.03, "sharpe": 0.8},
+  "os": {"total_return": 0.01, "sharpe": 0.6},
+  "validation_flags": []
 }
 ```
 
-`summary.json` can contain richer run metadata, but `metrics.json` stays flat
-so ranking many alphas is cheap.
+Do not add separate `manifest.json`, `summary.json`, `summary.csv`,
+`validation.json`, or `strategy_source.meta.json` for new artifacts. Fold that
+metadata into `metrics.json`.
 
-## `validation.json`
+## IS/OS validation
 
-`scripts/tools/validate_is_os.py` compares `is/metrics.json` and
-`os/metrics.json` and writes `validation.json`.
+`scripts/tools/validate_is_os.py` compares the `is` and `os` metric blocks
+inside `metrics.json` and writes `validation_flags` plus a `validation` block
+back into `metrics.json`. Legacy `is/metrics.json` and `os/metrics.json`
+archives may still be read, but they are not the standard for new runs.
 
 Warnings are labels, not failures. Initial flags:
 

@@ -23,7 +23,10 @@ heapq.merge로 O(N log K) 병합 (K = 심볼 수).
 """
 
 import heapq
+import inspect
 import json
+import shutil
+import subprocess
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Optional, Iterator
@@ -272,6 +275,7 @@ class PortfolioTickBacktestRunner:
         taker_fee_rate: float = 0.0020,
         leverage: int = 1,
         fixed_aum_sizing: bool = False,
+        max_portfolio_weight: float = 1.0,
     ):
         self.strategy = strategy
         self.data_loaders = data_loaders
@@ -280,6 +284,7 @@ class PortfolioTickBacktestRunner:
         self.initial_capital = initial_capital
         self.position_size_pct = position_size_pct
         self.leverage = leverage
+        self.max_portfolio_weight = float(max_portfolio_weight)
         # When True, position notional is computed off ``initial_capital``
         # rather than ``self._capital``. For a long/short strategy this
         # decouples per-leg size from the running PnL — drawdowns don't
@@ -474,7 +479,8 @@ class PortfolioTickBacktestRunner:
         - quantity가 주어진 경우 해당 수량 사용
         - quantity가 0 이하이고 weight가 주어진 경우,
           현재 자본 * position_size_pct * weight * leverage 로 수량 산정
-        - weight는 0~1 사이의 전략 내 배분 비중이며, 실제 노출은 leverage까지 반영
+        - weight는 전략 내 배분 비중이며, 기본 cap은 1.0이다. 레버리지
+          replay는 ``max_portfolio_weight``로 더 큰 gross budget을 명시한다.
         """
         if order.quantity > 0:
             return order.quantity
@@ -482,7 +488,7 @@ class PortfolioTickBacktestRunner:
         if order.weight is None:
             return 0.0
 
-        if not (0 < order.weight <= 1):
+        if not (0 < order.weight <= self.max_portfolio_weight):
             raise ValueError(f"Invalid order weight for {symbol}: {order.weight}")
 
         # Compound (default): scale by current capital. Fixed-AUM: scale
@@ -594,7 +600,7 @@ class PortfolioTickBacktestRunner:
         self._execute_order(symbol, order, price, timestamp)
 
     def _validate_weight_sum(self, order: PortfolioOrder) -> None:
-        """포트폴리오 주문의 weight 합계가 1을 넘지 않도록 검증."""
+        """Validate the gross target weight budget for a portfolio order."""
         weighted_orders = [
             o for o in order.active_orders.values()
             if o.weight is not None
@@ -606,9 +612,9 @@ class PortfolioTickBacktestRunner:
         # 0 또는 음수는 의도하지 않은 비중 설정으로 간주
         if total_weight <= 0:
             raise ValueError("All weighted orders have non-positive total weight")
-        if total_weight > 1.0 + 1e-12:
+        if total_weight > self.max_portfolio_weight + 1e-12:
             raise ValueError(
-                f"Sum of order weights exceeds 1.0: {total_weight:.6f}"
+                f"Sum of order weights exceeds {self.max_portfolio_weight:.6f}: {total_weight:.6f}"
             )
 
     def _liquidation_price(self, entry_price: float, side: str) -> float | None:
@@ -1188,12 +1194,23 @@ class PortfolioTickBacktestRunner:
                 ]
             )
 
-        events_df = pd.DataFrame(self._event_log)
-        if events_df.empty:
-            events_df = pd.DataFrame(columns=["timestamp", "event_type", "symbol", "details"])
-
         per_symbol = result.get_symbol_breakdown()
         metrics = {
+            "artifact_version": 2,
+            "run_type": "backtest",
+            "strategy_class": self.strategy.__class__.__name__,
+            "strategy_source": "strategy_source.py",
+            "alpha_id": self._alpha_id(),
+            "symbols": self._symbols,
+            "bar_type": self.bar_type.value,
+            "bar_size": self.bar_size,
+            "initial_capital": result.initial_capital,
+            "final_capital": result.final_capital,
+            "started_at": self._start_time.isoformat() if self._start_time else None,
+            "ended_at": self._end_time.isoformat() if self._end_time else None,
+            "generated_at": generated_at.isoformat(),
+            "tick_counts": result.tick_counts,
+            "bar_counts": result.bar_counts,
             "profit_factor": result.profit_factor,
             "total_return": result.total_return,
             "max_drawdown": -result.max_drawdown,
@@ -1201,55 +1218,46 @@ class PortfolioTickBacktestRunner:
             "win_rate": result.win_rate,
             "sharpe": result.sharpe_ratio,
             "per_symbol": per_symbol,
-        }
-        summary = {
-            "artifact_version": 1,
-            "run_type": "backtest",
-            "strategy_name": self.strategy.__class__.__name__,
-            "alpha_id": self._alpha_id(),
-            "symbols": self._symbols,
-            "bar_type": self.bar_type.value,
-            "bar_size": self.bar_size,
-            "initial_capital": result.initial_capital,
-            "final_capital": result.final_capital,
-            "total_return": result.total_return,
-            "started_at": self._start_time.isoformat() if self._start_time else None,
-            "ended_at": self._end_time.isoformat() if self._end_time else None,
-            "generated_at": generated_at.isoformat(),
-            "tick_counts": result.tick_counts,
-            "bar_counts": result.bar_counts,
-        }
-        manifest = {
-            "artifact_version": 1,
-            "run_type": "backtest",
-            "alpha_id": self._alpha_id(),
-            "strategy_name": self.strategy.__class__.__name__,
-            "symbols": self._symbols,
-            "generated_at": generated_at.isoformat(),
-            "files": {
-                "manifest": "manifest.json",
-                "weights": "weights.parquet",
-                "metrics": "metrics.json",
-                "summary": "summary.json",
-                "summary_csv": "summary.csv",
-                "equity_curve": "equity_curve.parquet",
-                "trades": "trades.parquet",
-                "events": "events.parquet",
-                "backtest_report": "backtest_report.md",
-            },
+            "validation_flags": [],
         }
 
         (out / "metrics.json").write_text(json.dumps(metrics, indent=2, default=str))
-        (out / "summary.json").write_text(json.dumps(summary, indent=2, default=str))
-        (out / "manifest.json").write_text(json.dumps(manifest, indent=2, default=str))
         (out / "backtest_report.md").write_text(result.summary())
-        (out / "summary.csv").write_text(
-            "strategy,total_return,sharpe,max_drawdown,total_trades,win_rate,profit_factor\n"
-            f"{self.strategy.__class__.__name__},{result.total_return},{result.sharpe_ratio},"
-            f"{result.max_drawdown},{result.total_trades},{result.win_rate},{result.profit_factor}\n"
-        )
         equity_df.to_parquet(out / "equity_curve.parquet", index=False)
         trades_df.to_parquet(out / "trades.parquet", index=False)
         weights_df.to_parquet(out / "weights.parquet", index=False)
-        events_df.to_parquet(out / "events.parquet", index=False)
+        self._snapshot_strategy_source(out)
         return out
+
+    def _snapshot_strategy_source(self, output_dir: Path) -> None:
+        try:
+            src = Path(inspect.getfile(self.strategy.__class__))
+        except (TypeError, OSError):
+            src = None
+
+        if src is not None and src.exists():
+            shutil.copy2(src, output_dir / "strategy_source.py")
+        else:
+            (output_dir / "strategy_source.py").write_text(
+                f"# source unavailable for {self.strategy.__class__.__name__}\n"
+            )
+
+        try:
+            git_head = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=Path(__file__).resolve().parents[3],
+                capture_output=True,
+                text=True,
+                timeout=3,
+            ).stdout.strip()
+        except Exception:
+            git_head = ""
+
+        metrics_path = output_dir / "metrics.json"
+        try:
+            metrics = json.loads(metrics_path.read_text())
+            metrics["source_original_path"] = str(src) if src is not None else ""
+            metrics["git_head"] = git_head
+            metrics_path.write_text(json.dumps(metrics, indent=2, default=str))
+        except Exception:
+            pass

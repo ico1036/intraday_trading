@@ -42,10 +42,20 @@ def _metric(metrics: dict[str, Any], key: str) -> float:
 
 
 def _alpha_id(alpha_dir: Path, is_dir: Path, os_dir: Path) -> str:
-    for path in (alpha_dir / "manifest.json", is_dir / "manifest.json", os_dir / "manifest.json"):
+    for path in (
+        alpha_dir / "metrics.json",
+        alpha_dir / "manifest.json",
+        is_dir / "metrics.json",
+        is_dir / "manifest.json",
+        os_dir / "manifest.json",
+    ):
         if path.exists():
             manifest = _read_json(path)
-            value = manifest.get("alpha_id") or manifest.get("strategy_name")
+            value = (
+                manifest.get("alpha_id")
+                or manifest.get("strategy_class")
+                or manifest.get("strategy_name")
+            )
             if value:
                 return str(value)
     return alpha_dir.name
@@ -172,10 +182,18 @@ def compare_metrics(
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Compare IS and OS alpha artifacts")
-    parser.add_argument("--alpha-dir", required=True, help="alpha directory containing is/ and os/")
+    parser.add_argument(
+        "--alpha-dir",
+        required=True,
+        help="alpha directory containing one metrics.json with is/os blocks, or legacy is/ and os/",
+    )
     parser.add_argument("--is-name", default="is", help="IS child directory name")
     parser.add_argument("--os-name", default="os", help="OS child directory name")
-    parser.add_argument("--output", default="", help="validation JSON path, default <alpha-dir>/validation.json")
+    parser.add_argument(
+        "--output",
+        default="",
+        help="optional validation JSON path; default merges validation into <alpha-dir>/metrics.json",
+    )
     parser.add_argument("--return-ratio", type=float, default=0.30)
     parser.add_argument("--sharpe-ratio", type=float, default=0.30)
     parser.add_argument("--drawdown-ratio", type=float, default=2.0)
@@ -188,7 +206,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     alpha_dir = Path(args.alpha_dir)
-    output = Path(args.output) if args.output else alpha_dir / "validation.json"
+    output = Path(args.output) if args.output else None
     try:
         result = compare_metrics(
             alpha_dir=alpha_dir,
@@ -200,9 +218,24 @@ def main(argv: list[str] | None = None) -> int:
             win_rate_gap=args.win_rate_gap,
             min_os_trades=args.min_os_trades,
         )
-        output.parent.mkdir(parents=True, exist_ok=True)
-        output.write_text(json.dumps(result, indent=2, default=_json_default))
-        result["output"] = str(output)
+        if output is not None:
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_text(json.dumps(result, indent=2, default=_json_default))
+            result["output"] = str(output)
+        else:
+            metrics_path = alpha_dir / "metrics.json"
+            metrics = _read_json(metrics_path)
+            metrics["validation_flags"] = result["flags"]
+            metrics["validation"] = {
+                "status": result["status"],
+                "flags": result["flags"],
+                "notes": result["notes"],
+                "thresholds": result["thresholds"],
+                "generated_at": result["generated_at"],
+                "policy": result["policy"],
+            }
+            metrics_path.write_text(json.dumps(metrics, indent=2, default=_json_default))
+            result["output"] = str(metrics_path)
         print(json.dumps(result, indent=2, default=_json_default))
         return 0
     except Exception as exc:
@@ -211,7 +244,7 @@ def main(argv: list[str] | None = None) -> int:
             "flags": [],
             "error": str(exc),
             "alpha_dir": str(alpha_dir),
-            "output": str(output),
+            "output": str(output) if output is not None else str(alpha_dir / "metrics.json"),
         }
         print(json.dumps(result, indent=2, default=_json_default))
         return 2

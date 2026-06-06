@@ -146,3 +146,46 @@ Quality gates live in `archive/<run_id>/splits.json` under
   violations only.
 - Use `weights.parquet` as the durable alpha output.
 - Select the next idea for breadth, not similarity to a winner.
+
+## Research Wiki and Harness Versions
+
+Loop harnesses are versioned research algorithms. Before a loop starts, create
+the run goal, harness metadata, and a frozen memory snapshot:
+
+```bash
+uv run python scripts/tools/research_wiki.py init-run \
+  --run-id <run_id> \
+  --goal "<user goal>" \
+  --harness-id loop_v1_post_analysis_wiki \
+  --attempt-budget <N>
+```
+
+This writes:
+
+- `archive/<run_id>/harness.json`
+- `research/wiki/goals/<run_id>.md`
+- `research/wiki/reflections/<run_id>.md`
+- `research/wiki/snapshots/<run_id>_start_alpha_memory.jsonl`
+
+The loop should read the goal, the frozen alpha-memory snapshot, and only the
+linked post-analysis files relevant to the goal. Do not read the whole archive.
+
+After every backtest, write a post-analysis report and update the compact wiki
+index:
+
+```bash
+uv run python scripts/tools/research_wiki.py post-template \
+  --run-id <run_id> --alpha-id <alpha_id>
+
+uv run python scripts/tools/research_wiki.py upsert-alpha \
+  --run-id <run_id> --alpha-id <alpha_id> \
+  --one-line "<short current-state summary>"
+```
+
+Post-analysis is required for both successes and failures. It describes the
+implemented strategy and IS state; it is not a recommendation to clone winners.
+The wiki is a retrieval index and coverage ledger, not an optimizer.
+
+Backtest runs also enforce prefix-invariance: changing the backtest end date
+must not rewrite prior `weights.parquet` rows for the same start, strategy, and
+params. A prefix-invariance failure is a hard failure.

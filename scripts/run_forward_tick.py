@@ -74,8 +74,7 @@ def _slice_forward_artifacts(out_dir: Path, forward_start: str) -> None:
     import pandas as pd
 
     cutoff = pd.Timestamp(forward_start)
-    for name in ("equity_curve.parquet", "trades.parquet",
-                 "weights.parquet", "events.parquet"):
+    for name in ("equity_curve.parquet", "trades.parquet", "weights.parquet"):
         p = out_dir / name
         if not p.exists():
             continue

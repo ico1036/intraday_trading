@@ -6,23 +6,26 @@
  */
 
 :root {
-    --brand: #0052ff;
-    --brand-hover: #578bfa;
-    --brand-link: #0667d0;
-    --bg: #f7f7f7;
+    --brand: #0b3b75;
+    --brand-hover: #164f91;
+    --brand-link: #0b4c8c;
+    --navy: #061b35;
+    --navy-2: #0a2b52;
+    --bg: #f4f7fb;
     --surface: #ffffff;
-    --surface-alt: #eef0f3;
-    --text: #0a0b0d;
-    --muted: #5b616e;
-    --border: rgba(91, 97, 110, 0.2);
-    --border-strong: rgba(91, 97, 110, 0.35);
-    --positive: #16a34a;
-    --negative: #dc2626;
+    --surface-alt: #eef4fb;
+    --surface-blue: #f7fbff;
+    --text: #07172f;
+    --muted: #61708a;
+    --border: rgba(14, 43, 82, 0.12);
+    --border-strong: rgba(14, 43, 82, 0.24);
+    --positive: #12805c;
+    --negative: #b4233c;
     --r-sm: 8px;
     --r-md: 12px;
     --r-lg: 16px;
-    --shadow-1: 0 1px 2px rgba(10, 11, 13, 0.04);
-    --shadow-2: 0 4px 12px rgba(10, 11, 13, 0.06);
+    --shadow-1: 0 1px 2px rgba(6, 27, 53, 0.04), 0 10px 28px rgba(6, 27, 53, 0.04);
+    --shadow-2: 0 14px 40px rgba(6, 27, 53, 0.10);
 }
 
 body {
@@ -33,25 +36,25 @@ body {
     -webkit-font-smoothing: antialiased;
 }
 
-.page-wrap { max-width: 1500px; margin: 0 auto; padding: 16px; box-sizing: border-box; }
+.page-wrap { max-width: 1520px; margin: 0 auto; padding: 22px; box-sizing: border-box; }
 
 .metric-card {
     flex: 1 1 145px; min-width: 145px;
-    padding: 12px 14px;
+    padding: 13px 15px;
     border-radius: var(--r-md);
     background: var(--surface);
     border: 1px solid var(--border);
     box-shadow: var(--shadow-1);
 }
 .metric-label {
-    color: var(--muted); font-size: 12px; font-weight: 600;
-    letter-spacing: 0.02em; text-transform: uppercase;
+    color: var(--muted); font-size: 11px; font-weight: 700;
+    letter-spacing: 0; text-transform: uppercase;
 }
-.metric-value { font-size: 22px; font-weight: 700; color: var(--text); margin-top: 2px; }
+.metric-value { font-size: 22px; font-weight: 750; color: var(--text); margin-top: 4px; }
 
 .section-title {
     font-size: 14px; font-weight: 700; color: var(--text);
-    letter-spacing: 0.04em; text-transform: uppercase;
+    letter-spacing: 0; text-transform: uppercase;
     margin-top: 6px;
 }
 
@@ -61,17 +64,19 @@ body {
 /* Quasar tables: scroll inside their own box, never blow out the page. */
 .q-table__container {
     overflow-x: auto; max-width: 100%;
-    border-radius: var(--r-md);
+    border-radius: var(--r-sm);
     border: 1px solid var(--border);
     background: var(--surface);
+    box-shadow: var(--shadow-1);
 }
 .q-table th {
     font-size: 11px; color: var(--muted); font-weight: 700;
-    letter-spacing: 0.04em; text-transform: uppercase;
+    letter-spacing: 0; text-transform: uppercase;
+    background: #f8fbff;
 }
 .q-table td { font-size: 13px; white-space: nowrap; color: var(--text); }
 .q-table tbody tr { cursor: pointer; }
-.q-table tbody tr:hover { background: var(--surface-alt); }
+.q-table tbody tr:hover { background: #f3f8ff; }
 
 .dense-panel {
     background: var(--surface); border: 1px solid var(--border);
@@ -107,7 +112,7 @@ a { color: var(--brand-link); }
 
 /* Page header — used by index/login/detail pages. */
 .page-header { display: flex; flex-direction: column; gap: 2px; margin-bottom: 4px; }
-.page-title { font-size: 22px; font-weight: 700; color: var(--text); letter-spacing: -0.01em; }
+.page-title { font-size: 24px; font-weight: 760; color: var(--text); letter-spacing: 0; }
 .page-subtitle { font-size: 12px; color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 
 /* Accent variants for count cards at the top of the alpha index. */
@@ -127,7 +132,7 @@ a { color: var(--brand-link); }
     color: var(--positive);
     font-size: 12px;
     font-weight: 700;
-    letter-spacing: 0.04em;
+    letter-spacing: 0;
     text-transform: uppercase;
 }
 .badge-live::before {
@@ -156,22 +161,22 @@ a { color: var(--brand-link); }
 
 /* Top navigation — sticky header across authenticated pages. */
 .nav-bar {
-    background: var(--surface) !important;
-    border-bottom: 1px solid var(--border);
-    color: var(--text) !important;
-    box-shadow: var(--shadow-1);
-    padding: 0 14px;
+    background: var(--navy) !important;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    color: #ffffff !important;
+    box-shadow: 0 10px 28px rgba(6, 27, 53, 0.16);
+    padding: 0 18px;
 }
 .nav-bar .nav-inner {
     display: flex; align-items: center; gap: 12px;
     width: 100%; max-width: 1500px; margin: 0 auto;
-    min-height: 50px;
+    min-height: 58px;
 }
 .nav-brand {
-    font-size: 15px; font-weight: 700; letter-spacing: -0.01em;
-    color: var(--text);
+    font-size: 17px; font-weight: 780; letter-spacing: 0;
+    color: #ffffff;
 }
-.nav-brand .nav-mark { color: var(--brand); margin-right: 6px; }
+.nav-brand .nav-mark { color: #7db7ff; margin-right: 8px; }
 
 /* Section panel — wraps each detail-page section as a card with a
    prominent header. */
@@ -179,7 +184,7 @@ a { color: var(--brand-link); }
     background: var(--surface);
     border: 1px solid var(--border);
     border-radius: var(--r-md);
-    padding: 14px;
+    padding: 16px;
     box-shadow: var(--shadow-1);
 }
 .section-panel .section-title {
@@ -211,7 +216,7 @@ a { color: var(--brand-link); }
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .alpha-card-list .alpha-row .row-cat {
-    font-size: 10px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase;
+    font-size: 10px; font-weight: 700; letter-spacing: 0; text-transform: uppercase;
     padding: 2px 8px; border-radius: 999px; background: var(--surface-alt); color: var(--muted);
 }
 .alpha-card-list .alpha-row .row-stats {
@@ -219,7 +224,7 @@ a { color: var(--brand-link); }
     font-size: 12px;
 }
 .alpha-card-list .alpha-row .stat-label {
-    font-size: 9px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase;
+    font-size: 9px; font-weight: 700; letter-spacing: 0; text-transform: uppercase;
     color: var(--muted); display: block; margin-bottom: 1px;
 }
 .alpha-card-list .alpha-row .stat-value { font-weight: 600; color: var(--text); }
@@ -234,31 +239,78 @@ a { color: var(--brand-link); }
 
 /* Daily PnL banner — large, prominent. Gain vs loss color from tone. */
 .daily-banner {
-    display: flex; flex-direction: column; gap: 4px;
-    padding: 16px 18px;
+    padding: 18px 20px;
     border-radius: var(--r-md);
     border: 1px solid var(--border);
     background: var(--surface);
     box-shadow: var(--shadow-1);
 }
+.daily-banner-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 18px;
+    align-items: center;
+}
+.daily-main {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
 .daily-banner .daily-label {
-    font-size: 10px; font-weight: 700;
-    letter-spacing: 0.06em; text-transform: uppercase;
+    font-size: 11px; font-weight: 800;
+    letter-spacing: 0; text-transform: uppercase;
     color: var(--muted);
 }
 .daily-banner .daily-amount {
-    font-size: 28px; font-weight: 800; letter-spacing: -0.01em;
+    font-size: 30px; font-weight: 850; letter-spacing: 0;
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
-.daily-banner.gain { border-left: 4px solid var(--positive); }
+.daily-banner.gain { border-left: 5px solid var(--positive); }
 .daily-banner.gain .daily-amount { color: var(--positive); }
-.daily-banner.loss { border-left: 4px solid var(--negative); }
+.daily-banner.loss { border-left: 5px solid var(--negative); }
 .daily-banner.loss .daily-amount { color: var(--negative); }
 .daily-banner .daily-roast {
     margin-top: 6px;
     font-size: 13px; color: var(--text);
     font-style: italic;
     line-height: 1.45;
+}
+.daily-hangang {
+    min-width: 230px;
+    padding: 16px 18px;
+    border-radius: var(--r-md);
+    background: var(--surface-blue);
+    border: 1px solid rgba(11, 76, 140, 0.20);
+    text-align: right;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7);
+}
+.daily-hangang-kicker {
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: 0;
+    color: var(--brand);
+    text-transform: uppercase;
+}
+.daily-hangang-label {
+    margin-top: 2px;
+    font-size: 20px;
+    line-height: 1.05;
+    font-weight: 900;
+    letter-spacing: 0;
+    color: var(--text);
+}
+.daily-hangang-temp {
+    margin-top: 5px;
+    font-size: 44px;
+    line-height: 1;
+    font-weight: 900;
+    color: var(--brand);
+}
+.daily-hangang-temp.muted {
+    font-size: 20px;
+    color: var(--muted);
 }
 
 /* "God loves you" banner — fires when MDD passes the threshold.
@@ -285,7 +337,7 @@ a { color: var(--brand-link); }
 .god-banner .god-foot {
     margin-top: 8px;
     font-size: 11px;
-    letter-spacing: 0.04em;
+    letter-spacing: 0;
     opacity: 0.75;
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
@@ -344,6 +396,9 @@ a { color: var(--brand-link); }
     .q-table td, .q-table th { font-size: 12px; padding: 6px 8px; }
     .section-title { font-size: 13px; }
     .metric-value { font-size: 18px; }
+    .daily-banner-grid { grid-template-columns: 1fr; }
+    .daily-hangang { min-width: 0; text-align: left; }
+    .daily-hangang-temp { font-size: 30px; }
     /* Phones: give charts more vertical room since they're full-width. */
     .chart-host { min-height: 320px; }
     .js-plotly-plot, .plot-container { width: 100% !important; }

@@ -16,7 +16,9 @@ To test your own alpha, copy `_alpha_template.py` into
 from __future__ import annotations
 
 import argparse
+import inspect
 import json
+import shutil
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -110,6 +112,15 @@ def save_artifacts(
     trades_df.to_parquet(output_dir / "trades.parquet", index=False)
 
     metrics = {
+        "artifact_version": 2,
+        "run_type": "manual_backtest",
+        "strategy_class": build_strategy.__name__,
+        "strategy_source": "strategy_source.py",
+        "symbols": symbols,
+        "bar_type": args.bar_type,
+        "bar_size": args.bar_size,
+        "initial_capital": args.initial_capital,
+        "final_capital": result.final_capital,
         "profit_factor": result.profit_factor,
         "total_return": result.total_return,
         "max_drawdown": -abs(result.max_drawdown),
@@ -117,25 +128,9 @@ def save_artifacts(
         "win_rate": result.win_rate,
         "sharpe": result.sharpe_ratio,
         "per_symbol": result.get_symbol_breakdown(),
+        "validation_flags": [],
     }
     (output_dir / "metrics.json").write_text(json.dumps(metrics, indent=2))
-    (output_dir / "summary.json").write_text(
-        json.dumps(
-            {
-                "symbols": symbols,
-                "bar_type": args.bar_type,
-                "bar_size": args.bar_size,
-                "initial_capital": args.initial_capital,
-                "final_capital": result.final_capital,
-                "metrics": metrics,
-            },
-            indent=2,
-        )
-    )
-    pd.DataFrame([metrics | {"per_symbol": json.dumps(metrics["per_symbol"])}]).to_csv(
-        output_dir / "summary.csv",
-        index=False,
-    )
 
     # This runner does not expose target weight history yet. Keep an explicit
     # placeholder so readers know where the alpha ledger belongs.
@@ -153,26 +148,15 @@ def save_artifacts(
             "metadata",
         ]
     ).to_parquet(output_dir / "weights.parquet", index=False)
-    pd.DataFrame(columns=["timestamp", "event", "metadata"]).to_parquet(
-        output_dir / "events.parquet",
-        index=False,
-    )
-    (output_dir / "manifest.json").write_text(
-        json.dumps(
-            {
-                "kind": "manual_backtest",
-                "strategy": build_strategy.__name__,
-                "artifacts": {
-                    "weights": "weights.parquet",
-                    "metrics": "metrics.json",
-                    "equity_curve": "equity_curve.parquet",
-                    "trades": "trades.parquet",
-                    "events": "events.parquet",
-                },
-            },
-            indent=2,
+    try:
+        src = Path(inspect.getfile(build_strategy))
+        shutil.copy2(src, output_dir / "strategy_source.py")
+        metrics["source_original_path"] = str(src)
+        (output_dir / "metrics.json").write_text(json.dumps(metrics, indent=2))
+    except Exception:
+        (output_dir / "strategy_source.py").write_text(
+            f"# source unavailable for {build_strategy.__name__}\n"
         )
-    )
 
 
 def main() -> int:

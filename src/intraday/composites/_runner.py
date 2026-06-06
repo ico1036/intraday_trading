@@ -185,6 +185,7 @@ def _run_backtest_window(
     symbols: list[str],
     start: str,
     end: str,
+    is_end: str | None = None,
 ) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     # Composite backtests skip ``backtest.py``'s per-alpha quality gate and
@@ -212,6 +213,8 @@ def _run_backtest_window(
         "--no-enforce-quality",
         "--no-enforce-governance",
     ]
+    if is_end:
+        cmd.extend(["--is-end", is_end])
     print("$ " + " ".join(cmd), file=sys.stderr)
     # ``backtest.py`` returns exit 2 whenever quality_gate thresholds are
     # missed, even with ``--no-enforce-quality`` (which only suppresses the
@@ -312,7 +315,7 @@ def build_and_backtest(
         })
     pd.DataFrame(members_rows).to_csv(comp_dir / "members.csv", index=False)
 
-    manifest = {
+    composite_meta = {
         "composite_id": composite_id,
         "method": composition_note,
         "n_members": len(selected),
@@ -329,21 +332,29 @@ def build_and_backtest(
         ),
         "created": datetime.now(timezone.utc).isoformat(),
     }
-    (comp_dir / "manifest.json").write_text(json.dumps(manifest, indent=2, default=str))
 
-    _run_backtest_window(
-        weights_path=weights_path,
-        out_dir=comp_dir / "is",
-        symbols=universe,
-        start=is_window["start"],
-        end=is_window["end"],
-    )
     if include_os and os_window:
         _run_backtest_window(
             weights_path=weights_path,
-            out_dir=comp_dir / "os",
+            out_dir=comp_dir,
             symbols=universe,
-            start=os_window["start"],
+            start=is_window["start"],
             end=os_window["end"],
+            is_end=is_window["end"],
         )
+    else:
+        _run_backtest_window(
+            weights_path=weights_path,
+            out_dir=comp_dir,
+            symbols=universe,
+            start=is_window["start"],
+            end=is_window["end"],
+        )
+    metrics_path = comp_dir / "metrics.json"
+    try:
+        metrics = json.loads(metrics_path.read_text())
+    except Exception:
+        metrics = {}
+    metrics.update(composite_meta)
+    metrics_path.write_text(json.dumps(metrics, indent=2, default=str))
     return comp_dir

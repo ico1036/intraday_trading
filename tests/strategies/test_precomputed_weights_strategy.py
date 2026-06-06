@@ -73,6 +73,18 @@ def test_returns_none_when_timestamp_not_in_schedule(tmp_path: Path):
     assert strat.generate_order(_state(other_ts)) is None
 
 
+def test_emits_scheduled_timestamp_only_once(tmp_path: Path):
+    ts = datetime(2026, 3, 4, 0, 0)
+    path = _write_schedule(
+        tmp_path,
+        [{"timestamp": ts, "symbol": "BTCUSDT", "target_weight": 0.5}],
+    )
+    strat = PrecomputedWeightsStrategy(symbols=SYMBOLS, weights_path=str(path))
+
+    assert isinstance(strat.generate_order(_state(ts)), PortfolioOrder)
+    assert strat.generate_order(_state(ts)) is None
+
+
 def test_zero_weight_closes_existing_position(tmp_path: Path):
     ts = datetime(2026, 3, 4, 0, 0)
     path = _write_schedule(

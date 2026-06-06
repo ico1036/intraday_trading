@@ -289,7 +289,7 @@ _LOSS_COMFORT_LINES = [
 
 
 def discover_live_alphas(run_dir: Path) -> list[dict[str, Any]]:
-    """Scan run_dir for alphas with a currently-running forward runner.
+    """Scan run_dir for alphas/composites with a fresh forward runner.
 
     Supports both layouts:
       * multi-run:  ``run_dir`` is the archive root, contains ``run_*/alphas/``
@@ -299,7 +299,10 @@ def discover_live_alphas(run_dir: Path) -> list[dict[str, Any]]:
     patterns = []
     if (run_dir / "alphas").exists():
         patterns.append("alphas/*/forward")          # single-run
+    if (run_dir / "composites").exists():
+        patterns.append("composites/*/forward")      # single-run composites
     patterns.append("*/alphas/*/forward")            # multi-run
+    patterns.append("*/composites/*/forward")        # multi-run composites
     seen_paths: set[Path] = set()
     for pat in patterns:
         for forward_dir in run_dir.glob(pat):
@@ -309,18 +312,20 @@ def discover_live_alphas(run_dir: Path) -> list[dict[str, Any]]:
             seen_paths.add(resolved)
             if not is_forward_live(forward_dir):
                 continue
-            alpha_dir_path = forward_dir.parent
-            alpha_id = alpha_dir_path.name
+            item_dir_path = forward_dir.parent
+            item_id = item_dir_path.name
+            kind = "composite" if item_dir_path.parent.name == "composites" else "alpha"
             # run_id heuristic: parent of `alphas/<aid>/forward` 가
             # `<run>/alphas/<aid>/forward` 라면 grandparent.parent. 단
             # single-run 모드면 alpha_dir_path.parent.parent = run_dir 자체.
             try:
-                run_id = alpha_dir_path.parent.parent.name
+                run_id = item_dir_path.parent.parent.name
             except Exception:
                 run_id = run_dir.name
             found.append({
                 "run_id": run_id,
-                "alpha_id": alpha_id,
+                "alpha_id": item_id,
+                "kind": kind,
                 "status": forward_status(forward_dir),
             })
     return found
@@ -354,25 +359,13 @@ def render_footer(run_dir: Path) -> None:
     """Small footer with run_dir, live count, and git SHA."""
     live_count = 0
     try:
-        patterns = []
-        if (run_dir / "alphas").exists():
-            patterns.append("alphas/*/forward")
-        patterns.append("*/alphas/*/forward")
-        seen = set()
-        for pat in patterns:
-            for forward_dir in run_dir.glob(pat):
-                resolved = forward_dir.resolve()
-                if resolved in seen:
-                    continue
-                seen.add(resolved)
-                if is_forward_live(forward_dir):
-                    live_count += 1
+        live_count = len(discover_live_alphas(run_dir))
     except Exception:
         pass
     with ui.row().classes("app-footer w-full"):
         ui.label(f"run_dir: {run_dir}")
         ui.label("·").classes("footer-dot")
-        ui.label(f"live alphas: {live_count}")
+        ui.label(f"live items: {live_count}")
         ui.label("·").classes("footer-dot")
         # Cached at process start — a git pull while the dashboard is running
         # will not refresh this.
@@ -665,7 +658,8 @@ def load_index(run_dir: Path) -> pd.DataFrame:
             )
 
             v = read_json(alpha_d / "validation.json")
-            flags = ",".join(v.get("flags", []) or []) if v else ""
+            metric_flags = is_m.get("validation_flags") or is_m.get("flags") or []
+            flags = ",".join((v or {}).get("flags", []) or metric_flags or [])
 
             # Backtest period (start, end, days) per split, taken from splits.json
             is_split = (splits.get("is") or {}) if isinstance(splits, dict) else {}
@@ -677,11 +671,13 @@ def load_index(run_dir: Path) -> pd.DataFrame:
             is_period_days = _duration_days(is_period_start, is_period_end)
             os_period_days = _duration_days(os_period_start, os_period_end)
 
-            # Alpha generation timestamp from manifest.json (prefer IS, fall back OS)
+            # Alpha generation timestamp from metrics.json (new contract), with
+            # legacy manifest fallback for existing archives.
             is_manifest = read_json(alpha_d / "is" / "manifest.json")
             os_manifest = read_json(alpha_d / "os" / "manifest.json")
             generated_at = (
-                (is_manifest or {}).get("generated_at")
+                is_m.get("generated_at")
+                or (is_manifest or {}).get("generated_at")
                 or (os_manifest or {}).get("generated_at")
             )
 
@@ -690,11 +686,20 @@ def load_index(run_dir: Path) -> pd.DataFrame:
             # daily PnL stitching across mixed frequencies is meaningless
             # (and correlation dedup must stay within a group).
             bar_size_sec = None
+            for val in (is_m.get("bar_size"), is_m.get("bar_size_sec")):
+                if val is not None:
+                    try:
+                        bar_size_sec = float(val)
+                        break
+                    except (TypeError, ValueError):
+                        pass
             for path in (
                 alpha_d / "summary.json",
                 alpha_d / "is" / "summary.json",
                 alpha_d / "forward" / "summary.json",
             ):
+                if bar_size_sec is not None:
+                    break
                 try:
                     val = read_json(path).get("bar_size") if path.exists() else None
                 except Exception:
@@ -1018,9 +1023,12 @@ def forward_session_figure(run_dir: Path, alpha_id: str) -> go.Figure:
     continuous curve. Used inside the Live Session panel so the user can
     judge live performance independently of backtest history.
     """
-    df = _equity_chart_series_cached(
-        str(alpha_dir(run_dir, alpha_id) / "forward" / "equity_curve.parquet")
-    )
+    return forward_session_figure_from_dir(alpha_dir(run_dir, alpha_id) / "forward")
+
+
+def forward_session_figure_from_dir(forward_dir: Path) -> go.Figure:
+    """Forward cumret chart for any artifact directory with an equity curve."""
+    df = _equity_chart_series_cached(str(forward_dir / "equity_curve.parquet"))
     fig = go.Figure()
     if not df.empty and "cumret" in df.columns:
         # Rebase so the first forward bar shows 0% rather than wherever the
@@ -1490,6 +1498,110 @@ def metric_card(label: str, value: str, *, tone: str | None = None):
         ui.label(value).classes(value_cls)
 
 
+def render_live_forward_status(forward_dir: Path) -> None:
+    """Render the shared live/forward status block for alpha and composite pages."""
+    if not forward_dir.exists():
+        return
+
+    status = forward_status(forward_dir)
+    temp_c, temp_status = hangang_temp()
+    bar_pnl_usd, bar_ret = _current_bar_pnl(forward_dir)
+    if bar_pnl_usd is not None:
+        is_loss = bar_pnl_usd < 0
+        tone_cls = "loss" if is_loss else "gain"
+        pct_part = f" ({bar_ret * 100:+.2f}%)" if bar_ret is not None else ""
+        roast = (
+            "오늘은 주인님을 위해 따뜻한 말 한마디를 보태주세요. "
+            "Take it easy, boss — the market owes us nothing."
+            if is_loss else
+            "오늘의 식대는 강세장이 책임집니다. "
+            "Green candle, green tea — savor it."
+        )
+        temp_html = (
+            f'<div class="daily-hangang">'
+            f'<div class="daily-hangang-kicker">CRYPTO RISK GAUGE</div>'
+            f'<div class="daily-hangang-label">한강수온</div>'
+            f'<div class="daily-hangang-temp">{temp_c:.1f}°C</div>'
+            f'</div>'
+            if temp_c is not None
+            else
+            f'<div class="daily-hangang" title="{html.escape(temp_status)}">'
+            f'<div class="daily-hangang-kicker">CRYPTO RISK GAUGE</div>'
+            f'<div class="daily-hangang-label">한강수온</div>'
+            f'<div class="daily-hangang-temp muted">측정 불가</div>'
+            f'</div>'
+        )
+        with ui.element("div").classes(f"daily-banner {tone_cls} w-full"):
+            ui.html(
+                f'<div class="daily-banner-grid">'
+                f'<div class="daily-main">'
+                f'<div class="daily-label">Current bar PnL (since last close)</div>'
+                f'<div class="daily-amount">{bar_pnl_usd:+,.2f} USD{pct_part}</div>'
+                f'<div class="daily-roast">{roast}</div>'
+                f'</div>'
+                f'{temp_html}'
+                f'</div>',
+                sanitize=False,
+            )
+
+    with ui.column().classes("section-panel w-full gap-2"):
+        with ui.row().classes("w-full items-center justify-between"):
+            ui.label("Live Status").classes("section-title")
+        with ui.row().classes("gap-2 w-full"):
+            metric_card(
+                "Status",
+                "● LIVE" if status["live"] else "○ Stopped",
+                tone="positive" if status["live"] else "muted",
+            )
+            metric_card("PID", str(status["pid"]) if status["pid"] else "-")
+            metric_card("Uptime", format_uptime(status["uptime_seconds"]))
+            nav_curr = status["nav_current"]
+            nav_start = status["nav_start"]
+            nav_pct = (nav_curr / nav_start - 1.0) if nav_curr and nav_start else None
+            metric_card("Live NAV", f"${nav_curr:,.2f}" if nav_curr else "-")
+            metric_card("Live Return", _fmt_pct(nav_pct), tone=_tone_from_number(nav_pct))
+            pnl = status["today_pnl"]
+            metric_card(
+                "Last bar PnL",
+                f"${pnl:+.2f}" if pnl is not None else "-",
+                tone=_tone_from_number(pnl),
+            )
+            metric_card(
+                "Last decision",
+                status["last_decision"].strftime("%Y-%m-%d %H:%M")
+                if status["last_decision"] is not None else "-",
+            )
+
+
+def render_live_session(forward_dir: Path) -> None:
+    """Render post-OS live session PnL cards and curve for any forward artifact."""
+    if not forward_dir.exists():
+        return
+    status = forward_status(forward_dir)
+    if not status["live"]:
+        return
+
+    with ui.column().classes("section-panel w-full gap-2"):
+        ui.label("Live Session (post-OS)").classes("section-title")
+        with ui.row().classes("gap-2 w-full"):
+            s_pnl = status["session_pnl"]
+            s_ret = status["session_return"]
+            s_start = status["session_start"]
+            s_eq0 = status["session_equity_start"]
+            metric_card(
+                "Session start",
+                s_start.strftime("%Y-%m-%d %H:%M") if s_start is not None else "-",
+            )
+            metric_card("Session start NAV", f"${s_eq0:,.2f}" if s_eq0 is not None else "-")
+            metric_card(
+                "Session PnL",
+                f"${s_pnl:+.2f}" if s_pnl is not None else "-",
+                tone=_tone_from_number(s_pnl),
+            )
+            metric_card("Session Return", _fmt_pct(s_ret), tone=_tone_from_number(s_ret))
+        ui.plotly(forward_session_figure_from_dir(forward_dir)).classes("w-full chart-host mt-2")
+
+
 def artifact_path(run_dir: Path, alpha_id: str) -> str:
     return str(alpha_dir(run_dir, alpha_id))
 
@@ -1545,7 +1657,7 @@ def field_contract_card() -> None:
             with ui.card().classes("mini-card"):
                 ui.label("flags").classes("metric-label")
                 ui.label(
-                    "OS-vs-IS validation flags from validation.json (only set on runs with OS data)"
+                    "OS-vs-IS validation flags from metrics.json validation_flags, with legacy validation.json fallback"
                 ).classes("mini-value")
             with ui.card().classes("mini-card"):
                 ui.label("source").classes("metric-label")
@@ -1679,42 +1791,62 @@ COMPOSITE_OS_BOLD_COLOR = "#dc2626"
 
 
 def discover_composites(archive_root: Path) -> list[dict[str, Any]]:
-    composites_root = archive_root / "composites"
+    composite_roots: list[Path] = []
+    direct_root = archive_root / "composites"
+    if direct_root.exists():
+        composite_roots.append(direct_root)
+    if not composite_roots and archive_root.exists():
+        for child in sorted(archive_root.iterdir()):
+            nested_root = child / "composites"
+            if child.is_dir() and nested_root.exists():
+                composite_roots.append(nested_root)
     out: list[dict[str, Any]] = []
-    if not composites_root.exists():
+    if not composite_roots:
         return out
-    for d in sorted(composites_root.iterdir()):
-        if not d.is_dir():
-            continue
-        manifest_path = d / "manifest.json"
-        if not manifest_path.exists():
-            continue
-        manifest = read_json(manifest_path)
-        is_metrics = read_json(d / "is" / "metrics.json")
-        os_metrics = read_json(d / "os" / "metrics.json") if (d / "os" / "metrics.json").exists() else {}
-        out.append(
-            {
-                "composite_id": manifest.get("composite_id", d.name),
-                "dir_name": d.name,
-                "dir": str(d),
-                "method": manifest.get("method", ""),
-                "n_members": manifest.get("n_members", 0),
-                "n_change_events": manifest.get("n_change_events", 0),
-                "max_row_l1": manifest.get("max_row_l1"),
-                "mean_row_l1": manifest.get("mean_row_l1"),
-                "is_window": manifest.get("is_window", {}),
-                "is_sharpe": is_metrics.get("sharpe"),
-                "is_return": is_metrics.get("total_return"),
-                "is_drawdown": is_metrics.get("max_drawdown"),
-                "is_trades": is_metrics.get("total_trades"),
-                "is_win_rate": is_metrics.get("win_rate"),
-                "os_sharpe": os_metrics.get("sharpe"),
-                "os_return": os_metrics.get("total_return"),
-                "os_drawdown": os_metrics.get("max_drawdown"),
-                "os_trades": os_metrics.get("total_trades"),
-                "selection_warning": manifest.get("selection_bias_warning"),
-            }
-        )
+    for composites_root in composite_roots:
+        run_id = composites_root.parent.name
+        for d in sorted(composites_root.iterdir()):
+            if not d.is_dir():
+                continue
+            manifest_path = d / "manifest.json"
+            if not manifest_path.exists():
+                continue
+            manifest = read_json(manifest_path)
+            flat_metrics = read_json(d / "metrics.json") if (d / "metrics.json").exists() else {}
+            is_metrics = (
+                read_json(d / "is" / "metrics.json")
+                if (d / "is" / "metrics.json").exists()
+                else flat_metrics.get("is", {})
+            )
+            os_metrics = (
+                read_json(d / "os" / "metrics.json")
+                if (d / "os" / "metrics.json").exists()
+                else flat_metrics.get("os", {})
+            )
+            out.append(
+                {
+                    "run_id": run_id,
+                    "composite_id": manifest.get("composite_id", d.name),
+                    "dir_name": d.name,
+                    "dir": str(d),
+                    "method": manifest.get("method", ""),
+                    "n_members": manifest.get("n_members", 0),
+                    "n_change_events": manifest.get("n_change_events", 0),
+                    "max_row_l1": manifest.get("max_row_l1"),
+                    "mean_row_l1": manifest.get("mean_row_l1"),
+                    "is_window": manifest.get("is_window", {}),
+                    "is_sharpe": is_metrics.get("sharpe"),
+                    "is_return": is_metrics.get("total_return"),
+                    "is_drawdown": is_metrics.get("max_drawdown"),
+                    "is_trades": is_metrics.get("total_trades"),
+                    "is_win_rate": is_metrics.get("win_rate"),
+                    "os_sharpe": os_metrics.get("sharpe"),
+                    "os_return": os_metrics.get("total_return"),
+                    "os_drawdown": os_metrics.get("max_drawdown"),
+                    "os_trades": os_metrics.get("total_trades"),
+                    "selection_warning": manifest.get("selection_bias_warning"),
+                }
+            )
     return out
 
 
@@ -1926,6 +2058,90 @@ def composite_member_summary_figure(composite_dir: Path, top_n: int = 20) -> go.
     return fig
 
 
+def composite_member_allocation_figure(composite_dir: Path, top_n: int = 20) -> go.Figure:
+    """Stacked step chart of per-alpha sleeve allocation through time."""
+    fig = go.Figure()
+    manifest = read_json(composite_dir / "manifest.json")
+    members_csv = composite_dir / "members.csv"
+    if not manifest or not members_csv.exists():
+        return fig
+
+    start = pd.Timestamp((manifest.get("is_window") or {}).get("start"))
+    end = pd.Timestamp((manifest.get("os_window") or {}).get("end"))
+    if pd.isna(start) or pd.isna(end):
+        return fig
+
+    rows: list[dict[str, Any]] = []
+    rolling_log = manifest.get("rolling_selection_log") or []
+    if rolling_log:
+        for item in rolling_log:
+            ts = pd.Timestamp(item.get("rebal_date"))
+            members = list(item.get("members") or [])
+            if pd.isna(ts) or not members:
+                continue
+            share = 1.0 / len(members)
+            for aid in members:
+                rows.append({"timestamp": ts, "alpha_id": str(aid), "allocation": share})
+    else:
+        members = pd.read_csv(members_csv)
+        for _, row in members.iterrows():
+            rows.append(
+                {
+                    "timestamp": start,
+                    "alpha_id": str(row["alpha_id"]),
+                    "allocation": abs(float(row.get("coefficient", 0.0))),
+                }
+            )
+
+    if not rows:
+        return fig
+    df = pd.DataFrame(rows)
+    totals = df.groupby("alpha_id")["allocation"].sum().sort_values(ascending=False)
+    top_names = set(totals.head(top_n).index)
+    df["alpha_plot"] = df["alpha_id"].where(df["alpha_id"].isin(top_names), "Other members")
+    pivot = (
+        df.groupby(["timestamp", "alpha_plot"])["allocation"]
+        .sum()
+        .unstack(fill_value=0.0)
+        .sort_index()
+    )
+    if end not in pivot.index:
+        pivot.loc[end] = pivot.iloc[-1]
+        pivot = pivot.sort_index()
+    order = [name for name in totals.head(top_n).index if name in pivot.columns]
+    if "Other members" in pivot.columns:
+        order.append("Other members")
+
+    palette = [
+        "#1f3a8a", "#0f766e", "#b45309", "#7c3aed", "#be123c",
+        "#2563eb", "#16a34a", "#ca8a04", "#9333ea", "#dc2626",
+    ]
+    for i, name in enumerate(order):
+        fig.add_trace(
+            go.Scatter(
+                x=pivot.index.astype(str),
+                y=pivot[name].astype(float),
+                mode="lines",
+                line=dict(width=0.8, color=palette[i % len(palette)]),
+                stackgroup="one",
+                line_shape="hv",
+                name=str(name),
+                hovertemplate="%{fullData.name}<br>%{x}<br>allocation: %{y:.2%}<extra></extra>",
+            )
+        )
+    fig.update_layout(
+        title="Per-alpha sleeve allocation over time",
+        height=420,
+        margin=dict(l=40, r=20, t=50, b=70),
+        xaxis_title="time",
+        yaxis_title="sleeve allocation",
+        hovermode="x unified",
+        legend=dict(orientation="h", yanchor="top", y=-0.18, xanchor="center", x=0.5),
+    )
+    fig.update_yaxes(tickformat=".0%", range=[0, max(1.0, float(pivot[order].sum(axis=1).max()))])
+    return fig
+
+
 def _stacked_member_lines(
     member_paths: list[str],
     cumret_fn: Callable[[str], pd.Series] = _member_cumret,
@@ -2014,6 +2230,67 @@ def composite_cumret_figure(
     #   3. Composite OS (bold red) — OS data offset by IS_final
     comp_is_path = composite_dir / "is" / "equity_curve.parquet"
     comp_os_path = composite_dir / "os" / "equity_curve.parquet"
+    comp_flat_path = composite_dir / "equity_curve.parquet"
+    if not comp_is_path.exists() and not comp_os_path.exists() and comp_flat_path.exists():
+        manifest = read_json(composite_dir / "manifest.json")
+        is_end_raw = (manifest.get("is_window") or {}).get("end")
+        is_end = pd.Timestamp(is_end_raw) if is_end_raw else None
+        s = cumret_fn(str(comp_flat_path))
+        if not s.empty:
+            s = _series_downsample(s)
+            if is_end is None:
+                fig.add_trace(
+                    go.Scatter(
+                        x=s.index.astype(str),
+                        y=s.values,
+                        mode="lines",
+                        line=dict(color=COMPOSITE_BOLD_COLOR, width=4),
+                        name="Composite",
+                    )
+                )
+            else:
+                is_mask = s.index <= is_end
+                os_mask = s.index > is_end
+                fig.add_trace(
+                    go.Scatter(
+                        x=s.index[is_mask].astype(str),
+                        y=s.values[is_mask],
+                        mode="lines",
+                        line=dict(color=COMPOSITE_BOLD_COLOR, width=4),
+                        name="Composite IS",
+                        hovertemplate="composite IS<br>%{x}<br>%{y:.2%}<extra></extra>",
+                    )
+                )
+                fig.add_trace(
+                    go.Scatter(
+                        x=s.index[os_mask].astype(str),
+                        y=s.values[os_mask],
+                        mode="lines",
+                        line=dict(color=COMPOSITE_OS_BOLD_COLOR, width=4),
+                        name="Composite OS",
+                        hovertemplate="composite OS<br>%{x}<br>%{y:.2%}<extra></extra>",
+                    )
+                )
+                fig.add_vline(
+                    x=str(is_end),
+                    line_dash="dash",
+                    line_width=1,
+                    line_color="#ef4444",
+                )
+        fig.update_layout(
+            title=f"Cumulative return — {label}: composite (bold) vs members (faded), IS / OS",
+            height=440,
+            margin=dict(l=40, r=20, t=50, b=70),
+            xaxis_title="time",
+            yaxis_title="cum return",
+            showlegend=True,
+            legend=dict(orientation="h", yanchor="top", y=-0.18, xanchor="center", x=0.5),
+            hovermode="x unified",
+        )
+        fig.update_yaxes(tickformat=".1%")
+        fig.add_hline(y=0, line_dash="dash", line_width=1, line_color="#94a3b8")
+        return fig
+
     is_final = 0.0
     is_last_x: str | None = None
     if comp_is_path.exists():
@@ -2086,8 +2363,17 @@ def main() -> None:
         add_styles()
         render_top_nav()
         df = load_index(run_dir)
+        if not df.empty and "is_sharpe" in df.columns:
+            df = df.sort_values("is_sharpe", ascending=False, na_position="last")
         state = {"df": df, "search_text": build_search_text(run_dir, df)}
-        composites = discover_composites(run_dir)
+        composites = sorted(
+            discover_composites(run_dir),
+            key=lambda c: (
+                c.get("is_sharpe") is not None,
+                float(c.get("is_sharpe") or float("-inf")),
+            ),
+            reverse=True,
+        )
         live_alphas = discover_live_alphas(run_dir)
         with ui.column().classes("page-wrap w-full gap-3"):
             with ui.column().classes("page-header"):
@@ -2268,16 +2554,22 @@ def main() -> None:
                         with ui.column().classes("w-full gap-2"):
                             for entry in live_alphas:
                                 st = entry["status"]
-                                target_url = f"/alpha/{entry['run_id']}/{entry['alpha_id']}"
+                                if entry.get("kind") == "composite":
+                                    target_url = f"/composite/{entry['run_id']}/{entry['alpha_id']}"
+                                else:
+                                    target_url = f"/alpha/{entry['run_id']}/{entry['alpha_id']}"
                                 card = ui.card().classes("metric-card-accent w-full p-3").style(
                                     "cursor: pointer;"
                                 )
                                 card.on("click", lambda _, url=target_url: ui.navigate.to(url))
                                 with card:
                                     with ui.row().classes("items-center justify-between w-full"):
-                                        ui.label(entry["alpha_id"]).classes("text-base font-bold").style(
-                                            "color: var(--text);"
-                                        )
+                                        with ui.row().classes("items-center gap-2"):
+                                            ui.label(entry["alpha_id"]).classes("text-base font-bold").style(
+                                                "color: var(--text);"
+                                            )
+                                            if entry.get("kind") == "composite":
+                                                ui.label("COMPOSITE").classes("badge-soft")
                                         ui.html('<span class="badge-live">LIVE</span>', sanitize=False)
                                     ui.label(entry["run_id"]).classes("path-text")
                                     with ui.row().classes("gap-2 w-full mt-2"):
@@ -2312,10 +2604,12 @@ def main() -> None:
                         for c in composites:
                             comp_rows.append(
                                 {
+                                    "run_id": c["run_id"],
                                     "composite_id": c["composite_id"],
                                     "dir_name": c["dir_name"],
                                     "method": c["method"],
                                     "n_members": c["n_members"],
+                                    "is_sharpe": c["is_sharpe"],
                                     "is_sharpe_fmt": _fmt_sharpe_pair(c["is_sharpe"]),
                                     "is_return_fmt": _fmt_pct(c["is_return"]),
                                     "is_drawdown_fmt": _fmt_pct(c["is_drawdown"]),
@@ -2330,6 +2624,7 @@ def main() -> None:
                         comp_table = ui.table(
                             columns=[
                                 {"name": "composite_id", "label": "composite", "field": "composite_id", "align": "left"},
+                                {"name": "run_id", "label": "run", "field": "run_id", "align": "left"},
                                 {"name": "method", "label": "method", "field": "method", "align": "left"},
                                 {"name": "n_members", "label": "members", "field": "n_members", "align": "right"},
                                 {"name": "is_sharpe_fmt", "label": "IS Sh (d/y)", "field": "is_sharpe_fmt", "align": "right"},
@@ -2345,10 +2640,12 @@ def main() -> None:
                             rows=comp_rows,
                             row_key="dir_name",
                             pagination=25,
-                        ).classes("w-full dense-panel")
+                        ).classes("w-full dense-panel").props(
+                            'sort-by="is_sharpe" descending'
+                        )
                         comp_table.on(
                             "rowClick",
-                            lambda e: ui.navigate.to(f"/composite/{e.args[1]['dir_name']}"),
+                            lambda e: ui.navigate.to(f"/composite/{e.args[1]['run_id']}/{e.args[1]['dir_name']}"),
                         )
             render_footer(run_dir)
 
@@ -2370,6 +2667,12 @@ def main() -> None:
             selected = selected_rows.iloc[0].to_dict()
             detail_run_dir = row_run_dir(selected, detail_run_dir)
             validation = read_json(alpha_dir(detail_run_dir, alpha_id) / "validation.json")
+            if not validation:
+                mf = read_metrics_for_split(alpha_dir(detail_run_dir, alpha_id), "is") or {}
+                if mf.get("validation"):
+                    validation = mf.get("validation")
+                elif mf.get("validation_flags"):
+                    validation = {"flags": mf.get("validation_flags")}
             params = load_alpha_params(detail_run_dir, alpha_id)
             is_turnover = turnover_from_weights(detail_run_dir, alpha_id, "is")
             os_turnover = turnover_from_weights(detail_run_dir, alpha_id, "os")
@@ -2389,127 +2692,14 @@ def main() -> None:
             fwd_dir = alpha_dir(detail_run_dir, alpha_id) / "forward"
             if fwd_dir.exists():
                 status = forward_status(fwd_dir)
-                # --- Vibe block: current-bar gain/loss banner ---
-                # PnL since the last rebalance (= last kline close that the
-                # strategy acted on). Resets each new bar. Daily strategy →
-                # "today's PnL"; an hourly strategy auto-adapts.
-                bar_pnl_usd, bar_ret = _current_bar_pnl(fwd_dir)
-                if bar_pnl_usd is not None:
-                    is_loss = bar_pnl_usd < 0
-                    tone_cls = "loss" if is_loss else "gain"
-                    pct_part = f" ({bar_ret * 100:+.2f}%)" if bar_ret is not None else ""
-                    roast = (
-                        "오늘은 주인님을 위해 따뜻한 말 한마디를 보태주세요. "
-                        "Take it easy, boss — the market owes us nothing."
-                        if is_loss else
-                        "오늘의 식대는 강세장이 책임집니다. "
-                        "Green candle, green tea — savor it."
-                    )
-                    with ui.element("div").classes(f"daily-banner {tone_cls} w-full"):
-                        ui.html(
-                            f'<div class="daily-label">Current bar PnL (since last close)</div>'
-                            f'<div class="daily-amount">{bar_pnl_usd:+,.2f} USD{pct_part}</div>'
-                            f'<div class="daily-roast">{roast}</div>',
-                            sanitize=False,
-                        )
-                with ui.column().classes("section-panel w-full gap-2"):
-                    with ui.row().classes("w-full items-center justify-between"):
-                        ui.label("Live Status").classes("section-title")
-                        temp_c, temp_status = hangang_temp()
-                        if temp_c is not None:
-                            ui.html(
-                                f'<div class="hangang-chip">'
-                                f'<span>🌊 한강 수온</span>'
-                                f'<span class="hangang-temp">{temp_c:.1f}°C</span>'
-                                f'</div>',
-                                sanitize=False,
-                            )
-                        else:
-                            ui.html(
-                                f'<div class="hangang-chip" title="{html.escape(temp_status)}">'
-                                f'<span>🌊 한강 수온</span>'
-                                f'<span class="hangang-aside">측정 불가</span>'
-                                f'</div>',
-                                sanitize=False,
-                            )
-                    with ui.row().classes("gap-2 w-full"):
-                        metric_card(
-                            "Status",
-                            "● LIVE" if status["live"] else "○ Stopped",
-                            tone="positive" if status["live"] else "muted",
-                        )
-                        metric_card(
-                            "PID",
-                            str(status["pid"]) if status["pid"] else "-",
-                        )
-                        metric_card(
-                            "Uptime",
-                            format_uptime(status["uptime_seconds"]),
-                        )
-                        nav_curr = status["nav_current"]
-                        nav_start = status["nav_start"]
-                        nav_pct = (
-                            (nav_curr / nav_start - 1.0) if nav_curr and nav_start
-                            else None
-                        )
-                        metric_card(
-                            "Live NAV",
-                            f"${nav_curr:,.2f}" if nav_curr else "-",
-                        )
-                        metric_card(
-                            "Live Return",
-                            _fmt_pct(nav_pct),
-                            tone=_tone_from_number(nav_pct),
-                        )
-                        pnl = status["today_pnl"]
-                        metric_card(
-                            "Last bar PnL",
-                            f"${pnl:+.2f}" if pnl is not None else "-",
-                            tone=_tone_from_number(pnl),
-                        )
-                        metric_card(
-                            "Last decision",
-                            status["last_decision"].strftime("%Y-%m-%d %H:%M")
-                            if status["last_decision"] is not None else "-",
-                        )
+                render_live_forward_status(fwd_dir)
                 # Live-only: post-OS session PnL (segment after OS ends)
                 if status["live"]:
-                    with ui.column().classes("section-panel w-full gap-2"):
-                        ui.label("Live Session (post-OS)").classes("section-title")
-                        with ui.row().classes("gap-2 w-full"):
-                            s_pnl = status["session_pnl"]
-                            s_ret = status["session_return"]
-                            s_start = status["session_start"]
-                            s_eq0 = status["session_equity_start"]
-                            metric_card(
-                                "Session start",
-                                s_start.strftime("%Y-%m-%d %H:%M")
-                                if s_start is not None else "-",
-                            )
-                            metric_card(
-                                "Session start NAV",
-                                f"${s_eq0:,.2f}" if s_eq0 is not None else "-",
-                            )
-                            metric_card(
-                                "Session PnL",
-                                f"${s_pnl:+.2f}" if s_pnl is not None else "-",
-                                tone=_tone_from_number(s_pnl),
-                            )
-                            metric_card(
-                                "Session Return",
-                                _fmt_pct(s_ret),
-                                tone=_tone_from_number(s_ret),
-                            )
-                        # Forward-only PnL curve — separate from the stitched
-                        # IS+OS+forward chart below, so the user can read live
-                        # performance without backtest history bleeding in.
-                        ui.plotly(
-                            forward_session_figure(detail_run_dir, alpha_id)
-                        ).classes("w-full chart-host mt-2")
-                        _cl_body, _cl_script = forward_climber_html(detail_run_dir, alpha_id)
-                        if _cl_body:
-                            ui.html(_cl_body, sanitize=False).classes("w-full")
-                            ui.add_body_html(_cl_script)
+                    render_live_session(fwd_dir)
+                    _cl_body, _cl_script = forward_climber_html(detail_run_dir, alpha_id)
+                    if _cl_body:
+                        ui.html(_cl_body, sanitize=False).classes("w-full")
+                        ui.add_body_html(_cl_script)
             is_bps_simple, is_bps_w, _ = net_pnl_per_trade_bps(detail_run_dir, alpha_id, "is")
             os_bps_simple, os_bps_w, _ = net_pnl_per_trade_bps(detail_run_dir, alpha_id, "os")
             is_dd_pct, is_dd_dur, is_peak_ts, is_recov_ts = drawdown_metrics(detail_run_dir, alpha_id, "is")
@@ -2703,11 +2893,27 @@ def main() -> None:
             render_footer(run_dir)
 
     @ui.page("/composite/{composite_dir_name}")
-    def composite_page(composite_dir_name: str):
+    @ui.page("/composite/{composite_run_id}/{composite_dir_name}")
+    def composite_page(composite_dir_name: str, composite_run_id: str | None = None):
         add_styles()
         render_top_nav()
-        composite_dir = run_dir / "composites" / composite_dir_name
+        if composite_run_id:
+            detail_run_dir = Path(composite_run_id)
+            if not (detail_run_dir / "composites").exists():
+                detail_run_dir = run_dir / composite_run_id
+            composite_dir = detail_run_dir / "composites" / composite_dir_name
+        else:
+            composite_dir = run_dir / "composites" / composite_dir_name
+            if not composite_dir.exists():
+                matches = [
+                    child / "composites" / composite_dir_name
+                    for child in sorted(run_dir.iterdir()) if run_dir.exists() and child.is_dir()
+                    if (child / "composites" / composite_dir_name).exists()
+                ]
+                if matches:
+                    composite_dir = matches[0]
         manifest_path = composite_dir / "manifest.json"
+        flat_metrics_path = composite_dir / "metrics.json"
         is_metrics_path = composite_dir / "is" / "metrics.json"
         with ui.column().classes("page-wrap w-full gap-3"):
             with ui.row().classes("w-full items-center justify-between"):
@@ -2719,15 +2925,26 @@ def main() -> None:
                 return
 
             manifest = read_json(manifest_path)
-            metrics = read_json(is_metrics_path) if is_metrics_path.exists() else {}
+            flat_metrics = read_json(flat_metrics_path) if flat_metrics_path.exists() else {}
+            metrics = (
+                read_json(is_metrics_path)
+                if is_metrics_path.exists()
+                else flat_metrics.get("is", flat_metrics)
+            )
 
-            ui.label(manifest.get("composite_id", composite_dir_name)).classes("text-xl font-semibold")
+            composite_forward_dir = composite_dir / "forward"
+            with ui.row().classes("items-center gap-3"):
+                ui.label(manifest.get("composite_id", composite_dir_name)).classes("page-title")
+                if is_forward_live(composite_forward_dir):
+                    ui.html('<span class="badge-live">LIVE</span>', sanitize=False)
             ui.label(
                 f"method: {manifest.get('method', '?')}  |  "
                 f"members: {manifest.get('n_members', 0)}  |  "
                 f"window: {manifest.get('is_window', {}).get('start', '?')} → "
                 f"{manifest.get('is_window', {}).get('end', '?')}"
             ).classes("text-xs text-gray-500")
+            render_live_forward_status(composite_forward_dir)
+            render_live_session(composite_forward_dir)
             if manifest.get("selection_bias_warning"):
                 with ui.card().classes("dense-panel"):
                     ui.label("⚠ Selection bias notice").classes("section-title")
@@ -2737,8 +2954,16 @@ def main() -> None:
             # active period (first realised PnL bar onward) so warmup zeros do
             # not dilute. Trade-derived metrics (count, win rate, PF, bps) are
             # already active-period since trades only fire after entry.
-            comp_trades_path = composite_dir / "is" / "trades.parquet"
-            comp_eq_path = composite_dir / "is" / "equity_curve.parquet"
+            comp_trades_path = (
+                composite_dir / "is" / "trades.parquet"
+                if (composite_dir / "is" / "trades.parquet").exists()
+                else composite_dir / "trades.parquet"
+            )
+            comp_eq_path = (
+                composite_dir / "is" / "equity_curve.parquet"
+                if (composite_dir / "is" / "equity_curve.parquet").exists()
+                else composite_dir / "equity_curve.parquet"
+            )
             comp_bps_simple, comp_bps_w, _ = _net_trade_metrics_cached(str(comp_trades_path))
             # Composites built from member equity (no trades.parquet) still
             # publish bps via metrics.json — fall back to that so the cards
@@ -2748,17 +2973,39 @@ def main() -> None:
             if comp_bps_w is None and metrics.get("pnl_bps_notional_weighted") is not None:
                 comp_bps_w = metrics.get("pnl_bps_notional_weighted")
             is_active = _active_period_metrics(str(comp_eq_path))
+            if (composite_dir / "equity_curve.parquet").exists() and not (composite_dir / "is" / "equity_curve.parquet").exists():
+                is_active = {
+                    "active_start": manifest.get("is_window", {}).get("start"),
+                    "active_end": manifest.get("is_window", {}).get("end"),
+                    "active_total_return": metrics.get("total_return"),
+                    "active_sharpe_daily": metrics.get("sharpe"),
+                    "active_max_dd": metrics.get("max_drawdown"),
+                    "active_dd_duration_days": None,
+                }
 
             os_metrics_path = composite_dir / "os" / "metrics.json"
             os_trades_path = composite_dir / "os" / "trades.parquet"
             os_eq_path = composite_dir / "os" / "equity_curve.parquet"
-            os_metrics = read_json(os_metrics_path) if os_metrics_path.exists() else {}
+            os_metrics = (
+                read_json(os_metrics_path)
+                if os_metrics_path.exists()
+                else flat_metrics.get("os", {})
+            )
             os_bps_simple, os_bps_w, _ = _net_trade_metrics_cached(str(os_trades_path))
             if os_bps_simple is None and os_metrics.get("pnl_bps_simple") is not None:
                 os_bps_simple = os_metrics.get("pnl_bps_simple")
             if os_bps_w is None and os_metrics.get("pnl_bps_notional_weighted") is not None:
                 os_bps_w = os_metrics.get("pnl_bps_notional_weighted")
             os_active = _active_period_metrics(str(os_eq_path))
+            if not os_active and (composite_dir / "equity_curve.parquet").exists():
+                os_active = {
+                    "active_start": manifest.get("os_window", {}).get("start"),
+                    "active_end": manifest.get("os_window", {}).get("end"),
+                    "active_total_return": os_metrics.get("total_return"),
+                    "active_sharpe_daily": os_metrics.get("sharpe"),
+                    "active_max_dd": os_metrics.get("max_drawdown"),
+                    "active_dd_duration_days": None,
+                }
 
             ui.label("IS metrics — active period only (warmup excluded)").classes("section-title")
             if is_active:
@@ -2829,6 +3076,8 @@ def main() -> None:
             if (composite_dir / "member_gross_daily.parquet").exists():
                 ui.plotly(composite_member_summary_figure(composite_dir)).classes("w-full dense-panel")
 
+            ui.plotly(composite_member_allocation_figure(composite_dir)).classes("w-full dense-panel")
+
             if method.startswith("equal_weight"):
                 n = int(manifest.get("n_members", 0)) or 1
                 with ui.card().classes("dense-panel"):
@@ -2839,14 +3088,16 @@ def main() -> None:
 
             members_csv = composite_dir / "members.csv"
             if members_csv.exists():
-                members_df = pd.read_csv(members_csv).sort_values("is_sharpe", ascending=False, na_position="last")
+                members_df = pd.read_csv(members_csv)
+                sort_col = "is_sharpe" if "is_sharpe" in members_df.columns else "is_sharpe_signed"
+                members_df = members_df.sort_values(sort_col, ascending=False, na_position="last")
                 rows = []
                 for _, m in members_df.iterrows():
                     rows.append(
                         {
                             "alpha_id": str(m["alpha_id"]),
                             "run": str(m["run"]),
-                            "is_sharpe_fmt": _fmt_sharpe_daily(m.get("is_sharpe")),
+                            "is_sharpe_fmt": _fmt_sharpe_daily(m.get("is_sharpe", m.get("is_sharpe_signed"))),
                             "is_total_return_fmt": _fmt_pct(m.get("is_total_return")),
                             "is_total_trades_fmt": _fmt_int(m.get("is_total_trades")),
                             "is_gross_mean_fmt": _fmt_num(m.get("is_gross_mean")),

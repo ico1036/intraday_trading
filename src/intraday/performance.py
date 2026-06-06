@@ -339,12 +339,7 @@ class ReportSaver:
         """
         self.save_equity_curve()
         self.save_trades()
-        self.save_summary()
-        self.save_summary_csv()
-        self.save_summary_json()
         self.save_metrics_json()
-        self.save_manifest_json()
-        self.save_events()
         self.save_weights()
         self.save_report_png()
 
@@ -473,6 +468,15 @@ class ReportSaver:
     def save_metrics_json(self) -> Path:
         """Flat metrics file used by agent and dashboard code."""
         payload = {
+            "artifact_version": 2,
+            "run_type": "backtest",
+            "strategy_class": self.report.strategy_name,
+            "strategy_source": "",
+            "symbol": self.report.symbol,
+            "started_at": self.report.start_time.isoformat(),
+            "ended_at": self.report.end_time.isoformat(),
+            "initial_capital": self.report.initial_capital,
+            "final_capital": self.report.final_capital,
             "profit_factor": self.report.profit_factor,
             "total_return": self.report.total_return / 100,
             "total_return_pct": self.report.total_return,
@@ -483,6 +487,7 @@ class ReportSaver:
             "win_rate_pct": self.report.win_rate,
             "sharpe": self.report.sharpe_ratio,
             "sharpe_ratio": self.report.sharpe_ratio,
+            "validation_flags": [],
         }
         filepath = self.report_dir / "metrics.json"
         filepath.write_text(

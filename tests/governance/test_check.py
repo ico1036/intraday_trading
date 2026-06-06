@@ -371,7 +371,9 @@ def test_research_violation_empty_notes(tmp_path: Path, monkeypatch):
     assert any("SOURCE_NOTES empty" in v.get("reason", "") for v in res.violations)
 
 
-def test_coverage_detects_duplicate_cells(tmp_path: Path, monkeypatch):
+def test_coverage_allows_duplicate_cells_after_saturation_guard_removed(
+    tmp_path: Path, monkeypatch
+):
     import scripts.governance.check as mod
 
     src_root = tmp_path / "src" / "intraday" / "strategies" / "multi"
@@ -395,7 +397,13 @@ def test_coverage_detects_duplicate_cells(tmp_path: Path, monkeypatch):
 
     monkeypatch.setattr(mod, "REPO_ROOT", tmp_path)
     res = mod.check_coverage(archive_root=archive)
-    assert any("duplicate cell signature" in v.get("reason", "") for v in res.violations)
+    assert res.inspected == [
+        "archive/run_d/alphas/a1",
+        "archive/run_d/alphas/a2",
+    ]
+    assert not any(
+        "duplicate cell signature" in v.get("reason", "") for v in res.violations
+    )
 
 
 # ----- end-to-end CLI ----------------------------------------------------

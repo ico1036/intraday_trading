@@ -14,7 +14,7 @@ The contract is **picking-and-weighting**: a strategy receives the run's
 symbols list and returns a `PortfolioOrder` with target weights. Per-run
 overrides go in `archive/<run_id>/splits.json` under `"universe"`. The
 governance check (`scripts/governance/check.py`) verifies every alpha's
-`manifest.json` `symbols` matches its run's declared universe.
+`metrics.json` `symbols` matches its run's declared universe.
 
 ## Forbidden actions
 
@@ -95,7 +95,7 @@ Use the run's `universe` field for `--symbols`.
 6. Implement one strategy in `src/intraday/strategies/multi/<alpha>.py`.
 7. Add focused tests in `tests/strategies/test_<alpha>.py`.
 8. Run the focused tests.
-9. Run IS backtest into `archive/<run_id>/alphas/<alpha_id>/is/`. The CLI
+9. Run IS backtest into `archive/<run_id>/alphas/<alpha_id>/`. The CLI
    pre-flight refuses if `ALPHA_CELL` is invalid, `SOURCE_NOTES` is empty
    or missing files, or the cell signature is already present in this run.
 10. Verify the artifact and inspect `weights.parquet`.
@@ -141,7 +141,7 @@ uv run python scripts/tools/backtest.py \
   --end "2025-03-07 23:59:59" \
   --bar-type TIME \
   --bar-size 60 \
-  --output-dir archive/<run_id>/alphas/<alpha_id>/is \
+  --output-dir archive/<run_id>/alphas/<alpha_id> \
   --json
 ```
 
@@ -149,7 +149,7 @@ Verify:
 
 ```bash
 uv run python scripts/tools/verify_artifact.py \
-  archive/<run_id>/alphas/<alpha_id>/is \
+  archive/<run_id>/alphas/<alpha_id> \
   --json
 ```
 

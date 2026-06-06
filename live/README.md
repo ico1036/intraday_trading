@@ -12,13 +12,28 @@ dashboard.
 - Run: `run_2026_05_xs500`
 - Cadence: daily 09:05 local (macOS launchd)
 - Entry script: `scripts/run_forward_tick.py`
+- Composite: `hierarchical_amihud_quality_corr095_gross5_weight_composite_v1`
+- Child alphas:
+  `xs_factor_amihud60d_fwd_c10`,
+  `xs_factor_amihud60d_fwd_c20`,
+  `xs_factor_amihud60d_fwd_c30`,
+  `xs_factor_amihud60d_fwd_c40`,
+  `xs_factor_amihud60d_fwd_c50`
+- Composite run: `run_2026_05_full531_rerun_backtests`
+- Composite cadence: daily 09:20 local (macOS launchd)
+- Composite entry script: `scripts/run_live_composite_amihud_gross5_tick.py`
 
 ## Files
 
 - `com.intraday.forward_tick.plist` — launchd job that drives the daily
   re-backtest. **Absolute paths inside are PC-specific** (see below).
+- `com.intraday.composite_amihud_gross5_forward_tick.plist` — launchd job
+  that refreshes the five AMIHUD child alphas and then the gross-5 composite.
+  **Absolute paths inside are PC-specific**.
 - `splits/run_2026_05_xs500.splits.json` — frozen universe + IS/OS
   windows. Required to seed data and reproduce the run on another PC.
+- `splits/run_2026_05_full531.splits.json` — frozen universe + IS/OS
+  windows for the AMIHUD composite live tick.
 
 ## One-time setup on a new PC
 
@@ -34,14 +49,19 @@ uv run python scripts/tools/download_daily_klines.py \
 
 # 3. Patch absolute paths in the plist for this PC
 cp live/com.intraday.forward_tick.plist ~/Library/LaunchAgents/
+cp live/com.intraday.composite_amihud_gross5_forward_tick.plist ~/Library/LaunchAgents/
 #    edit ~/Library/LaunchAgents/com.intraday.forward_tick.plist:
 #      - WorkingDirectory       → absolute path to this repo
 #      - ProgramArguments cd    → same absolute path
 #      - /opt/homebrew/bin/uv   → `which uv` on this PC
+#    repeat the same path edits for:
+#      ~/Library/LaunchAgents/com.intraday.composite_amihud_gross5_forward_tick.plist
 
 # 4. Register and start
 launchctl unload ~/Library/LaunchAgents/com.intraday.forward_tick.plist 2>/dev/null
 launchctl load   ~/Library/LaunchAgents/com.intraday.forward_tick.plist
+launchctl unload ~/Library/LaunchAgents/com.intraday.composite_amihud_gross5_forward_tick.plist 2>/dev/null
+launchctl load   ~/Library/LaunchAgents/com.intraday.composite_amihud_gross5_forward_tick.plist
 
 # 5. Smoke test (one immediate run instead of waiting for 09:05)
 SEAL_OPEN=1 uv run python scripts/run_forward_tick.py \
@@ -50,13 +70,21 @@ SEAL_OPEN=1 uv run python scripts/run_forward_tick.py \
     --strategy XsVolumeRankStrategy \
     --strategy-params '{"reverse": true}' \
     --as-of $(date -u +%Y-%m-%d) --sync-data
+
+SEAL_OPEN=1 uv run python scripts/run_live_composite_amihud_gross5_tick.py \
+    --as-of $(date -u +%Y-%m-%d) --sync-data
 ```
 
 ## Verification
 
-- Log: `/tmp/forward_cron.log`, `/tmp/forward_launchd.{out,err}`
+- Log: `/tmp/forward_cron.log`, `/tmp/forward_launchd.{out,err}`,
+  `/tmp/composite_amihud_gross5_forward_cron.log`,
+  `/tmp/composite_amihud_gross5_forward_launchd.{out,err}`
 - Result dir: `archive/run_2026_05_xs500/alphas/xs_volume_rank/forward/`
   (look at `metrics.json` mtime → should match the last 09:05 fire)
+- Composite result dir:
+  `archive/run_2026_05_full531_rerun_backtests/composites/hierarchical_amihud_quality_corr095_gross5_weight_composite_v1/forward/`
+  (look at `metrics.json` mtime → should match the last 09:20 fire)
 - Dashboard: serves the same `forward/` directory automatically.
 
 ## Linux / non-launchd hosts

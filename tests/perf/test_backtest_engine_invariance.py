@@ -55,7 +55,7 @@ _FIXED_CMD = [
 ]
 
 ARTIFACTS = ("metrics.json", "equity_curve.parquet", "trades.parquet",
-             "weights.parquet", "events.parquet")
+             "weights.parquet")
 
 
 def _run_backtest(out_dir: Path) -> None:
@@ -102,8 +102,7 @@ def _metric_signature(path: Path) -> str:
 
 def _all_signatures(d: Path) -> dict[str, str]:
     sigs = {"metrics.json": _metric_signature(d / "metrics.json")}
-    for a in ("equity_curve.parquet", "trades.parquet",
-             "weights.parquet", "events.parquet"):
+    for a in ("equity_curve.parquet", "trades.parquet", "weights.parquet"):
         df = pd.read_parquet(d / a)
         sigs[a] = _df_signature(df)
     return sigs
@@ -123,7 +122,11 @@ def test_backtest_golden_output(tmp_path):
     assert (GOLDEN_DIR / "signatures.json").exists(), (
         "golden baseline missing — generate first with BACKTEST_GOLDEN_REGEN=1"
     )
-    expected = json.loads((GOLDEN_DIR / "signatures.json").read_text())
+    expected = {
+        k: v
+        for k, v in json.loads((GOLDEN_DIR / "signatures.json").read_text()).items()
+        if k in ARTIFACTS
+    }
 
     _run_backtest(tmp_path)
     actual = _all_signatures(tmp_path)
