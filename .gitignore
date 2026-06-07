@@ -107,6 +107,9 @@ cache/
 .tmp/
 *.csv
 *.jsonl
+!research/wiki/alpha_memory.jsonl
+!research/wiki/family_memory.jsonl
+!research/wiki/snapshots/*.jsonl
 *.tmp
 *.sqlite
 *.db

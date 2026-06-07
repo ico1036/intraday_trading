@@ -17,6 +17,7 @@ import argparse
 import csv
 import json
 import math
+import re
 import shutil
 import subprocess
 import sys
@@ -113,6 +114,17 @@ def _metrics_for_alpha(alpha_dir: Path) -> dict[str, Any]:
         is_metrics = dict(metrics["is"])
         is_metrics.setdefault("full_total_return", metrics.get("total_return"))
         return is_metrics
+    if not metrics and (alpha_dir / "is" / "metrics.json").exists():
+        metrics = _read_json(alpha_dir / "is" / "metrics.json")
+    return metrics
+
+
+def _metrics_for_composite(comp_dir: Path) -> dict[str, Any]:
+    metrics = _read_json(comp_dir / "metrics.json")
+    if "is" in metrics and isinstance(metrics["is"], dict):
+        return dict(metrics["is"])
+    if not metrics and (comp_dir / "is" / "metrics.json").exists():
+        return _read_json(comp_dir / "is" / "metrics.json")
     return metrics
 
 
@@ -155,6 +167,118 @@ def _status_from_metrics(metrics: dict[str, Any], splits: dict[str, Any]) -> str
         except Exception:
             pass
     return "IS_PASS" if metrics else "UNKNOWN"
+
+
+def _fmt_pct(value: Any) -> str:
+    try:
+        return f"{float(value) * 100:.2f}%"
+    except Exception:
+        return "NA"
+
+
+def _fmt_num(value: Any) -> str:
+    try:
+        return f"{float(value):.4g}"
+    except Exception:
+        return "NA"
+
+
+def _strategy_doc_summary(path: Path | None) -> str:
+    if path is None or not path.exists():
+        return "Strategy source was not available in the artifact metadata."
+    text = path.read_text(errors="ignore")
+    match = re.match(r'\s*"""(.*?)"""', text, re.S)
+    if match:
+        doc = " ".join(match.group(1).strip().split())
+        if doc:
+            return doc[:800]
+    cls = re.search(r"^class\s+(\w+)", text, re.M)
+    if cls:
+        return f"Strategy class `{cls.group(1)}` was archived, but no module docstring summarized the mechanism."
+    return "Strategy source was archived, but no compact source summary was available."
+
+
+def _artifact_counts(artifact_dir: Path) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    try:
+        import pandas as pd
+    except Exception:
+        return out
+    for key, name in (
+        ("weights_rows", "weights.parquet"),
+        ("trades_rows", "trades.parquet"),
+        ("equity_rows", "equity_curve.parquet"),
+    ):
+        path = artifact_dir / name
+        if path.exists():
+            try:
+                out[key] = int(len(pd.read_parquet(path)))
+            except Exception:
+                out[key] = None
+    return out
+
+
+def _auto_one_line(kind: str, item_id: str, family: str, status: str, metrics: dict[str, Any]) -> str:
+    sharpe = _fmt_num(metrics.get("sharpe"))
+    ret = _fmt_pct(metrics.get("total_return"))
+    dd = _fmt_pct(metrics.get("max_drawdown"))
+    trades = metrics.get("total_trades")
+    return (
+        f"{kind} `{item_id}` is indexed as family `{family}` with status `{status}`; "
+        f"IS Sharpe {sharpe}, return {ret}, max drawdown {dd}, trades {trades}."
+    )
+
+
+def _post_text(
+    *,
+    kind: str,
+    run_id: str,
+    item_id: str,
+    artifact_dir: Path,
+    family: str,
+    cell: dict[str, Any],
+    notes: list[str],
+    metrics: dict[str, Any],
+    status: str,
+    source_summary: str,
+    counts: dict[str, Any],
+) -> str:
+    return (
+        f"# Post Analysis: {item_id}\n\n"
+        f"- kind: `{kind}`\n"
+        f"- run_id: `{run_id}`\n"
+        f"- id: `{item_id}`\n"
+        f"- status: `{status}`\n"
+        f"- family: `{family}`\n"
+        f"- artifact_dir: `{artifact_dir}`\n"
+        f"- source_notes: `{notes}`\n"
+        f"- alpha_cell: `{json.dumps(cell, sort_keys=True)}`\n\n"
+        "## Implemented Strategy\n"
+        f"{source_summary}\n\n"
+        "This section was auto-backfilled from archived source metadata and should be "
+        "tightened manually before using it as high-confidence research memory.\n\n"
+        "## IS Performance State\n"
+        f"- IS Sharpe: `{metrics.get('sharpe')}`\n"
+        f"- IS Return: `{metrics.get('total_return')}` ({_fmt_pct(metrics.get('total_return'))})\n"
+        f"- IS Max Drawdown: `{metrics.get('max_drawdown')}` ({_fmt_pct(metrics.get('max_drawdown'))})\n"
+        f"- IS Trades: `{metrics.get('total_trades')}`\n"
+        f"- IS Win Rate: `{metrics.get('win_rate')}`\n"
+        f"- PnL bps simple: `{metrics.get('pnl_bps_simple')}`\n"
+        f"- PnL bps notional weighted: `{metrics.get('pnl_bps_notional_weighted')}`\n"
+        f"- Artifact counts: `{json.dumps(counts, sort_keys=True)}`\n\n"
+        "The current state is recorded as an IS-only artifact summary. This report does "
+        "not use OS/full-period results for generation guidance.\n\n"
+        "## Goal Fit\n"
+        "No run-specific goal fit was inferred during automatic backfill. A future loop "
+        "should compare this strategy against `research/wiki/goals/<run_id>.md` before reuse.\n\n"
+        "## Current Interpretation\n"
+        f"{_auto_one_line(kind, item_id, family, status, metrics)} "
+        "Treat this as a retrieval description, not a recommendation to clone the strategy.\n\n"
+        "## Reuse Notes\n"
+        "- Auto-backfilled entry. Prefer mechanism-level reuse only.\n"
+        "- Do not infer best parameters from this report.\n"
+        "- Inspect source, weights, and IS PnL before using this as context for a new attempt.\n"
+    )
 
 
 def _family_entropy(families: list[str]) -> float:
@@ -325,6 +449,171 @@ def _rewrite_family_memory(alpha_rows: list[dict[str, Any]]) -> None:
     _write_jsonl(FAMILY_MEMORY, family_rows)
 
 
+def _iter_alpha_artifacts(run_id: str | None = None) -> list[tuple[str, str, Path]]:
+    roots = [ARCHIVE / run_id] if run_id else sorted(p for p in ARCHIVE.iterdir() if p.is_dir())
+    out: list[tuple[str, str, Path]] = []
+    for run_dir in roots:
+        alphas = run_dir / "alphas"
+        if not alphas.exists():
+            continue
+        for alpha_dir in sorted(p for p in alphas.iterdir() if p.is_dir()):
+            if (alpha_dir / "metrics.json").exists() or (alpha_dir / "is" / "metrics.json").exists():
+                out.append((run_dir.name, alpha_dir.name, alpha_dir))
+    return out
+
+
+def _iter_composite_artifacts(run_id: str | None = None) -> list[tuple[str, str, Path]]:
+    roots = [ARCHIVE / run_id] if run_id else sorted(p for p in ARCHIVE.iterdir() if p.is_dir())
+    out: list[tuple[str, str, Path]] = []
+    for run_dir in roots:
+        comps = run_dir / "composites"
+        if not comps.exists():
+            continue
+        for comp_dir in sorted(p for p in comps.iterdir() if p.is_dir()):
+            if (comp_dir / "metrics.json").exists() or (comp_dir / "is" / "metrics.json").exists():
+                out.append((run_dir.name, comp_dir.name, comp_dir))
+    return out
+
+
+def sync_all(args: argparse.Namespace) -> int:
+    _ensure_wiki()
+    rows = _read_jsonl(ALPHA_MEMORY)
+    if args.reset:
+        rows = []
+    existing = {
+        (str(row.get("kind", "alpha")), str(row.get("run_id")), str(row.get("alpha_id")))
+        for row in rows
+    }
+    generated_posts = 0
+    upserted = 0
+
+    alpha_items = _iter_alpha_artifacts(args.run_id)
+    comp_items = _iter_composite_artifacts(args.run_id) if args.include_composites else []
+    for run_id, alpha_id, alpha_dir in alpha_items:
+        key = ("alpha", run_id, alpha_id)
+        if key in existing and not args.overwrite:
+            continue
+        splits = _read_json(ARCHIVE / run_id / "splits.json")
+        metrics = _metrics_for_alpha(alpha_dir)
+        cell, notes = _alpha_cell_and_notes(alpha_dir)
+        family = str(cell.get("idea_family") or "unknown")
+        status = _status_from_metrics(metrics, splits)
+        source_summary = _strategy_doc_summary(_strategy_source_path(alpha_dir))
+        counts = _artifact_counts(alpha_dir)
+        post_path = WIKI / "post_analysis" / run_id / f"{alpha_id}.md"
+        post_path.parent.mkdir(parents=True, exist_ok=True)
+        if args.write_posts and (args.overwrite or not post_path.exists()):
+            post_path.write_text(
+                _post_text(
+                    kind="alpha",
+                    run_id=run_id,
+                    item_id=alpha_id,
+                    artifact_dir=alpha_dir,
+                    family=family,
+                    cell=cell,
+                    notes=notes,
+                    metrics=metrics,
+                    status=status,
+                    source_summary=source_summary,
+                    counts=counts,
+                )
+            )
+            generated_posts += 1
+        row = {
+            "kind": "alpha",
+            "run_id": run_id,
+            "alpha_id": alpha_id,
+            "family": family,
+            "cell": cell,
+            "source_notes": notes,
+            "status": status,
+            "is_sharpe": metrics.get("sharpe"),
+            "is_return": metrics.get("total_return"),
+            "is_drawdown": metrics.get("max_drawdown"),
+            "is_trades": metrics.get("total_trades"),
+            "turnover": metrics.get("turnover"),
+            "goal_fit": "unknown",
+            "one_line": _auto_one_line("alpha", alpha_id, family, status, metrics),
+            "post_analysis": str(post_path),
+            "artifact_dir": str(alpha_dir),
+            "created_at": _now(),
+        }
+        rows = [r for r in rows if not (str(r.get("kind", "alpha")) == "alpha" and r.get("run_id") == run_id and r.get("alpha_id") == alpha_id)]
+        rows.append(row)
+        upserted += 1
+
+    for run_id, comp_id, comp_dir in comp_items:
+        key = ("composite", run_id, comp_id)
+        if key in existing and not args.overwrite:
+            continue
+        manifest = _read_json(comp_dir / "manifest.json")
+        metrics = _metrics_for_composite(comp_dir)
+        family = str(manifest.get("method") or "composite")
+        status = "IS_PASS" if metrics else "UNKNOWN"
+        source_summary = (
+            f"Composite `{comp_id}` built with method `{manifest.get('method', 'unknown')}` "
+            f"from `{manifest.get('n_members', manifest.get('children', 'unknown'))}` members. "
+            f"Gross stats mean/max: {manifest.get('mean_row_l1')} / {manifest.get('max_row_l1')}."
+        )
+        counts = _artifact_counts(comp_dir)
+        post_path = WIKI / "post_analysis" / run_id / f"{comp_id}.md"
+        post_path.parent.mkdir(parents=True, exist_ok=True)
+        if args.write_posts and (args.overwrite or not post_path.exists()):
+            post_path.write_text(
+                _post_text(
+                    kind="composite",
+                    run_id=run_id,
+                    item_id=comp_id,
+                    artifact_dir=comp_dir,
+                    family=family,
+                    cell={"idea_family": family, "kind": "composite"},
+                    notes=[],
+                    metrics=metrics,
+                    status=status,
+                    source_summary=source_summary,
+                    counts=counts,
+                )
+            )
+            generated_posts += 1
+        row = {
+            "kind": "composite",
+            "run_id": run_id,
+            "alpha_id": comp_id,
+            "family": family,
+            "cell": {"idea_family": family, "kind": "composite"},
+            "source_notes": [],
+            "status": status,
+            "is_sharpe": metrics.get("sharpe"),
+            "is_return": metrics.get("total_return"),
+            "is_drawdown": metrics.get("max_drawdown"),
+            "is_trades": metrics.get("total_trades"),
+            "turnover": metrics.get("turnover"),
+            "goal_fit": "unknown",
+            "one_line": _auto_one_line("composite", comp_id, family, status, metrics),
+            "post_analysis": str(post_path),
+            "artifact_dir": str(comp_dir),
+            "created_at": _now(),
+        }
+        rows = [r for r in rows if not (str(r.get("kind", "alpha")) == "composite" and r.get("run_id") == run_id and r.get("alpha_id") == comp_id)]
+        rows.append(row)
+        upserted += 1
+
+    _write_jsonl(ALPHA_MEMORY, rows)
+    _rewrite_family_memory(rows)
+    result = {
+        "ok": True,
+        "run_id": args.run_id or "ALL",
+        "alpha_artifacts_seen": len(alpha_items),
+        "composite_artifacts_seen": len(comp_items),
+        "rows_upserted": upserted,
+        "post_analysis_written": generated_posts,
+        "alpha_memory": str(ALPHA_MEMORY),
+        "family_memory": str(FAMILY_MEMORY),
+    }
+    print(json.dumps(result, indent=2, default=_json_default))
+    return 0
+
+
 def evaluate_harness(args: argparse.Namespace) -> int:
     _ensure_wiki()
     rows = []
@@ -417,6 +706,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--run-id", nargs="+", required=True)
     p.add_argument("--output", default="")
     p.set_defaults(func=evaluate_harness)
+
+    p = sub.add_parser("sync-all", help="backfill wiki memory from archived alpha/composite artifacts")
+    p.add_argument("--run-id", default=None, help="limit sync to one archive run_id")
+    p.add_argument("--include-composites", action="store_true")
+    p.add_argument("--write-posts", action="store_true", help="write auto post_analysis markdown files")
+    p.add_argument("--overwrite", action="store_true")
+    p.add_argument("--reset", action="store_true", help="rebuild alpha_memory.jsonl from scratch")
+    p.set_defaults(func=sync_all)
 
     return parser.parse_args(argv)
 
