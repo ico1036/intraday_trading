@@ -36,6 +36,7 @@ body {
     -webkit-font-smoothing: antialiased;
 }
 
+.nicegui-content { min-height: 100vh; }
 .page-wrap { max-width: 1520px; margin: 0 auto; padding: 22px; box-sizing: border-box; }
 
 .metric-card {
@@ -105,9 +106,19 @@ body {
 /* Tabs: brand accent on active. */
 .q-tab--active { color: var(--brand) !important; }
 .q-tab__indicator { background: var(--brand) !important; }
+.q-tab { min-height: 44px; padding: 0 18px; }
+.q-tab-panels,
+.q-tab-panel { background: transparent !important; }
+.q-tab-panel { padding: 16px 0 0 !important; }
 
 /* Buttons: pill radius, brand on primary. */
 .q-btn { border-radius: var(--r-sm); text-transform: none; font-weight: 600; }
+.q-btn:focus-visible,
+.q-field:focus-within,
+.live-snapshot-card:focus-visible {
+    outline: 3px solid rgba(37, 99, 235, 0.22);
+    outline-offset: 2px;
+}
 a { color: var(--brand-link); }
 
 /* Page header — used by index/login/detail pages. */
@@ -191,6 +202,96 @@ a { color: var(--brand-link); }
     margin: 0 0 10px 0;
     padding-bottom: 8px;
     border-bottom: 1px solid var(--border);
+}
+
+.detail-back {
+    min-height: 40px;
+    padding: 0 12px;
+    color: var(--brand);
+}
+
+/* Live command center: one comparison canvas and compact monitoring cards. */
+.live-board {
+    padding: 18px;
+    border-top: 3px solid var(--positive);
+}
+.live-board .section-title {
+    border-bottom: 0;
+    padding-bottom: 0;
+    margin-bottom: 3px;
+    font-size: 17px;
+    letter-spacing: -0.01em;
+}
+.live-board-controls {
+    padding: 10px 0 2px;
+    border-top: 1px solid var(--border);
+}
+.live-strategy-select {
+    flex: 1 1 680px;
+    min-width: 320px;
+}
+.live-strategy-select .q-field__control {
+    min-height: 44px;
+    background: var(--surface-blue);
+}
+.live-comparison-container { min-height: 460px; }
+.live-comparison-chart {
+    min-height: 460px;
+    border-radius: var(--r-sm);
+    border: 1px solid var(--border);
+    background: var(--surface);
+}
+.empty-state {
+    width: 100%;
+    min-height: 220px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--muted);
+    border: 1px dashed var(--border-strong);
+    border-radius: var(--r-sm);
+}
+.live-card-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+}
+.live-snapshot-card {
+    min-width: 0;
+    padding: 14px;
+    cursor: pointer;
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--brand);
+    border-radius: var(--r-md);
+    background: var(--surface);
+    box-shadow: var(--shadow-1);
+    transition: transform 0.14s ease, border-color 0.14s ease, box-shadow 0.14s ease;
+}
+.live-snapshot-card:hover {
+    transform: translateY(-1px);
+    border-color: var(--border-strong);
+    box-shadow: var(--shadow-2);
+}
+.live-snapshot-card .path-text {
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+.live-card-metrics {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 8px;
+    margin-top: 10px;
+}
+.live-card-metrics .metric-card {
+    min-width: 0;
+    padding: 10px;
+    box-shadow: none;
+    background: var(--surface-blue);
+}
+.live-card-metrics .metric-value {
+    font-size: 16px;
+    white-space: nowrap;
 }
 
 /* Tone modifiers — used by metric_card(value, tone='positive'/'negative'). */
@@ -387,11 +488,14 @@ a { color: var(--brand-link); }
 /* ---- Tablet breakpoint (<= 900px): collapse 2-col chart grid to 1-col ---- */
 @media (max-width: 900px) {
     .chart-grid { grid-template-columns: 1fr !important; }
+    .live-card-grid { grid-template-columns: 1fr; }
+    .live-card-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 /* ---- Phone breakpoint (<= 640px) ---- */
 @media (max-width: 640px) {
     .page-wrap { padding: 12px; }
+    .q-tab { padding: 0 11px; font-size: 12px; }
     .metric-card { flex: 1 1 calc(50% - 8px); min-width: 0; }
     .q-table td, .q-table th { font-size: 12px; padding: 6px 8px; }
     .section-title { font-size: 13px; }
@@ -401,6 +505,15 @@ a { color: var(--brand-link); }
     .daily-hangang-temp { font-size: 30px; }
     /* Phones: give charts more vertical room since they're full-width. */
     .chart-host { min-height: 320px; }
+    .live-board { padding: 13px; }
+    .live-board-head .badge-live { display: none; }
+    .live-board-controls { align-items: stretch !important; }
+    .live-strategy-select { min-width: 100%; flex-basis: 100%; }
+    .live-comparison-container,
+    .live-comparison-chart { min-height: 390px; }
+    .live-snapshot-card { padding: 12px; }
+    .live-card-metrics { gap: 6px; }
+    .live-card-metrics .metric-value { font-size: 15px; }
     .js-plotly-plot, .plot-container { width: 100% !important; }
     /* Swap the wide table for a tidy stack of clickable cards. */
     .alpha-table { display: none !important; }
