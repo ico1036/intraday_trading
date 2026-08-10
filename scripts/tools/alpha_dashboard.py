@@ -384,6 +384,93 @@ def render_footer(run_dir: Path) -> None:
         ui.label(f"build (at start): {_git_short_sha()}")
 
 
+def render_live_strategy_report(run_dir: Path) -> None:
+    """Render a standalone, printable HTML report for the live strategy set."""
+    add_styles()
+    render_top_nav()
+    entries = discover_live_alphas(run_dir)
+    generated = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M %Z")
+    with ui.column().classes("page-wrap w-full gap-4"):
+        with ui.row().classes("w-full items-center justify-between"):
+            with ui.column().classes("gap-0"):
+                ui.label("Live Strategy Report").classes("page-title")
+                ui.label(f"Generated {generated} · paper-forward · fees included").classes("geek-aside")
+            ui.button("Back to live board", on_click=lambda: ui.navigate.to("/?tab=live")) \
+                .props("outline no-caps")
+
+        ui.label(
+            "Seven daily cross-sectional long/short streams. Results below are "
+            "paper-forward artifacts, not exchange account P&L or proof of live orders."
+        ).classes("note-text")
+
+        with ui.row().classes("w-full gap-2"):
+            metric_card("Strategies", str(len(entries)))
+            fresh = sum(1 for e in entries if e.get("status", {}).get("live"))
+            metric_card("Fresh", f"{fresh}/{len(entries)}")
+            latest = max(
+                (str(e.get("status", {}).get("last_timestamp") or "-") for e in entries),
+                default="-",
+            )
+            metric_card("Latest bar", latest[:10])
+
+        ui.label("Common-period performance").classes("section-title")
+        ui.plotly(live_comparison_figure(entries, include_btc=True, period_days=None)) \
+            .classes("w-full dense-panel")
+
+        rows: list[dict[str, str]] = []
+        for entry in entries:
+            forward_dir = Path(entry["forward_dir"])
+            metrics = read_json(forward_dir / "metrics.json") or {}
+            status = entry.get("status", {})
+            alpha_id = str(entry["alpha_id"])
+            if alpha_id == "xs_volume_rank":
+                thesis = "Reverse prior-day quote-volume rank; daily market-neutral cross-section."
+            elif alpha_id.startswith("xs_factor_amihud60d_fwd_c"):
+                pct = alpha_id.rsplit("c", 1)[-1]
+                thesis = f"60-day Amihud illiquidity rank; trade the {pct}% concentration tails."
+            else:
+                thesis = "Equal blend of five Amihud sleeves, rescaled to 5x target gross."
+            rows.append({
+                "strategy": alpha_id,
+                "kind": str(entry.get("kind", "alpha")),
+                "thesis": thesis,
+                "as_of": str(status.get("last_timestamp") or "-")[:10],
+                "return": _fmt_pct(metrics.get("total_return")),
+                "sharpe": _fmt_sharpe_pair(metrics.get("sharpe")),
+                "max_dd": _fmt_pct(metrics.get("max_drawdown")),
+                "trades": _fmt_int(metrics.get("total_trades")),
+            })
+        ui.label("Strategy definitions and live metrics").classes("section-title")
+        ui.table(
+            columns=[
+                {"name": "strategy", "label": "Strategy", "field": "strategy", "align": "left"},
+                {"name": "kind", "label": "Type", "field": "kind", "align": "left"},
+                {"name": "thesis", "label": "Signal / construction", "field": "thesis", "align": "left"},
+                {"name": "as_of", "label": "As of", "field": "as_of", "align": "left"},
+                {"name": "return", "label": "Return", "field": "return", "align": "right"},
+                {"name": "sharpe", "label": "Sharpe d/y", "field": "sharpe", "align": "right"},
+                {"name": "max_dd", "label": "Max DD", "field": "max_dd", "align": "right"},
+                {"name": "trades", "label": "Trades", "field": "trades", "align": "right"},
+            ],
+            rows=rows,
+            row_key="strategy",
+            pagination={"rowsPerPage": 0},
+        ).classes("w-full dense-panel")
+
+        with ui.card().classes("dense-panel w-full"):
+            ui.label("Methodology and interpretation").classes("section-title")
+            ui.markdown(
+                "- Universe: each archived run's declared Binance USDⓈ-M universe.\n"
+                "- Frequency: daily target weights; fixed-AUM replay.\n"
+                "- Costs: maker 2 bps and taker 5 bps assumptions are included.\n"
+                "- `c10`…`c50`: increasing breadth of the same Amihud family, not independent ideas.\n"
+                "- Composite: 20% per sleeve, then rescaled to 5x gross; leverage magnifies drawdowns.\n"
+                "- Caveat: paper-forward results can differ materially from fills, funding, borrow, "
+                "latency, delistings, and exchange constraints."
+            )
+        render_footer(run_dir)
+
+
 def _threshold_text(thresholds: dict[str, Any]) -> str:
     merged = dict(DEFAULT_THRESHOLDS)
     merged.update(thresholds or {})
@@ -2526,6 +2613,10 @@ def main() -> None:
     run_dir = Path(args.run_dir)
     app.storage.general["run_dir"] = str(run_dir)
 
+    @ui.page("/live-report")
+    def live_report_page():
+        render_live_strategy_report(run_dir)
+
     @ui.page("/")
     def page():
         add_styles()
@@ -2733,6 +2824,11 @@ def main() -> None:
                                             "Select multiple strategies to compare them over one common live period."
                                         ).classes("note-text")
                                     ui.html('<span class="badge-live">7 STREAMS</span>', sanitize=False)
+                                with ui.row().classes("w-full justify-end"):
+                                    ui.button(
+                                        "Open strategy report",
+                                        on_click=lambda: ui.navigate.to("/live-report"),
+                                    ).props("outline no-caps icon=description")
 
                                 live_ids = [str(entry["alpha_id"]) for entry in live_alphas]
                                 with ui.row().classes("w-full items-end gap-3 live-board-controls"):

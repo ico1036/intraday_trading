@@ -64,6 +64,8 @@ def _sync_data(universe: list[str], as_of: str) -> None:
         "--end",
         as_of,
         "--force",
+        "--max-failure-fraction",
+        "0.01",
         "--symbols",
         *universe,
     ]

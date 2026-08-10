@@ -171,6 +171,7 @@ def main() -> int:
             "--start", "2026-01-01",
             "--end", args.as_of,
             "--force",
+            "--max-failure-fraction", "0.01",
             "--symbols", *universe,
         ]
         print(f"[sync] {' '.join(sync_cmd[:6])} ... ({len(universe)} symbols)",
