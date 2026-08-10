@@ -1,6 +1,20 @@
 # Intraday Trading
 
-Compact intraday alpha research repo.
+Intraday long/short alpha research, forward monitoring, and guarded live
+execution workspace. The durable product of every alpha is a target-weight
+ledger (`weights.parquet`); composites reuse those ledgers instead of rerunning
+their child strategies.
+
+## What Is Included
+
+- One target-weight strategy interface for both single- and multi-symbol alphas.
+- Deterministic backtest, artifact verification, and forward-test CLIs.
+- An alpha dashboard for research results, composites, and live streams.
+- A fail-closed Binance USDⓈ-M execution path for `xs_volume_rank`.
+
+Research artifacts and live state are local runtime data. They are intentionally
+excluded from Git, so a fresh clone contains the code but not private account
+state or the local dashboard history.
 
 ## Core Paths
 
@@ -25,13 +39,57 @@ Compact intraday alpha research repo.
 
 ```bash
 uv sync
-cp .env.example .env
 git config core.hooksPath .githooks
 ```
 
 The last command activates the repo-local pre-commit hook
 (`.githooks/pre-commit`), which runs `scripts/governance/check.py` on every
 commit and aborts on editable-surface or universe-consistency violations.
+
+## Alpha Dashboard
+
+Start the dashboard against the local archive root:
+
+```bash
+MPLCONFIGDIR=/tmp/matplotlib-cache \
+  uv run python scripts/tools/alpha_dashboard.py \
+  --run-dir archive \
+  --host 127.0.0.1 \
+  --port 8081
+```
+
+Open <http://127.0.0.1:8081>. The dashboard discovers artifacts under
+`archive/` and provides:
+
+- alpha and composite drill-down pages;
+- IS, OS, and forward/live performance views;
+- a live board for selecting and comparing multiple strategies;
+- `All live`, `30D`, and `7D` windows;
+- an optional rebased BTC comparison on live charts;
+- navigation back to the originating dashboard tab.
+
+An empty dashboard on a fresh clone is expected because `archive/*` is ignored.
+Populate or mount the artifact archive before starting it. To expose the local
+server temporarily, run `cloudflared tunnel --url http://127.0.0.1:8081`; the
+generated public URL is ephemeral and should not be treated as deployment.
+
+## Live Execution Safety
+
+`scripts/live_xs_volume_rank.py` is dry-run by default and requires explicit
+execution flags for real orders. Read `docs/XS_VOLUME_RANK_LIVE_RUNBOOK.md`
+before connecting an account.
+
+Keep credentials only in local environment variables. Never put API keys in
+JSON configuration, source files, command history, screenshots, or committed
+`.env` files. The following local paths are ignored by Git:
+
+- `.env` and `*.env`;
+- `live/state/` and `live/KILL_SWITCH`;
+- `archive/*`, which contains weights, trades, metrics, and forward state;
+- local caches, databases, and NiceGUI state.
+
+Use a dedicated exchange sub-account, disable withdrawals on its API key, and
+validate on testnet and dry-run before enabling live execution.
 
 ## Universe
 
