@@ -1,0 +1,10 @@
+{
+  "deployment_usdt": 2000,
+  "max_gross": 1.01,
+  "max_abs_net": 0.02,
+  "max_symbol_weight": 0.01,
+  "max_orders": 400,
+  "max_order_notional": 25,
+  "max_signal_age_hours": 36,
+  "position_tolerance_usdt": 2
+}

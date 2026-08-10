@@ -17,6 +17,9 @@ Compact intraday alpha research repo.
 - `scripts/tools/verify_artifact.py`: deterministic artifact validator.
 - `scripts/tools/research_wiki.py`: research wiki and loop harness metadata.
 - `scripts/run_portfolio_forward_test.py`: portfolio forward test runner.
+- `scripts/live_xs_volume_rank.py`: fail-closed Binance USDⓈ-M executor for
+  `xs_volume_rank` (`dry-run` by default). See
+  `docs/XS_VOLUME_RANK_LIVE_RUNBOOK.md` before connecting an account.
 
 ## Setup
 

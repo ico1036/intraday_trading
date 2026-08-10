@@ -28,6 +28,7 @@ from nicegui import app, ui
 # importlib in tests; in the CLI case Python only auto-adds the script's
 # directory, so the sibling lib module is reachable as `alpha_dashboard_lib`.
 _HERE = Path(__file__).resolve().parent
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
@@ -326,6 +327,7 @@ def discover_live_alphas(run_dir: Path) -> list[dict[str, Any]]:
                 "run_id": run_id,
                 "alpha_id": item_id,
                 "kind": kind,
+                "forward_dir": str(forward_dir),
                 "status": forward_status(forward_dir),
             })
     return found
@@ -338,6 +340,16 @@ def render_top_nav() -> None:
             with ui.link(target="/").classes("nav-brand").style("text-decoration: none;"):
                 ui.html('<span class="nav-mark">◆</span>JW Capital', sanitize=False)
             ui.element("div").style("flex: 1")
+
+
+def _detail_back_target() -> str:
+    """Return to the section that opened a detail page."""
+    origin = ui.context.client.request.query_params.get("from", "")
+    if origin == "live":
+        return "/?tab=live#live-list"
+    if origin == "composites":
+        return "/?tab=composites"
+    return "/?tab=alphas"
 
 
 @lru_cache(maxsize=1)
@@ -1026,8 +1038,49 @@ def forward_session_figure(run_dir: Path, alpha_id: str) -> go.Figure:
     return forward_session_figure_from_dir(alpha_dir(run_dir, alpha_id) / "forward")
 
 
-def forward_session_figure_from_dir(forward_dir: Path) -> go.Figure:
-    """Forward cumret chart for any artifact directory with an equity curve."""
+@lru_cache(maxsize=128)
+def _btc_comparison_series(
+    start_text: str,
+    end_text: str,
+    data_dir: str = str(_REPO_ROOT / "data" / "futures_klines_daily" / "BTCUSDT"),
+) -> pd.DataFrame:
+    """Load BTC closes for an exact live-session window and rebase to 0%."""
+    start = pd.Timestamp(start_text)
+    end = pd.Timestamp(end_text)
+    frames: list[pd.DataFrame] = []
+    for path in sorted(Path(data_dir).glob("*.parquet")):
+        try:
+            frame = pd.read_parquet(path, columns=["timestamp", "close"])
+        except Exception:
+            continue
+        if not frame.empty:
+            frames.append(frame)
+    if not frames:
+        return pd.DataFrame(columns=["timestamp", "cumret"])
+
+    btc = pd.concat(frames, ignore_index=True)
+    btc["timestamp"] = pd.to_datetime(btc["timestamp"])
+    btc["close"] = pd.to_numeric(btc["close"], errors="coerce")
+    btc = (
+        btc[(btc["timestamp"] >= start) & (btc["timestamp"] <= end)]
+        .dropna(subset=["close"])
+        .sort_values("timestamp")
+        .drop_duplicates("timestamp", keep="last")
+    )
+    if btc.empty or float(btc["close"].iloc[0]) == 0:
+        return pd.DataFrame(columns=["timestamp", "cumret"])
+    return pd.DataFrame(
+        {
+            "timestamp": btc["timestamp"].values,
+            "cumret": (btc["close"] / float(btc["close"].iloc[0]) - 1.0).values,
+        }
+    )
+
+
+def forward_session_figure_from_dir(
+    forward_dir: Path, include_btc: bool = False
+) -> go.Figure:
+    """Forward cumret chart, optionally compared with BTC over the same period."""
     df = _equity_chart_series_cached(str(forward_dir / "equity_curve.parquet"))
     fig = go.Figure()
     if not df.empty and "cumret" in df.columns:
@@ -1044,15 +1097,116 @@ def forward_session_figure_from_dir(forward_dir: Path) -> go.Figure:
                 hovertemplate="%{x}<br>%{y:.2%}<extra></extra>",
             )
         )
+        if include_btc:
+            timestamps = pd.to_datetime(df["timestamp"])
+            btc = _btc_comparison_series(str(timestamps.min()), str(timestamps.max()))
+            if not btc.empty:
+                fig.add_trace(
+                    go.Scatter(
+                        x=_x(btc["timestamp"]),
+                        y=btc["cumret"],
+                        mode="lines",
+                        line={"color": "#f59e0b", "width": 1.8, "dash": "dot"},
+                        name="BTCUSDT",
+                        hovertemplate="%{x}<br>%{y:.2%}<extra>BTCUSDT</extra>",
+                    )
+                )
     fig.update_layout(
         height=240,
         autosize=True,
         margin=dict(l=40, r=15, t=40, b=30),
-        title="Live session PnL (post-OS only)",
-        showlegend=False,
+        title="Live session return (post-OS only)",
+        showlegend=include_btc,
+        legend=dict(orientation="h", yanchor="top", y=-0.15, xanchor="center", x=0.5),
     )
     fig.update_yaxes(tickformat=".2%")
     fig.add_hline(y=0, line_dash="dash", line_width=1, line_color="#94a3b8")
+    return fig
+
+
+def live_comparison_figure(
+    entries: list[dict[str, Any]],
+    selected_ids: list[str] | None = None,
+    include_btc: bool = True,
+    period_days: int | None = None,
+) -> go.Figure:
+    """Overlay selected live sessions, each rebased to 0% at the common start."""
+    selected = set(selected_ids or [str(e["alpha_id"]) for e in entries])
+    series: list[tuple[str, pd.DataFrame]] = []
+    common_start: pd.Timestamp | None = None
+    common_end: pd.Timestamp | None = None
+    for entry in entries:
+        alpha_id = str(entry["alpha_id"])
+        if alpha_id not in selected:
+            continue
+        df = _equity_chart_series_cached(
+            str(Path(entry["forward_dir"]) / "equity_curve.parquet")
+        ).copy()
+        if df.empty or "cumret" not in df.columns:
+            continue
+        df["timestamp"] = pd.to_datetime(df["timestamp"])
+        common_start = max(common_start, df["timestamp"].min()) if common_start is not None else df["timestamp"].min()
+        common_end = min(common_end, df["timestamp"].max()) if common_end is not None else df["timestamp"].max()
+        series.append((alpha_id, df))
+
+    fig = go.Figure()
+    if common_start is not None and common_end is not None:
+        if period_days is not None:
+            common_start = max(
+                common_start,
+                common_end - pd.Timedelta(days=int(period_days)),
+            )
+        for alpha_id, df in series:
+            window = df[
+                (df["timestamp"] >= common_start) & (df["timestamp"] <= common_end)
+            ].copy()
+            if window.empty:
+                continue
+            values = window["cumret"].astype(float)
+            values = (1.0 + values) / (1.0 + float(values.iloc[0])) - 1.0
+            fig.add_trace(
+                go.Scatter(
+                    x=_x(window["timestamp"]),
+                    y=values,
+                    mode="lines",
+                    name=alpha_id,
+                    line={"width": 2.8 if "composite" in alpha_id else 1.6},
+                    hovertemplate="%{x}<br>%{y:.2%}<extra>%{fullData.name}</extra>",
+                )
+            )
+        if include_btc:
+            btc = _btc_comparison_series(str(common_start), str(common_end))
+            if not btc.empty:
+                fig.add_trace(
+                    go.Scatter(
+                        x=_x(btc["timestamp"]),
+                        y=btc["cumret"],
+                        mode="lines",
+                        name="BTCUSDT",
+                        line={"color": "#f59e0b", "width": 2.2, "dash": "dot"},
+                        hovertemplate="%{x}<br>%{y:.2%}<extra>BTCUSDT</extra>",
+                    )
+                )
+    fig.update_layout(
+        height=460,
+        autosize=True,
+        margin=dict(l=48, r=18, t=50, b=92),
+        title=(
+            f"Live-only performance — "
+            f"{'all live history' if period_days is None else f'last {period_days} days'}, "
+            "rebased to 0%"
+        ),
+        hovermode="x unified",
+        legend=dict(
+            orientation="h",
+            yanchor="top",
+            y=-0.18,
+            xanchor="center",
+            x=0.5,
+            font={"size": 10},
+        ),
+    )
+    fig.update_yaxes(tickformat=".1%", zeroline=True, zerolinecolor="#94a3b8")
     return fig
 
 
@@ -1582,7 +1736,9 @@ def render_live_session(forward_dir: Path) -> None:
         return
 
     with ui.column().classes("section-panel w-full gap-2"):
-        ui.label("Live Session (post-OS)").classes("section-title")
+        with ui.row().classes("w-full items-center justify-between"):
+            ui.label("Live Session (post-OS)").classes("section-title")
+            btc_toggle = ui.switch("Compare BTC", value=False).props("dense")
         with ui.row().classes("gap-2 w-full"):
             s_pnl = status["session_pnl"]
             s_ret = status["session_return"]
@@ -1599,7 +1755,19 @@ def render_live_session(forward_dir: Path) -> None:
                 tone=_tone_from_number(s_pnl),
             )
             metric_card("Session Return", _fmt_pct(s_ret), tone=_tone_from_number(s_ret))
-        ui.plotly(forward_session_figure_from_dir(forward_dir)).classes("w-full chart-host mt-2")
+        strategy_chart = ui.plotly(
+            forward_session_figure_from_dir(forward_dir, include_btc=False)
+        ).classes("w-full chart-host mt-2")
+        btc_chart = ui.plotly(
+            forward_session_figure_from_dir(forward_dir, include_btc=True)
+        ).classes("w-full chart-host mt-2")
+        btc_chart.set_visibility(False)
+        btc_toggle.on_value_change(
+            lambda e: (
+                strategy_chart.set_visibility(not e.value),
+                btc_chart.set_visibility(e.value),
+            )
+        )
 
 
 def artifact_path(run_dir: Path, alpha_id: str) -> str:
@@ -2362,6 +2530,7 @@ def main() -> None:
     def page():
         add_styles()
         render_top_nav()
+        requested_tab = ui.context.client.request.query_params.get("tab", "alphas")
         df = load_index(run_dir)
         if not df.empty and "is_sharpe" in df.columns:
             df = df.sort_values("is_sharpe", ascending=False, na_position="last")
@@ -2384,7 +2553,11 @@ def main() -> None:
                 tab_alphas = ui.tab("Alphas")
                 tab_live = ui.tab(f"Live ({len(live_alphas)})")
                 tab_composites = ui.tab(f"Composites ({len(composites)})")
-            with ui.tab_panels(top_tabs, value=tab_alphas).classes("w-full"):
+            initial_tab = {
+                "live": tab_live,
+                "composites": tab_composites,
+            }.get(requested_tab, tab_alphas)
+            with ui.tab_panels(top_tabs, value=initial_tab).classes("w-full"):
                 with ui.tab_panel(tab_alphas):
                     df = state["df"]
                     sub_n = int((df["category"] == "SUBMITTABLE").sum()) if "category" in df.columns else 0
@@ -2551,49 +2724,123 @@ def main() -> None:
                             "from any alpha's detail page to see it here."
                         ).classes("note-text")
                     else:
-                        with ui.column().classes("w-full gap-2"):
-                            for entry in live_alphas:
-                                st = entry["status"]
-                                if entry.get("kind") == "composite":
-                                    target_url = f"/composite/{entry['run_id']}/{entry['alpha_id']}"
-                                else:
-                                    target_url = f"/alpha/{entry['run_id']}/{entry['alpha_id']}"
-                                card = ui.card().classes("metric-card-accent w-full p-3").style(
-                                    "cursor: pointer;"
+                        with ui.column().classes("w-full gap-3").props('id="live-board"'):
+                            with ui.column().classes("section-panel w-full gap-2 live-board"):
+                                with ui.row().classes("w-full items-start justify-between live-board-head"):
+                                    with ui.column().classes("gap-0"):
+                                        ui.label("Live Strategy Board").classes("section-title")
+                                        ui.label(
+                                            "Select multiple strategies to compare them over one common live period."
+                                        ).classes("note-text")
+                                    ui.html('<span class="badge-live">7 STREAMS</span>', sanitize=False)
+
+                                live_ids = [str(entry["alpha_id"]) for entry in live_alphas]
+                                with ui.row().classes("w-full items-end gap-3 live-board-controls"):
+                                    live_select = ui.select(
+                                        live_ids,
+                                        value=live_ids,
+                                        multiple=True,
+                                        label="Strategies",
+                                    ).props("use-chips dense options-dense").classes("live-strategy-select")
+                                    live_period = ui.toggle(
+                                        {
+                                            "all": "All live",
+                                            "30": "30D",
+                                            "7": "7D",
+                                        },
+                                        value="all",
+                                    ).props("dense no-caps")
+                                    live_btc = ui.switch("Compare BTC", value=True).props("dense")
+                                    ui.button(
+                                        "Select all",
+                                        icon="done_all",
+                                        on_click=lambda: live_select.set_value(live_ids),
+                                    ).props("flat dense")
+                                    ui.button(
+                                        "Clear",
+                                        icon="clear_all",
+                                        on_click=lambda: live_select.set_value([]),
+                                    ).props("flat dense")
+
+                                comparison_container = ui.column().classes(
+                                    "w-full live-comparison-container"
                                 )
-                                card.on("click", lambda _, url=target_url: ui.navigate.to(url))
-                                with card:
-                                    with ui.row().classes("items-center justify-between w-full"):
-                                        with ui.row().classes("items-center gap-2"):
-                                            ui.label(entry["alpha_id"]).classes("text-base font-bold").style(
-                                                "color: var(--text);"
+
+                                def render_live_comparison() -> None:
+                                    comparison_container.clear()
+                                    with comparison_container:
+                                        selected_ids = list(live_select.value or [])
+                                        if not selected_ids:
+                                            ui.label(
+                                                "Choose at least one live strategy."
+                                            ).classes("empty-state")
+                                            return
+                                        ui.plotly(
+                                            live_comparison_figure(
+                                                live_alphas,
+                                                selected_ids=selected_ids,
+                                                include_btc=bool(live_btc.value),
+                                                period_days=(
+                                                    None
+                                                    if live_period.value == "all"
+                                                    else int(live_period.value)
+                                                ),
                                             )
-                                            if entry.get("kind") == "composite":
-                                                ui.label("COMPOSITE").classes("badge-soft")
-                                        ui.html('<span class="badge-live">LIVE</span>', sanitize=False)
-                                    ui.label(entry["run_id"]).classes("path-text")
-                                    with ui.row().classes("gap-2 w-full mt-2"):
-                                        nav_cur = st.get("nav_current")
-                                        s_pnl = st.get("session_pnl")
-                                        s_ret = st.get("session_return")
-                                        metric_card(
-                                            "NAV",
-                                            f"${nav_cur:,.2f}" if nav_cur else "-",
+                                        ).classes("w-full chart-host live-comparison-chart")
+
+                                live_select.on_value_change(lambda _: render_live_comparison())
+                                live_period.on_value_change(lambda _: render_live_comparison())
+                                live_btc.on_value_change(lambda _: render_live_comparison())
+                                render_live_comparison()
+
+                            ui.label("Live snapshots").classes("section-title").props('id="live-list"')
+                            with ui.element("div").classes("live-card-grid w-full"):
+                                for entry in live_alphas:
+                                    st = entry["status"]
+                                    if entry.get("kind") == "composite":
+                                        target_url = (
+                                            f"/composite/{entry['run_id']}/{entry['alpha_id']}?from=live"
                                         )
-                                        metric_card(
-                                            "Session PnL",
-                                            f"${s_pnl:+.2f}" if s_pnl is not None else "-",
-                                            tone=_tone_from_number(s_pnl),
+                                    else:
+                                        target_url = (
+                                            f"/alpha/{entry['run_id']}/{entry['alpha_id']}?from=live"
                                         )
-                                        metric_card(
-                                            "Session Return",
-                                            _fmt_pct(s_ret),
-                                            tone=_tone_from_number(s_ret),
-                                        )
-                                        metric_card(
-                                            "Uptime",
-                                            format_uptime(st.get("uptime_seconds")),
-                                        )
+                                    card = ui.card().classes(
+                                        "live-snapshot-card metric-card-accent w-full"
+                                    )
+                                    card.on("click", lambda _, url=target_url: ui.navigate.to(url))
+                                    with card:
+                                        with ui.row().classes("items-center justify-between w-full"):
+                                            with ui.row().classes("items-center gap-2"):
+                                                ui.label(entry["alpha_id"]).classes("text-base font-bold").style(
+                                                    "color: var(--text);"
+                                                )
+                                                if entry.get("kind") == "composite":
+                                                    ui.label("COMPOSITE").classes("badge-soft")
+                                            ui.html('<span class="badge-live">LIVE</span>', sanitize=False)
+                                        ui.label(entry["run_id"]).classes("path-text")
+                                        with ui.element("div").classes("live-card-metrics w-full"):
+                                            nav_cur = st.get("nav_current")
+                                            s_pnl = st.get("session_pnl")
+                                            s_ret = st.get("session_return")
+                                            metric_card(
+                                                "NAV",
+                                                f"${nav_cur:,.2f}" if nav_cur else "-",
+                                            )
+                                            metric_card(
+                                                "Session PnL",
+                                                f"${s_pnl:+.2f}" if s_pnl is not None else "-",
+                                                tone=_tone_from_number(s_pnl),
+                                            )
+                                            metric_card(
+                                                "Session Return",
+                                                _fmt_pct(s_ret),
+                                                tone=_tone_from_number(s_ret),
+                                            )
+                                            metric_card(
+                                                "Uptime",
+                                                format_uptime(st.get("uptime_seconds")),
+                                            )
 
                 with ui.tab_panel(tab_composites):
                     if not composites:
@@ -2645,7 +2892,9 @@ def main() -> None:
                         )
                         comp_table.on(
                             "rowClick",
-                            lambda e: ui.navigate.to(f"/composite/{e.args[1]['run_id']}/{e.args[1]['dir_name']}"),
+                            lambda e: ui.navigate.to(
+                                f"/composite/{e.args[1]['run_id']}/{e.args[1]['dir_name']}?from=composites"
+                            ),
                         )
             render_footer(run_dir)
 
@@ -2657,7 +2906,11 @@ def main() -> None:
         selected_rows = df[(df["run_id"] == run_id) & (df["alpha_id"] == alpha_id)]
         with ui.column().classes("page-wrap w-full gap-3"):
             with ui.row().classes("w-full items-center justify-between"):
-                ui.button("Back", icon="arrow_back", on_click=lambda: ui.navigate.to("/"))
+                ui.button(
+                    "Back",
+                    icon="arrow_back",
+                    on_click=lambda: ui.navigate.to(_detail_back_target()),
+                ).props("flat").classes("detail-back")
                 detail_run_dir = Path(run_id) if (Path(run_id) / "alpha_index.csv").exists() else run_dir / run_id
                 ui.label(artifact_path(detail_run_dir, alpha_id)).classes("path-text")
             if selected_rows.empty:
@@ -2917,7 +3170,11 @@ def main() -> None:
         is_metrics_path = composite_dir / "is" / "metrics.json"
         with ui.column().classes("page-wrap w-full gap-3"):
             with ui.row().classes("w-full items-center justify-between"):
-                ui.button("Back", icon="arrow_back", on_click=lambda: ui.navigate.to("/"))
+                ui.button(
+                    "Back",
+                    icon="arrow_back",
+                    on_click=lambda: ui.navigate.to(_detail_back_target()),
+                ).props("flat").classes("detail-back")
                 ui.label(str(composite_dir)).classes("path-text")
 
             if not manifest_path.exists():

@@ -374,3 +374,31 @@ def test_fmt_sharpe_handles_none_and_nan():
     assert _fmt_sharpe_pair(None) == "- / -"
     assert _fmt_sharpe_daily(float("nan")) == "-"
     assert _fmt_sharpe_annual(float("nan")) == "-"
+
+
+def test_btc_comparison_series_uses_exact_period_and_rebases(tmp_path):
+    import pandas as pd
+
+    from alpha_dashboard import _btc_comparison_series
+
+    btc_dir = tmp_path / "BTCUSDT"
+    btc_dir.mkdir()
+    pd.DataFrame(
+        {
+            "timestamp": pd.to_datetime(
+                ["2026-05-07", "2026-05-08", "2026-05-09", "2026-05-10"]
+            ),
+            "close": [90.0, 100.0, 110.0, 121.0],
+        }
+    ).to_parquet(btc_dir / "BTCUSDT-1d-2026.parquet")
+
+    result = _btc_comparison_series(
+        "2026-05-08 00:00:00",
+        "2026-05-09 23:59:59",
+        str(btc_dir),
+    )
+
+    assert result["timestamp"].tolist() == list(
+        pd.to_datetime(["2026-05-08", "2026-05-09"])
+    )
+    assert result["cumret"].tolist() == pytest.approx([0.0, 0.1])

@@ -103,6 +103,8 @@ reports/
 output/
 artifacts/
 state/
+live/state/
+live/KILL_SWITCH
 cache/
 .tmp/
 *.csv
