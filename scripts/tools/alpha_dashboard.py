@@ -403,6 +403,71 @@ def render_live_strategy_report(run_dir: Path) -> None:
             "paper-forward artifacts, not exchange account P&L or proof of live orders."
         ).classes("note-text")
 
+        ui.label("Algorithm specification").classes("section-title")
+        with ui.card().classes("dense-panel w-full"):
+            ui.label("1. xs_volume_rank — deployed with reverse=true").classes("section-title")
+            ui.markdown(
+                "**Input:** each symbol's completed previous-day `quote_volume`.  "
+                "No rolling average or price return enters this signal.\n\n"
+                "1. At the first event of day *t*, rank every eligible symbol by "
+                "`quote_volume[t-1]`, highest to lowest.\n"
+                "2. Let `h = floor(N / 2)`. Because the deployed runner passes "
+                "`reverse=true`, **long the bottom h (lower-volume names)** and "
+                "**short the top h (higher-volume names)**.\n"
+                "3. Give every selected name `min(5%, 0.5 / h)` absolute target weight. "
+                "Each leg targets 50%, so gross exposure is about 100% and net exposure "
+                "is about zero.\n"
+                "4. Close names that leave a leg and rebalance daily with market target orders.\n\n"
+                "**Economic bet:** unusually high-attention/high-flow names underperform "
+                "low-attention names on the next daily holding period."
+            )
+
+        with ui.card().classes("dense-panel w-full"):
+            ui.label("2. AMIHUD c10/c20/c30/c40/c50 — one signal, five breadths").classes("section-title")
+            ui.markdown(
+                "For symbol *i* at decision day *t*, using only the 60 completed days "
+                "through *t-1*:\n\n"
+                "`amihud(i,t) = mean_d=1..60( abs(close[d] / close[d-1] - 1) "
+                "/ max(quote_volume[d], 1e-9) )`\n\n"
+                "A high score means the price moved more per dollar of traded notional: "
+                "a simple **illiquidity / price-impact proxy**.\n\n"
+                "1. Require at least 61 closes and valid quote volume.\n"
+                "2. Rank eligible symbols from lowest to highest Amihud score.\n"
+                "3. With deployed `reverse=false`, **long the highest-score tail** and "
+                "**short the lowest-score tail**.\n"
+                "4. `k = max(1, floor(N × concentration))`; equal weight each leg at "
+                "`min(20%, 0.5 / k)`. Child gross is about 1x and net is about zero.\n"
+                "5. Recompute and rebalance once per day.\n\n"
+                "The five strategies are not five different factors. They use the same "
+                "score and direction; only concentration changes: **10%, 20%, 30%, 40%, "
+                "and 50% per tail**. c10 is concentrated; c50 holds nearly the full "
+                "cross-section and has the most overlap."
+            )
+
+        with ui.card().classes("dense-panel w-full"):
+            ui.label("3. hierarchical_amihud…gross5 composite").classes("section-title")
+            ui.markdown(
+                "At every rebalance timestamp, forward-fill each child target-weight "
+                "vector and combine them with equal sleeve coefficients:\n\n"
+                "`w_raw(t) = 0.2 × (w_c10 + w_c20 + w_c30 + w_c40 + w_c50)`\n\n"
+                "Then rescale the whole vector to a 5x gross target:\n\n"
+                "`w_final(t) = w_raw(t) × 5 / sum_i(abs(w_raw_i(t)))`\n\n"
+                "The rescaling preserves the blended cross-sectional direction but "
+                "magnifies both profit and loss. Because all five sleeves are nested "
+                "versions of the same Amihud factor, equal sleeve weights do **not** mean "
+                "five independent sources of diversification."
+            )
+
+        with ui.card().classes("dense-panel w-full"):
+            ui.label("Timing and look-ahead control").classes("section-title")
+            ui.markdown(
+                "During day *t-1*, the strategy only accumulates that day's observations. "
+                "It commits the completed values and emits new target weights on the first "
+                "event of day *t*. Partial current-day panels cannot overwrite the ranking. "
+                "Therefore every displayed day-*t* position is computed from information "
+                "available no later than day *t-1*."
+            )
+
         with ui.row().classes("w-full gap-2"):
             metric_card("Strategies", str(len(entries)))
             fresh = sum(1 for e in entries if e.get("status", {}).get("live"))
@@ -424,10 +489,10 @@ def render_live_strategy_report(run_dir: Path) -> None:
             status = entry.get("status", {})
             alpha_id = str(entry["alpha_id"])
             if alpha_id == "xs_volume_rank":
-                thesis = "Reverse prior-day quote-volume rank; daily market-neutral cross-section."
+                thesis = "Long low / short high previous-day quote-volume rank (reverse=true)."
             elif alpha_id.startswith("xs_factor_amihud60d_fwd_c"):
                 pct = alpha_id.rsplit("c", 1)[-1]
-                thesis = f"60-day Amihud illiquidity rank; trade the {pct}% concentration tails."
+                thesis = f"Long high / short low 60-day Amihud score; {pct}% tails."
             else:
                 thesis = "Equal blend of five Amihud sleeves, rescaled to 5x target gross."
             rows.append({
