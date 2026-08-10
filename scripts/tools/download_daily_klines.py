@@ -136,6 +136,12 @@ def main(argv: list[str] | None = None) -> int:
                     help="path to splits.json — seeds universe + start (IS) + end (OS) for full reproduction")
     ap.add_argument("--limit", type=int, default=None, help="process at most N symbols")
     ap.add_argument("--force", action="store_true", help="re-download even if files exist")
+    ap.add_argument(
+        "--max-failure-fraction",
+        type=float,
+        default=0.0,
+        help="return success when failed symbols are at or below this fraction (default: strict)",
+    )
     args = ap.parse_args(argv)
 
     splits_universe: list[str] | None = None
@@ -193,6 +199,15 @@ def main(argv: list[str] | None = None) -> int:
     )
     for sym, err in failures:
         print(f"  {sym}: {err}", file=sys.stderr)
+    total = max(len(symbols), 1)
+    failure_fraction = len(failures) / total
+    if failures and failure_fraction <= max(0.0, args.max_failure_fraction):
+        print(
+            f"partial success accepted: {failure_fraction:.2%} <= "
+            f"{args.max_failure_fraction:.2%}",
+            file=sys.stderr,
+        )
+        return 0
     return 0 if not failures else 1
 
 
