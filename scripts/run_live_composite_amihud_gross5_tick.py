@@ -16,11 +16,12 @@ import json
 import shutil
 import subprocess
 import sys
-from math import sqrt
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
+
+from intraday.backtest.metrics import sharpe_daily_annualized
 
 
 REPO = Path(__file__).resolve().parent.parent
@@ -226,12 +227,17 @@ def _rewrite_sliced_metrics(out_dir: Path) -> None:
     drawdowns = equity["equity"] / running_peak.replace(0.0, np.nan) - 1.0
     max_drawdown = float(drawdowns.min()) if len(drawdowns) else 0.0
 
-    returns = equity["equity"].pct_change().replace([np.inf, -np.inf], np.nan).dropna()
-    sharpe = 0.0
-    if len(returns) > 1:
-        std = float(returns.std(ddof=1))
-        if std > 0:
-            sharpe = float(returns.mean() / std * sqrt(252.0))
+    # equity_curve has one row per fill event (hundreds per bar), so a naive
+    # pct_change().std() * sqrt(252) treats intra-bar steps as daily returns
+    # and badly understates Sharpe. Aggregate to daily closes first — the same
+    # sharpe_daily_annualized() the per-alpha forward runner uses, so composite
+    # and child metrics are directly comparable.
+    sharpe = float(
+        sharpe_daily_annualized(
+            equity["equity"].tolist(),
+            timestamps=equity["timestamp"].tolist(),
+        )
+    )
 
     trade_count = 0
     win_rate = metrics.get("win_rate", 0.0)
@@ -240,8 +246,14 @@ def _rewrite_sliced_metrics(out_dir: Path) -> None:
         trade_count = int(len(trades))
         pnl_col = "pnl" if "pnl" in trades.columns else None
         if pnl_col and trade_count:
-            pnl = pd.to_numeric(trades[pnl_col], errors="coerce").fillna(0.0)
-            win_rate = float((pnl > 0).mean())
+            # Opens carry pnl=NaN; only closes realize a result. Counting the
+            # opens in the denominator halves the win rate. Match the per-alpha
+            # runner: report closed round trips.
+            closed = trades[trades[pnl_col].notna()]
+            trade_count = int(len(closed))
+            if trade_count:
+                pnl = pd.to_numeric(closed[pnl_col], errors="coerce")
+                win_rate = float((pnl > 0).mean())
 
     metrics.update(
         {

@@ -181,6 +181,19 @@ def main() -> int:
             print(f"[sync] failed rc={rc}", file=sys.stderr)
             return rc
 
+    # Drop universe symbols with no local daily-kline cache. Binance delists
+    # perps, and a frozen splits.json universe keeps naming them forever; the
+    # loader raises FileNotFoundError on the first missing directory. Filtering
+    # here (after --sync-data, so newly-listed symbols still get downloaded)
+    # mirrors run_live_composite_amihud_gross5_tick.py.
+    data_root = REPO_ROOT / args.data_path
+    available = [s for s in universe if (data_root / s.upper()).is_dir()]
+    dropped = [s for s in universe if s not in available]
+    if dropped:
+        print(f"[forward] dropping {len(dropped)} symbol(s) with no data in "
+              f"{args.data_path}: {', '.join(dropped)}", flush=True)
+    universe = available
+
     # Clear stale forward artefacts so the new run is the only truth in the
     # directory. backtest.py would overwrite metrics.json anyway but the
     # warning is louder if we leave forwards mixing two as-of dates.
