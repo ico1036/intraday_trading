@@ -161,6 +161,7 @@ def run_backtest(args: argparse.Namespace) -> dict[str, Any]:
         leverage=args.leverage,
         fixed_aum_sizing=getattr(args, "fixed_aum_sizing", False),
         max_portfolio_weight=args.max_portfolio_weight,
+        stale_bar_exit=getattr(args, "stale_bar_exit", 0),
     )
     result = runner.run(start_time=parse_dt(args.start), end_time=parse_dt(args.end))
     runner.save_report(output_dir)
@@ -941,6 +942,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--position-size-pct", type=float, default=1.0)
     parser.add_argument("--leverage", type=int, default=1)
     parser.add_argument("--max-portfolio-weight", type=float, default=1.0)
+    parser.add_argument(
+        "--stale-bar-exit", type=int, default=0,
+        help="Retire a symbol whose newest bar is more than N bar-intervals "
+             "old: drop it from the strategy panel and force-close any "
+             "position at its last price (CLOSE_STALE). Models delisting. "
+             "0 (default) keeps the legacy behaviour so archived runs stay "
+             "reproducible. TIME bars only.",
+    )
     parser.add_argument(
         "--fixed-aum-sizing", action="store_true",
         help="Scale leg notional off initial_capital instead of running "

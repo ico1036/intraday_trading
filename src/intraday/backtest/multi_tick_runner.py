@@ -276,6 +276,7 @@ class PortfolioTickBacktestRunner:
         leverage: int = 1,
         fixed_aum_sizing: bool = False,
         max_portfolio_weight: float = 1.0,
+        stale_bar_exit: int = 0,
     ):
         self.strategy = strategy
         self.data_loaders = data_loaders
@@ -291,6 +292,23 @@ class PortfolioTickBacktestRunner:
         # shrink subsequent legs and recoveries don't pump them, which is
         # the standard convention for evaluating a market-neutral signal.
         self.fixed_aum_sizing = bool(fixed_aum_sizing)
+
+        # Delisting handling. A symbol that stops printing bars used to keep
+        # its last candle in ``_latest_candles`` forever, so the panel handed
+        # strategies a stale row and cross-sectional rankers kept allocating
+        # to a dead name (measured: ~5% of gross, up to 30%, on the 60d Amihud
+        # family). Any position in it was also carried to the end of the run
+        # instead of being settled at the delisting.
+        #
+        # With ``stale_bar_exit = N`` (bars), a symbol whose newest candle is
+        # more than N bar-intervals behind the clock is dropped from the panel
+        # and its position force-closed at its last price. 0 disables the
+        # check, which is the default so archived results stay reproducible.
+        # Only meaningful for TIME bars — VOLUME/TICK bar sizes are not
+        # durations, so staleness has no wall-clock meaning there.
+        self.stale_bar_exit = int(stale_bar_exit)
+        self._stale_symbols: set[str] = set()
+        self._last_stale_sweep_ts: Optional[datetime] = None
 
         if fee_rate is not None:
             self.maker_fee_rate = fee_rate
@@ -447,6 +465,8 @@ class PortfolioTickBacktestRunner:
         """현재 최신 캔들로 패널 데이터 구성"""
         panel = {}
         for sym, candle in self._latest_candles.items():
+            if sym in self._stale_symbols:
+                continue
             panel[sym] = {
                 "timestamp": candle.timestamp,
                 "open": candle.open,
@@ -462,6 +482,39 @@ class PortfolioTickBacktestRunner:
                 "volume_imbalance": candle.volume_imbalance,
             }
         return panel
+
+    def _sweep_stale_symbols(self, now: datetime) -> None:
+        """Retire symbols that have stopped printing bars (delisting).
+
+        Runs once per distinct bar timestamp, not once per symbol-bar, so the
+        cost is O(symbols) per bar rather than O(symbols x symbol-bars).
+        """
+        if self.stale_bar_exit <= 0 or self.bar_type != CandleType.TIME:
+            return
+        cutoff = now - timedelta(seconds=self.stale_bar_exit * float(self.bar_size))
+        for sym, candle in self._latest_candles.items():
+            if sym in self._stale_symbols or candle.timestamp >= cutoff:
+                continue
+            self._stale_symbols.add(sym)
+            self._pending_orders.pop(sym, None)
+            if not self._position.has(sym):
+                continue
+            price = self._latest_prices.get(sym, 0.0)
+            if price <= 0:
+                continue
+            close_qty = self._position.get_qty(sym)
+            pnl = self._position.close(sym, price, now)
+            fee = price * close_qty * self.taker_fee_rate
+            self._capital += pnl - fee
+            self._trade_log.append({
+                "timestamp": now,
+                "symbol": sym,
+                "action": "CLOSE_STALE",
+                "price": price,
+                "quantity": close_qty,
+                "pnl": pnl,
+                "fee": fee,
+            })
 
     def _build_positions_dict(self) -> dict:
         """현재 포지션을 패널 전달용 dict으로"""
@@ -927,6 +980,8 @@ class PortfolioTickBacktestRunner:
         self._latest_candles = {}
         self._latest_prices = {}
         self._position = _MultiPosition()
+        self._stale_symbols = set()
+        self._last_stale_sweep_ts = None
         self._start_time = None
         self._end_time = None
 
@@ -1042,6 +1097,12 @@ class PortfolioTickBacktestRunner:
             self._tick_counts[symbol] += 1
             self._bar_counts[symbol] += 1
             total_bars += 1
+
+            # A symbol printing again is alive again (relisting).
+            self._stale_symbols.discard(symbol)
+            if self._last_stale_sweep_ts != candle.timestamp:
+                self._sweep_stale_symbols(candle.timestamp)
+                self._last_stale_sweep_ts = candle.timestamp
 
             self._latest_prices[symbol] = candle.open
             self._execute_pending_order(symbol, candle.open, candle.timestamp)

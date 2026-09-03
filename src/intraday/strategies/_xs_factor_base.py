@@ -32,6 +32,7 @@ class XsFactorBase:
         max_weight: float = 0.20,
         concentration_pct: float = 0.10,
         reverse: bool = False,
+        stale_days: int = 0,
         **_: Any,
     ):
         if not symbols:
@@ -41,6 +42,16 @@ class XsFactorBase:
         self.max_weight = max(0.0, min(1.0, float(max_weight)))
         self.concentration_pct = max(0.01, min(0.5, float(concentration_pct)))
         self.reverse = bool(reverse)
+        # Delisting. _commit_yesterday appends nothing for a symbol that did
+        # not report, so its deque keeps the last HISTORY_LEN real readings
+        # indefinitely — nothing ever pushes them out — and _build_orders goes
+        # on scoring a coin that stopped trading years ago. With stale_days=N
+        # a symbol that has missed more than N consecutive daily commits is
+        # dropped from the ranking and its history cleared, so it re-enters
+        # only after rebuilding a fresh window (a relisting). 0 disables the
+        # check, keeping archived runs reproducible.
+        self.stale_days = max(0, int(stale_days))
+        self._missed: dict[str, int] = {s: 0 for s in self.symbols}
 
         self._history: dict[str, dict[str, deque]] = {
             s: {f: deque(maxlen=self.HISTORY_LEN) for f in self.HISTORY_FIELDS}
@@ -85,11 +96,16 @@ class XsFactorBase:
         for sym in self.symbols:
             today = self._today[sym]
             if today.get(self.HISTORY_FIELDS[0]) is None:
-                # No fresh reading today — clear history's "ready" sentinel by
-                # NOT appending. Stale data drops out organically once the
-                # history fills with newer values from other days.
-                pass
+                # No fresh reading today. For a symbol that is merely quiet
+                # the stale values age out as newer ones arrive; for one that
+                # has been delisted nothing ever arrives, so the window stays
+                # frozen and scoreable forever. stale_days bounds that.
+                self._missed[sym] += 1
+                if self.stale_days and self._missed[sym] > self.stale_days:
+                    for f in self.HISTORY_FIELDS:
+                        self._history[sym][f].clear()
             else:
+                self._missed[sym] = 0
                 for f in self.HISTORY_FIELDS:
                     v = today.get(f)
                     if v is not None:
@@ -99,6 +115,8 @@ class XsFactorBase:
     def _build_orders(self, state: MarketState) -> PortfolioOrder | None:
         scores: dict[str, float] = {}
         for sym in self.symbols:
+            if self.stale_days and self._missed[sym] > self.stale_days:
+                continue
             hist = {f: list(self._history[sym][f]) for f in self.HISTORY_FIELDS}
             primary = hist[self.HISTORY_FIELDS[0]]
             if not primary:
