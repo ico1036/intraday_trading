@@ -293,5 +293,12 @@
   "quality_gates": {
     "min_trades": 100,
     "min_turnover": 10
-  }
+  },
+  "unavailable": [
+    {
+      "symbol": "AERGOUSDT",
+      "reason": "Delisted and purged from Binance USDT-M exchangeInfo; fapi/v1/klines answers -1121 Invalid symbol, so the bars cannot be re-fetched by any route. Declared in the universe because it was part of the frozen selection; excluded from every run because no data exists.",
+      "since": "2026-08-31"
+    }
+  ]
 }

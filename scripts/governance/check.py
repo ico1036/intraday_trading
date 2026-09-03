@@ -162,6 +162,46 @@ def _alpha_metadata_paths(alpha_dir: Path) -> list[Path]:
     return paths
 
 
+def _declared_unavailable(run_dir: Path) -> tuple[set[str], list[dict]]:
+    """Symbols splits.json declares permanently unobtainable.
+
+    Returns the symbol set plus any violations raised by a malformed
+    declaration. Requiring a ``reason`` keeps this from becoming a silent
+    escape hatch for an ordinary universe mismatch.
+    """
+    splits = run_dir / "splits.json"
+    if not splits.exists():
+        return set(), []
+    try:
+        payload = json.loads(splits.read_text())
+    except json.JSONDecodeError:
+        return set(), []
+    entries = payload.get("unavailable")
+    if not entries:
+        return set(), []
+    try:
+        rel = splits.relative_to(REPO_ROOT).as_posix()
+    except ValueError:
+        rel = splits.as_posix()
+    if not isinstance(entries, list):
+        return set(), [{"path": rel, "reason": "unavailable must be a list"}]
+    symbols: set[str] = set()
+    problems: list[dict] = []
+    for entry in entries:
+        if not isinstance(entry, dict) or not entry.get("symbol"):
+            problems.append({"path": rel, "reason": "unavailable entry missing symbol"})
+            continue
+        if not str(entry.get("reason") or "").strip():
+            problems.append({
+                "path": rel,
+                "reason": "unavailable entry missing reason",
+                "symbol": entry["symbol"],
+            })
+            continue
+        symbols.add(str(entry["symbol"]).upper())
+    return symbols, problems
+
+
 def check_universe(*, archive_root: Path | None = None) -> UniverseCheckResult:
     res = UniverseCheckResult()
     archive_root = archive_root or (REPO_ROOT / "archive")
@@ -173,6 +213,26 @@ def check_universe(*, archive_root: Path | None = None) -> UniverseCheckResult:
             # legacy run with no universe declared; skip
             continue
         run_universe_set = sorted(set(run_universe))
+
+        # A symbol can become permanently unrunnable: Binance purges a
+        # delisted perp from exchangeInfo and /klines then answers
+        # "-1121 Invalid symbol", so no amount of re-downloading brings it
+        # back. Rewriting the frozen universe to hide that would falsify the
+        # record of what was decided, so splits.json may instead declare the
+        # gap and this check subtracts it:
+        #
+        #   "unavailable": [
+        #     {"symbol": "AERGOUSDT", "reason": "...", "since": "2026-08-31"}
+        #   ]
+        #
+        # Each entry must carry a reason, and a declared-unavailable symbol
+        # must genuinely be absent from the run — otherwise the declaration
+        # is stale and is itself a violation.
+        unavailable, decl_problems = _declared_unavailable(run_dir)
+        for problem in decl_problems:
+            res.violations.append(problem)
+        expected_set = sorted(set(run_universe_set) - unavailable)
+
         alphas_dir = run_dir / "alphas"
         if not alphas_dir.exists():
             continue
@@ -197,13 +257,22 @@ def check_universe(*, archive_root: Path | None = None) -> UniverseCheckResult:
                     )
                     continue
                 symbols_set = sorted({s.upper() for s in symbols})
-                if symbols_set != run_universe_set:
+                stale_decl = sorted(unavailable & set(symbols_set))
+                if stale_decl:
+                    res.violations.append(
+                        {
+                            "path": rel,
+                            "reason": "symbol declared unavailable but present in run",
+                            "symbols": stale_decl,
+                        }
+                    )
+                elif symbols_set != expected_set:
                     res.violations.append(
                         {
                             "path": rel,
                             "reason": "symbols != run universe",
                             "manifest_symbols": symbols_set,
-                            "run_universe": run_universe_set,
+                            "run_universe": expected_set,
                         }
                     )
     return res

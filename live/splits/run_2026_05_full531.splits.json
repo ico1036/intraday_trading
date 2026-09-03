@@ -531,9 +531,9 @@
     "ZORAUSDT",
     "ZROUSDT",
     "ZRXUSDT",
-    "\u5e01\u5b89\u4eba\u751fUSDT",
-    "\u6211\u8e0f\u9a6c\u6765\u4e86USDT",
-    "\u9f99\u867eUSDT"
+    "币安人生USDT",
+    "我踏马来了USDT",
+    "龙虾USDT"
   ],
   "is": {
     "start": "2022-01-01 00:00:00",
@@ -551,5 +551,12 @@
     "min_trades": 100,
     "min_turnover": 10
   },
-  "notes": "Full 531-symbol downloaded universe. Cycle-aligned IS/OS same as run_2026_05_c."
+  "notes": "Full 531-symbol downloaded universe. Cycle-aligned IS/OS same as run_2026_05_c.",
+  "unavailable": [
+    {
+      "symbol": "AERGOUSDT",
+      "reason": "Delisted and purged from Binance USDT-M exchangeInfo; fapi/v1/klines answers -1121 Invalid symbol, so the bars cannot be re-fetched by any route. Declared in the universe because it was part of the frozen selection; excluded from every run because no data exists.",
+      "since": "2026-08-31"
+    }
+  ]
 }
