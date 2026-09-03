@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import socket
 import sys
 import time
 from pathlib import Path
@@ -37,6 +38,72 @@ import requests
 
 EXCHANGE_INFO_URL = "https://fapi.binance.com/fapi/v1/exchangeInfo"
 KLINES_URL = "https://fapi.binance.com/fapi/v1/klines"
+PING_URL = "https://fapi.binance.com/fapi/v1/ping"
+API_HOST = "fapi.binance.com"
+
+# This runs from a laptop under launchd. When the machine is asleep at the
+# scheduled time launchd defers the job to the moment it wakes — i.e. the
+# instant the lid opens, before Wi-Fi has associated. Every request then dies
+# with "Failed to resolve fapi.binance.com" and the whole run is lost. Waiting
+# for the API to answer before starting, and retrying transient failures,
+# makes the job survive being carried around.
+NETWORK_WAIT_SECONDS = 600
+NETWORK_POLL_SECONDS = 5
+REQUEST_ATTEMPTS = 5
+REQUEST_BACKOFF_SECONDS = 2.0
+
+
+def wait_for_network(timeout: float = NETWORK_WAIT_SECONDS,
+                     poll: float = NETWORK_POLL_SECONDS) -> bool:
+    """Block until the Binance API answers, or ``timeout`` elapses."""
+    if timeout <= 0:
+        return True
+    deadline = time.monotonic() + timeout
+    attempt = 0
+    while True:
+        try:
+            socket.getaddrinfo(API_HOST, 443)
+            requests.get(PING_URL, timeout=10).raise_for_status()
+            if attempt:
+                print(f"network: reachable after {attempt} poll(s)", file=sys.stderr)
+            return True
+        except (socket.gaierror, requests.RequestException) as exc:
+            attempt += 1
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                print(f"network: {API_HOST} unreachable after {timeout:.0f}s "
+                      f"({type(exc).__name__}); giving up", file=sys.stderr)
+                return False
+            if attempt == 1:
+                print(f"network: waiting for {API_HOST} "
+                      f"(up to {timeout:.0f}s) — {type(exc).__name__}",
+                      file=sys.stderr)
+            time.sleep(min(poll, remaining))
+
+
+def _get(url: str, params: dict | None = None) -> requests.Response:
+    """GET with backoff on transient failures.
+
+    A 4xx other than 429 is a real answer — a delisted symbol purged from
+    exchangeInfo returns 400 ``-1121 Invalid symbol`` and will never succeed,
+    so retrying it just burns time. Only connection-level errors, 429 and 5xx
+    are worth another attempt.
+    """
+    delay = REQUEST_BACKOFF_SECONDS
+    last_exc: Exception | None = None
+    for attempt in range(1, REQUEST_ATTEMPTS + 1):
+        try:
+            r = requests.get(url, params=params, timeout=30)
+            if r.status_code < 400 or (r.status_code < 500 and r.status_code != 429):
+                return r
+            last_exc = requests.HTTPError(f"HTTP {r.status_code}", response=r)
+        except requests.RequestException as exc:
+            last_exc = exc
+        if attempt == REQUEST_ATTEMPTS:
+            break
+        time.sleep(delay)
+        delay *= 2
+    raise last_exc if last_exc else RuntimeError("request failed")
 
 KLINE_COLS = [
     "open_time", "open", "high", "low", "close", "volume",
@@ -46,7 +113,7 @@ KLINE_COLS = [
 
 
 def fetch_perp_symbols() -> list[str]:
-    r = requests.get(EXCHANGE_INFO_URL, timeout=30)
+    r = _get(EXCHANGE_INFO_URL)
     r.raise_for_status()
     info = r.json()
     return sorted(
@@ -62,17 +129,13 @@ def fetch_klines(symbol: str, start_ms: int, end_ms: int) -> pd.DataFrame:
     rows: list[list[Any]] = []
     cursor = start_ms
     while cursor < end_ms:
-        r = requests.get(
-            KLINES_URL,
-            params={
-                "symbol": symbol,
-                "interval": "1d",
-                "startTime": cursor,
-                "endTime": end_ms,
-                "limit": 1500,
-            },
-            timeout=30,
-        )
+        r = _get(KLINES_URL, params={
+            "symbol": symbol,
+            "interval": "1d",
+            "startTime": cursor,
+            "endTime": end_ms,
+            "limit": 1500,
+        })
         r.raise_for_status()
         batch = r.json()
         if not batch:
@@ -137,6 +200,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--limit", type=int, default=None, help="process at most N symbols")
     ap.add_argument("--force", action="store_true", help="re-download even if files exist")
     ap.add_argument(
+        "--network-wait", type=float, default=NETWORK_WAIT_SECONDS,
+        help="Seconds to wait for the Binance API to become reachable before "
+             "starting (default 600). Covers launchd firing the job at lid-open, "
+             "before Wi-Fi has associated. 0 disables the wait.",
+    )
+    ap.add_argument(
         "--max-failure-fraction",
         type=float,
         default=0.0,
@@ -175,6 +244,9 @@ def main(argv: list[str] | None = None) -> int:
         f"target: {len(symbols)} symbols  range: {start_str} → {end_str}  out: {out_dir}",
         file=sys.stderr,
     )
+
+    if not wait_for_network(args.network_wait):
+        return 1
 
     n_ok = 0
     n_skip = 0
