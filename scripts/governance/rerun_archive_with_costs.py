@@ -141,7 +141,9 @@ def rerun_alpha(run_dir: Path, alpha_dir: Path, splits: dict, params: dict | Non
             res["ok"] = False
             continue
         rc, err = _run(_cmd(desc, params, splits[split]["start"], splits[split]["end"], sdir, data_path, extra), timeout)
-        if rc != 0 or not (sdir / "metrics.json").exists() or "costs" not in _load(sdir / "metrics.json"):
+        # backtest.py exits 2 on a quality-gate reject even with enforcement
+        # off; the artefacts are written, so only a missing costs block fails.
+        if rc not in (0, 2) or not (sdir / "metrics.json").exists() or "costs" not in _load(sdir / "metrics.json"):
             res["splits"][split] = f"FAIL rc={rc} {err[:160]}"
             res["ok"] = False
             break
@@ -196,8 +198,9 @@ def rerun_composites(timeout: int, force: bool, data_path: str) -> None:
         start, end = str(s.get("started_at", "2026-03-04 00:00:00")).replace("T", " "), str(s.get("ended_at", "2026-04-17 23:59:00")).replace("T", " ")
         desc["strategy"] = "PrecomputedWeightsStrategy"
         rc, err = _run(_cmd(desc, {"weights_path": str(w), "alpha_id": c.name}, start, end, sdir, data_path, []), timeout)
-        print(f"composite {c.name}: {'ok' if rc == 0 else 'FAIL ' + err[:120]}", file=sys.stderr, flush=True)
-        if rc == 0:
+        ok = rc in (0, 2) and "costs" in _load(sdir / "metrics.json")
+        print(f"composite {c.name}: {'ok' if ok else 'FAIL ' + err[:120]}", file=sys.stderr, flush=True)
+        if ok:
             _refresh_summary(sdir)
 
 
