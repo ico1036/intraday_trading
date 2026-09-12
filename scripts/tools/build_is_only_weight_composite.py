@@ -31,7 +31,7 @@ from intraday.composites._optim_helpers import family_dedup  # noqa: E402
 ARCHIVE = REPO / "archive"
 BACKTEST = REPO / "scripts" / "tools" / "backtest.py"
 DATA_ROOT = REPO / "data" / "futures_klines_daily"
-ANNUAL_BARS = 252
+ANNUAL_BARS = 365  # crypto trades every calendar day; see backtest/metrics.py
 GROSS_EPS = 1e-12
 
 
