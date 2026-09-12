@@ -233,3 +233,25 @@ Two very different fixes (model overlay, state-variable redefinition) fail
 the same way: the cost and the alpha come from the same names. At daily
 resolution there is no observable that separates the squeeze-risk short
 from the profitable crowded short.
+
+## Addendum 2026-09-12 — engine results (costs charged by the backtest, Sharpe on 365 days)
+
+The overlay tables above are superseded by the engine: `backtest.py` now
+charges every funding settlement and tiered slippage itself, and the filter
+is a strategy (`xs_volume_rank_ftf`). Same 641 PIT universe, fixed AUM 10,000.
+Units: Sharpe | CAGR % | MDD %. ① is the pre-change engine (fees only).
+
+| window | days | ① fees only | ② + funding + slippage | ③ filter strategy | funding ② → ③ (%p) |
+|---|---|---|---|---|---|
+| IS 2022-01..2024-04 | 839 | 1.64 | +15.2 | -5.1 | 0.92 | +8.6 | -8.7 | 0.96 | +8.9 | -8.0 | -11.3 → -9.4 |
+| OS 2024-04..2026-05 | 748 | 1.77 | +16.5 | -5.0 | 0.25 | +2.3 | -7.7 | 0.51 | +4.7 | -6.5 | -22.4 → -9.1 |
+| PAPER 2026-05..2026-09 | 128 | 2.35 | +19.5 | -4.3 | -0.06 | -0.5 | -5.6 | -0.25 | -2.0 | -5.9 | -4.5 → -1.6 |
+
+Engine funding on the base book (−3,370 USD over IS+OS) matches the overlay
+(−3,350). The filter's OS gain is smaller in the engine (+0.26) than in the
+overlay (+0.36 on 365 days) because the engine trades actual delta
+quantities and marks funding on the held position, and because the live
+implementation uses the previous day's settlement count for the regime and
+count features (the same-day count is not observable at the open). PAPER
+is 128 days, ±1.7 on Sharpe; it decides nothing yet. Both arms now run
+live daily on this universe; read-out per the pre-registration.
