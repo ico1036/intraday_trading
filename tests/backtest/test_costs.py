@@ -46,6 +46,24 @@ def test_slippage_bps_adds_sqrt_impact():
     assert slippage_bps("adv_tier", st2, 20000.0) == pytest.approx(expect)
 
 
+def test_intraday_bars_scale_to_daily_basis():
+    # 1-minute bars: 2M USDT per bar is 2.88B a day -> top tier; vol scales by sqrt(1440).
+    st = SlippageState(bar_seconds=60)
+    for i in range(30):
+        st.push(2e6, 100.0 * (1 + 0.001 * (i % 2)), ts_seconds=60.0 * i)
+    assert st.adv() == pytest.approx(2e6 * 1440)
+    daily = SlippageState(bar_seconds=86400)
+    for i in range(30):
+        daily.push(2e6, 100.0 * (1 + 0.001 * (i % 2)))
+    assert st.vol() == pytest.approx(daily.vol() * np.sqrt(1440))
+    # Unknown duration: estimated from the timestamps.
+    est = SlippageState()
+    for i in range(30):
+        est.push(1e5, 100.0, ts_seconds=300.0 * i)
+    assert est.bars_per_day() == pytest.approx(288.0)
+    assert est.adv() == pytest.approx(1e5 * 288)
+
+
 class _BarLoader:
     """Minimal bar loader: yields Candle objects from a dataframe."""
 

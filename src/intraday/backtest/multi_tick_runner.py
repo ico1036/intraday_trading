@@ -796,8 +796,9 @@ class PortfolioTickBacktestRunner:
             return
         st = self._slip_state.get(symbol)
         if st is None:
-            st = self._slip_state[symbol] = SlippageState()
-        st.push(candle.quote_volume, candle.close)
+            bar_seconds = float(self.bar_size) if self.bar_type == CandleType.TIME else None
+            st = self._slip_state[symbol] = SlippageState(bar_seconds)
+        st.push(candle.quote_volume, candle.close, pd.Timestamp(candle.timestamp).timestamp())
 
     def _settle_funding(self, symbol: str, candle: Candle) -> None:
         """Charge the settlements that fall inside this bar to the held position."""

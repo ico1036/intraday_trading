@@ -11,6 +11,12 @@ and 6 bps with no impact while fewer than 10 bars are known. vol20 is the
 constants are the ones the funding study priced the live window with
 (research/notes/funding_tail_onset.md); on that book they came to ~7 bps per
 unit notional, 87% of short notional sitting in names under 5M ADV.
+
+The tiers and the impact term are calibrated on daily quantities. On
+intraday bars the state scales what it sees to a daily basis: ADV is the
+median bar quote volume times bars per day, and the return std is scaled by
+sqrt(bars per day). ``bar_seconds`` is the bar duration for TIME bars; for
+volume/dollar/tick bars it is estimated from the bar timestamps.
 """
 from __future__ import annotations
 
@@ -28,18 +34,36 @@ HALF_SPREAD_FLOOR = 12.0
 HALF_SPREAD_UNKNOWN = 6.0
 
 
+DAY_SECONDS = 86400.0
+
+
 class SlippageState:
-    """Trailing quote-volume and close history for one symbol."""
+    """Trailing quote-volume and close history for one symbol, reported on a
+    daily basis whatever the bar size."""
 
-    __slots__ = ("qv", "closes")
+    __slots__ = ("qv", "closes", "ts", "bar_seconds")
 
-    def __init__(self) -> None:
+    def __init__(self, bar_seconds: float | None = None) -> None:
         self.qv: deque[float] = deque(maxlen=ADV_WINDOW)
         self.closes: deque[float] = deque(maxlen=VOL_WINDOW + 1)
+        self.ts: deque[float] = deque(maxlen=ADV_WINDOW)
+        self.bar_seconds = float(bar_seconds) if bar_seconds else None
 
-    def push(self, quote_volume: float, close: float) -> None:
+    def push(self, quote_volume: float, close: float, ts_seconds: float | None = None) -> None:
         self.qv.append(float(quote_volume) if quote_volume else 0.0)
         self.closes.append(float(close))
+        if ts_seconds is not None:
+            self.ts.append(float(ts_seconds))
+
+    def bars_per_day(self) -> float:
+        sec = self.bar_seconds
+        if sec is None:
+            if len(self.ts) >= 2:
+                gaps = sorted(self.ts[i] - self.ts[i - 1] for i in range(1, len(self.ts)))
+                sec = gaps[len(gaps) // 2] or None
+        if not sec or sec <= 0:
+            return 1.0
+        return max(DAY_SECONDS / sec, 1e-9)
 
     def adv(self) -> float | None:
         if len(self.qv) < ADV_MIN_BARS:
@@ -47,7 +71,8 @@ class SlippageState:
         xs = sorted(self.qv)
         n = len(xs)
         mid = n // 2
-        return xs[mid] if n % 2 else 0.5 * (xs[mid - 1] + xs[mid])
+        med = xs[mid] if n % 2 else 0.5 * (xs[mid - 1] + xs[mid])
+        return med * self.bars_per_day()
 
     def vol(self) -> float:
         c = self.closes
@@ -57,7 +82,8 @@ class SlippageState:
         if len(rets) < 2:
             return VOL_DEFAULT
         m = sum(rets) / len(rets)
-        return math.sqrt(sum((r - m) ** 2 for r in rets) / (len(rets) - 1))
+        sd = math.sqrt(sum((r - m) ** 2 for r in rets) / (len(rets) - 1))
+        return sd * math.sqrt(self.bars_per_day())
 
 
 def half_spread_bps(adv: float | None) -> float:

@@ -2,8 +2,8 @@
 
 Handles both layouts: a flat ``alphas/<id>/metrics.json`` with ``is``/``os``
 sub-dicts (written by ``backtest.py --is-end``) and the split layout
-``alphas/<id>/{is,os}/metrics.json``. ``status`` is carried over from the
-existing index (it is a quality-gate verdict, not recomputed here).
+``alphas/<id>/{is,os}/metrics.json``. ``status`` comes from ``validation.json`` when
+present, else it is carried over from the existing index.
 
     uv run python scripts/governance/build_alpha_index.py --run-id run_2026_08_pit641
 """
@@ -33,6 +33,17 @@ def _split(alpha_dir: Path, name: str) -> dict:
     return {}
 
 
+def _load_status(alpha_dir: Path) -> str:
+    """validate_is_os.py writes validation.json next to is/ and os/."""
+    p = alpha_dir / "validation.json"
+    if p.exists():
+        try:
+            return str(json.loads(p.read_text()).get("status") or "")
+        except Exception:
+            return ""
+    return ""
+
+
 def build(run_id: str, root: Path = Path("archive")) -> pd.DataFrame:
     run_dir = root / run_id
     old = {}
@@ -52,7 +63,7 @@ def build(run_id: str, root: Path = Path("archive")) -> pd.DataFrame:
             "is_drawdown": is_m.get("max_drawdown"), "is_trades": is_m.get("total_trades"),
             "os_sharpe": os_m.get("sharpe"), "os_return": os_m.get("total_return"),
             "os_drawdown": os_m.get("max_drawdown"), "os_trades": os_m.get("total_trades"),
-            "status": old.get(d.name, ""),
+            "status": (_load_status(d) or old.get(d.name, "")),
             "annualization_days": is_m.get("annualization_days") or os_m.get("annualization_days"),
         })
     return pd.DataFrame(rows, columns=COLS)
