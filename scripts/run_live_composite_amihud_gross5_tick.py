@@ -21,7 +21,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from intraday.backtest.metrics import sharpe_daily_annualized
+from intraday.backtest.metrics import ANNUALIZATION_DAYS, sharpe_daily_annualized
 
 
 REPO = Path(__file__).resolve().parent.parent
@@ -71,6 +71,16 @@ def _sync_data(universe: list[str], as_of: str) -> None:
         *universe,
     ]
     _run(cmd)
+    # Funding settles inside the backtest, so keep the settlement files as
+    # current as the bars.
+    _run([
+        sys.executable,
+        str(REPO / "scripts" / "tools" / "download_funding_rates.py"),
+        "--symbols",
+        *universe,
+        "--network-wait",
+        "0",
+    ])
 
 
 def _run_child_forward(
@@ -228,7 +238,7 @@ def _rewrite_sliced_metrics(out_dir: Path) -> None:
     max_drawdown = float(drawdowns.min()) if len(drawdowns) else 0.0
 
     # equity_curve has one row per fill event (hundreds per bar), so a naive
-    # pct_change().std() * sqrt(252) treats intra-bar steps as daily returns
+    # pct_change().std() * sqrt(365) treats intra-bar steps as daily returns
     # and badly understates Sharpe. Aggregate to daily closes first — the same
     # sharpe_daily_annualized() the per-alpha forward runner uses, so composite
     # and child metrics are directly comparable.
@@ -262,6 +272,7 @@ def _rewrite_sliced_metrics(out_dir: Path) -> None:
             "total_return": total_return,
             "sharpe": sharpe,
             "sharpe_daily_annualized": sharpe,
+            "annualization_days": ANNUALIZATION_DAYS,
             "max_drawdown": max_drawdown,
             "total_trades": trade_count,
             "win_rate": win_rate,

@@ -74,7 +74,7 @@ def _slice_forward_artifacts(out_dir: Path, forward_start: str) -> None:
     import pandas as pd
 
     cutoff = pd.Timestamp(forward_start)
-    for name in ("equity_curve.parquet", "trades.parquet", "weights.parquet"):
+    for name in ("equity_curve.parquet", "trades.parquet", "weights.parquet", "funding.parquet"):
         p = out_dir / name
         if not p.exists():
             continue
@@ -105,6 +105,18 @@ def _slice_forward_artifacts(out_dir: Path, forward_start: str) -> None:
         cummax = eq["equity"].cummax()
         dd = (eq["equity"] - cummax) / cummax.replace(0, float("nan"))
         metrics["max_drawdown"] = float(dd.min()) if dd.notna().any() else 0.0
+        # Costs for the forward window only (the backtest wrote full-period totals).
+        if isinstance(metrics.get("costs"), dict):
+            costs = metrics["costs"]
+            if tr is not None and "fee" in tr.columns:
+                costs["fees"] = float(pd.to_numeric(tr["fee"], errors="coerce").fillna(0).sum())
+            if tr is not None and "slippage" in tr.columns:
+                costs["slippage"] = float(pd.to_numeric(tr["slippage"], errors="coerce").fillna(0).sum())
+            fd_path = out_dir / "funding.parquet"
+            if fd_path.exists():
+                fd = pd.read_parquet(fd_path)
+                costs["funding"] = float(fd["payment"].sum()) if len(fd) else 0.0
+                costs["funding_settlements"] = int(fd["settlements"].sum()) if len(fd) else 0
         if tr is not None and "pnl" in tr.columns:
             closed = tr[tr["pnl"].notna()]
             metrics["total_trades"] = int(len(closed))
@@ -112,11 +124,12 @@ def _slice_forward_artifacts(out_dir: Path, forward_start: str) -> None:
                 wins = (closed["pnl"] > 0).sum()
                 metrics["win_rate"] = float(wins / len(closed))
         try:
-            from intraday.backtest.metrics import sharpe_daily_annualized
+            from intraday.backtest.metrics import ANNUALIZATION_DAYS, sharpe_daily_annualized
             metrics["sharpe"] = sharpe_daily_annualized(
                 eq["equity"].tolist(),
                 timestamps=eq["timestamp"].tolist(),
             )
+            metrics["annualization_days"] = ANNUALIZATION_DAYS
         except Exception:
             pass
     metrics_path.write_text(json.dumps(metrics, indent=2, default=str))
@@ -147,6 +160,9 @@ def main() -> int:
                     action="store_false")
     ap.add_argument("--maker-fee-rate", type=float, default=0.0002)
     ap.add_argument("--taker-fee-rate", type=float, default=0.0005)
+    ap.add_argument("--funding-path", default="data/funding_rates_full",
+                    help="Settlement-level funding files; synced with --sync-data "
+                         "and charged inside the backtest.")
     ap.add_argument("--sync-data", action="store_true",
                     help="Run download_daily_klines.py for the universe first "
                          "(daily cron mode). Off by default for fast reruns.")
@@ -177,6 +193,19 @@ def main() -> int:
         print(f"[sync] {' '.join(sync_cmd[:6])} ... ({len(universe)} symbols)",
               flush=True)
         rc = subprocess.run(sync_cmd, cwd=REPO_ROOT).returncode
+        if rc == 0:
+            # Funding settles inside the backtest now, so the settlement files
+            # must be as current as the bars.
+            fund_cmd = [
+                sys.executable,
+                str(REPO_ROOT / "scripts" / "tools" / "download_funding_rates.py"),
+                "--symbols", *universe,
+                "--out", args.funding_path,
+                "--network-wait", "0",
+            ]
+            print(f"[sync] funding → {args.funding_path} ({len(universe)} symbols)",
+                  file=sys.stderr, flush=True)
+            rc = subprocess.run(fund_cmd, cwd=REPO_ROOT).returncode
         if rc != 0:
             print(f"[sync] failed rc={rc}", file=sys.stderr)
             return rc
@@ -215,6 +244,7 @@ def main() -> int:
         "--initial-capital", str(args.initial_capital),
         "--maker-fee-rate", str(args.maker_fee_rate),
         "--taker-fee-rate", str(args.taker_fee_rate),
+        "--funding-path", args.funding_path,
         "--output-dir", str(out_dir),
         "--no-enforce-quality",
         "--no-enforce-governance",

@@ -67,17 +67,19 @@ def _load_universe(run_dir: Path) -> list[str]:
 
 DEFAULT_RUN_DIR = Path("archive")
 # metrics.json stores `sharpe` as the daily-resampled return series multiplied
-# by sqrt(252). The dashboard displays raw daily Sharpe everywhere, so we divide
-# the stored value by SQRT_252 at every formatting site below.
+# by sqrt(ANNUALIZATION_DAYS) (365; crypto trades every day). The dashboard
+# displays raw daily Sharpe everywhere, so we divide the stored value by
+# SQRT_ANN at every formatting site below.
 import math as _math
-SQRT_252 = _math.sqrt(252)
+from intraday.backtest.metrics import ANNUALIZATION_DAYS
+SQRT_ANN = _math.sqrt(ANNUALIZATION_DAYS)
 
 
 def _fmt_sharpe_daily(value: Any) -> str:
     """Display the daily (un-annualized) Sharpe.
 
-    Stored value is annualized = daily_mean/daily_std * sqrt(252); we divide
-    back by sqrt(252) before formatting so the dashboard shows raw daily.
+    Stored value is annualized = daily_mean/daily_std * sqrt(365); we divide
+    back by sqrt(365) before formatting so the dashboard shows raw daily.
     """
     if value is None:
         return "-"
@@ -87,7 +89,7 @@ def _fmt_sharpe_daily(value: Any) -> str:
         return "-"
     if v != v:  # NaN
         return "-"
-    return _fmt_num(v / SQRT_252)
+    return _fmt_num(v / SQRT_ANN)
 
 
 def _fmt_sharpe_annual(value: Any) -> str:
@@ -2235,7 +2237,7 @@ def _active_period_metrics(equity_path: str) -> dict:
     """Sharpe / total return / max DD / DD duration / window — active period only.
 
     Mirrors the engine's ``sharpe_daily_annualized`` (daily resample → mean/std
-    × √252) so the displayed Sharpe is comparable with metrics.json. Returns
+    × √365) so the displayed Sharpe is comparable with metrics.json. Returns
     an empty dict if the file is missing or never traded.
     """
     from intraday.backtest.metrics import sharpe_daily_annualized
@@ -2775,9 +2777,9 @@ def main() -> None:
                         if min_is_sharpe.value is not None:
                             is_sharpe = pd.to_numeric(view["is_sharpe"], errors="coerce")
                             # Filter input is in daily Sharpe; stored is_sharpe is
-                            # annualized (×sqrt(252)). Compare on annualized value
+                            # annualized (×sqrt(365)). Compare on annualized value
                             # so the user-entered daily threshold matches display.
-                            view = view[is_sharpe >= float(min_is_sharpe.value) * SQRT_252]
+                            view = view[is_sharpe >= float(min_is_sharpe.value) * SQRT_ANN]
                         if min_trades.value:
                             is_trades = pd.to_numeric(view["is_trades"], errors="coerce").fillna(0)
                             os_trades = pd.to_numeric(view["os_trades"], errors="coerce").fillna(0)

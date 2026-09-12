@@ -66,7 +66,7 @@ from intraday.composites._optim_helpers import (  # noqa: E402
 )
 
 
-ANNUAL_BARS = 252
+ANNUAL_BARS = 365  # crypto trades every calendar day
 
 
 def load_member_returns(run_id: str, alpha_ids: list[str], split: str) -> pd.DataFrame:
@@ -1122,7 +1122,7 @@ def run_lookback_sweep(run_id: str, threshold: float, cost_bps: float,
                 color=colors[i % len(colors)], label=p)
     ax.axhline(0.0, color="grey", linestyle=":", alpha=0.6)
     ax.set_xticks(lbs_used)
-    ax.set_xticklabels([f"{lb}d\n(~{lb/252:.1f}y)" for lb in lbs_used])
+    ax.set_xticklabels([f"{lb}d\n(~{lb/365:.1f}y)" for lb in lbs_used])
     ax.set_xlabel("Look-back window")
     ax.set_ylabel("Rolling-fit Full-period Sharpe (signed)")
     ax.set_title("Stage 4 — Look-back sensitivity (monthly rebalance, sign-aligned)")
@@ -1260,7 +1260,7 @@ def run_report(run_id: str, threshold: float, cost_bps: float,
 
     def _lb_table(lb_results: dict) -> str:
         lbs = sorted(lb_results.keys())
-        head_lbs = "".join(f"<th>{lb}d ({lb/252:.1f}y)</th>" for lb in lbs)
+        head_lbs = "".join(f"<th>{lb}d ({lb/365:.1f}y)</th>" for lb in lbs)
         head = f"<tr><th>Pipeline</th>{head_lbs}</tr>"
         body = []
         for p in ("Baseline (EQW all)", "Greedy Drop",
@@ -1470,7 +1470,7 @@ fee-only 컷 3개 AND ─ |pnl_bps_simple| &gt; 15 bps, trades &gt; 100, |MDD| &
 <h2>용어 (처음 보는 사람을 위해)</h2>
 <ul class="glossary">
 <li><code>Sharpe</code> 위험 조정 수익. 일일 평균 수익률 ÷ 일일 표준편차 ×
-  √252. 0.5 이하 = 약함, 1.0 = 실거래 적합, 2.0+ = 매우 우수 (보통 over-fit 신호).</li>
+  √365. 0.5 이하 = 약함, 1.0 = 실거래 적합, 2.0+ = 매우 우수 (보통 over-fit 신호).</li>
 <li><code>IS / OS</code> In-Sample / Out-of-Sample. 학습 구간 vs 검증 구간.
   IS는 {is_start} ~ {is_end.date()}, OS는 그 이후.</li>
 <li><code>sign-flip (부호 뒤집기)</code> 알파의 Sharpe가 음수면 신호를 반대로

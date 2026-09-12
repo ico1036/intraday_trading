@@ -254,8 +254,8 @@ def test_forward_status_session_fields_none_when_not_live(tmp_path):
 # --- Sharpe formatters: daily vs yearly ------------------------------------
 
 
-def test_fmt_sharpe_daily_divides_by_sqrt252():
-    """Stored value is annualized; daily formatter divides by sqrt(252)."""
+def test_fmt_sharpe_daily_divides_by_sqrt_annualization():
+    """Stored value is annualized; daily formatter divides by sqrt(365)."""
     import math
     import sys as _sys
     from pathlib import Path as _Path
@@ -264,9 +264,9 @@ def test_fmt_sharpe_daily_divides_by_sqrt252():
         _sys.path.insert(0, str(_here))
     from alpha_dashboard import _fmt_sharpe_daily, _fmt_sharpe_annual, _fmt_sharpe_pair
 
-    # 0.91 (annualized) → 0.91 / sqrt(252) ≈ 0.057
+    # 0.91 (annualized) → 0.91 / sqrt(365) ≈ 0.048
     daily = _fmt_sharpe_daily(0.91)
-    assert daily == f"{0.91 / math.sqrt(252):.3f}"
+    assert daily == f"{0.91 / math.sqrt(365):.3f}"
 
     yearly = _fmt_sharpe_annual(0.91)
     assert yearly == "0.910"

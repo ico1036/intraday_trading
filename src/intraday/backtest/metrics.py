@@ -1,7 +1,12 @@
 """Sharpe ratio utilities for consistent backtest metrics.
 
-Policy: prefer daily aggregation before annualization (sqrt(252)).
-If timestamps are unavailable, fallback to period Sharpe with sqrt(252).
+Policy: prefer daily aggregation before annualization.
+If timestamps are unavailable, fallback to period Sharpe with the same factor.
+
+Annualization uses 365 days: perpetual futures trade every calendar day, so a
+daily-resampled return series has ~365 observations a year. Metrics written
+before 2026-09-12 used 252 (a stock-market convention); multiply those by
+sqrt(365/252) = 1.2035 to compare. See ``ANNUALIZATION_DAYS``.
 """
 
 from __future__ import annotations
@@ -10,6 +15,9 @@ from typing import Iterable, Sequence
 
 import numpy as np
 import pandas as pd
+
+ANNUALIZATION_DAYS = 365
+ANNUALIZATION_SQRT = float(np.sqrt(ANNUALIZATION_DAYS))
 
 
 def sharpe_daily_annualized(
@@ -57,9 +65,9 @@ def sharpe_daily_annualized(
             std = daily.std(ddof=1)
             if std == 0 or pd.isna(std):
                 return 0.0
-            return float(daily.mean() / std * np.sqrt(252))
+            return float(daily.mean() / std * ANNUALIZATION_SQRT)
 
-    # Fallback: fallback to period Sharpe with annualization by business days assumption
+    # Fallback: period Sharpe, treating each equity point as one day
     rets = eq.pct_change().dropna()
     if len(rets) < 2:
         return 0.0
@@ -67,4 +75,4 @@ def sharpe_daily_annualized(
     std = rets.std(ddof=1)
     if std == 0 or pd.isna(std):
         return 0.0
-    return float(rets.mean() / std * np.sqrt(252))
+    return float(rets.mean() / std * ANNUALIZATION_SQRT)

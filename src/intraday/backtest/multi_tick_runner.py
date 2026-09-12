@@ -36,7 +36,8 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from ..backtest.metrics import sharpe_daily_annualized
+from ..backtest.metrics import ANNUALIZATION_DAYS, sharpe_daily_annualized
+from ..backtest.costs import SLIPPAGE_MODELS, SlippageState, slippage_bps
 
 from ..candle_builder import CandleBuilder, CandleType, Candle
 from ..client import AggTrade
@@ -277,6 +278,8 @@ class PortfolioTickBacktestRunner:
         fixed_aum_sizing: bool = False,
         max_portfolio_weight: float = 1.0,
         stale_bar_exit: int = 0,
+        funding_rates: dict[str, tuple[np.ndarray, np.ndarray]] | None = None,
+        slippage_model: str | None = None,
     ):
         self.strategy = strategy
         self.data_loaders = data_loaders
@@ -309,6 +312,29 @@ class PortfolioTickBacktestRunner:
         self.stale_bar_exit = int(stale_bar_exit)
         self._stale_symbols: set[str] = set()
         self._last_stale_sweep_ts: Optional[datetime] = None
+
+        # Funding. ``funding_rates[symbol] = (settlement_ts_ns, rate)`` sorted
+        # arrays. Each bar settles every payment whose timestamp falls in
+        # [previous window end, this bar's end) against the position held
+        # after that bar's open fill — a daily bar pays the day's 8h/4h/1h
+        # settlements. Long pays a positive rate, short receives it. None
+        # disables funding; a symbol absent from the dict is simply not
+        # charged, and ``funding_missing_symbols`` in metrics.json says so.
+        self._funding = funding_rates
+        self._funding_cursor: dict[str, int] = {}
+        self._funding_log: list[dict] = []
+        self._funding_total = 0.0
+
+        # Slippage. Every fill (except liquidation and the stale-symbol
+        # sweep, which model a settlement, not a trade) is moved against the
+        # trade by a half-spread tier on trailing 30-bar quote-volume plus a
+        # square-root impact term; see ``backtest/costs.py``. Sizing still
+        # uses the unslipped bar price; only the fill moves.
+        if slippage_model not in SLIPPAGE_MODELS:
+            raise ValueError(f"slippage_model must be one of {sorted(SLIPPAGE_MODELS)}")
+        self.slippage_model = slippage_model
+        self._slip_state: dict[str, SlippageState] = {}
+        self._slippage_total = 0.0
 
         if fee_rate is not None:
             self.maker_fee_rate = fee_rate
@@ -732,6 +758,108 @@ class PortfolioTickBacktestRunner:
         price = candle.low if pos.side == "LONG" else candle.high
         return self._liquidate_if_needed(symbol, price, candle.timestamp)
 
+    def _fill(
+        self,
+        symbol: str,
+        is_buy: bool,
+        qty: float,
+        price: float,
+    ) -> tuple[float, float]:
+        """Return ``(fill_price, slippage_cost)`` for trading ``qty`` at ``price``."""
+        if self.slippage_model is None or qty <= 0 or price <= 0:
+            return price, 0.0
+        st = self._slip_state.get(symbol)
+        bps = slippage_bps(self.slippage_model, st, price * qty)
+        if bps <= 0:
+            return price, 0.0
+        fill = price * (1.0 + bps / 1e4) if is_buy else price * (1.0 - bps / 1e4)
+        cost = abs(fill - price) * qty
+        self._slippage_total += cost
+        return fill, cost
+
+    def _slip_field(self, slip: float) -> dict:
+        """Trade-log column, present only when a slippage model is active so
+        runs without one keep the legacy row schema."""
+        return {"slippage": slip} if self.slippage_model is not None else {}
+
+    def _reset_cost_state(self) -> None:
+        self._funding_cursor = {}
+        self._funding_log = []
+        self._funding_total = 0.0
+        self._slip_state = {}
+        self._slippage_total = 0.0
+
+    def _record_bar_for_costs(self, symbol: str, candle: Candle) -> None:
+        """Feed the slippage state after the bar is done, so fills at the next
+        bar's open see only bars strictly before it."""
+        if self.slippage_model is None:
+            return
+        st = self._slip_state.get(symbol)
+        if st is None:
+            st = self._slip_state[symbol] = SlippageState()
+        st.push(candle.quote_volume, candle.close)
+
+    def _settle_funding(self, symbol: str, candle: Candle) -> None:
+        """Charge the settlements that fall inside this bar to the held position."""
+        if not self._funding:
+            return
+        fr = self._funding.get(symbol)
+        if fr is None:
+            return
+        ts_arr, rate_arr = fr
+        bar_start = int(pd.Timestamp(candle.timestamp).value)
+        if self.bar_type == CandleType.TIME:
+            bar_end = bar_start + int(self.bar_size * 1_000_000_000)
+        else:
+            bar_end = bar_start
+        win_start = self._funding_cursor.get(symbol, bar_start)
+        self._funding_cursor[symbol] = bar_end
+        i0 = int(np.searchsorted(ts_arr, win_start, side="left"))
+        i1 = int(np.searchsorted(ts_arr, bar_end, side="left"))
+        if i1 <= i0:
+            return
+        pos = self._position.get(symbol)
+        if pos is None or pos.quantity <= 0:
+            return
+        rate = float(rate_arr[i0:i1].sum())
+        mark = 0.5 * (candle.open + candle.close)
+        notional = pos.quantity * mark
+        payment = -rate * notional if pos.side == "LONG" else rate * notional
+        self._capital += payment
+        self._funding_total += payment
+        self._funding_log.append({
+            "timestamp": candle.timestamp,
+            "symbol": symbol,
+            "side": pos.side,
+            "rate": rate,
+            "settlements": i1 - i0,
+            "notional": notional,
+            "payment": payment,
+        })
+
+    def _close_all_final(self) -> None:
+        """Market out of everything at the last price when the run ends."""
+        for sym in list(self._position.all_symbols):
+            price = self._latest_prices.get(sym, 0)
+            if price <= 0:
+                continue
+            side = self._position.get_side(sym)
+            close_qty = self._position.get_qty(sym)
+            fill, slip = self._fill(sym, is_buy=(side == "SHORT"), qty=close_qty, price=price)
+            pnl = self._position.close(sym, fill, self._end_time or datetime.now())
+            fee = fill * close_qty * self.taker_fee_rate
+            self._capital += pnl - fee
+            self._trade_log.append({
+                "timestamp": self._end_time,
+                "symbol": sym,
+                "action": "CLOSE_FINAL",
+                "price": fill,
+                "quantity": close_qty,
+                "pnl": pnl,
+                "fee": fee,
+                **self._slip_field(slip),
+            })
+
     def _execute_order(
         self,
         symbol: str,
@@ -797,32 +925,36 @@ class PortfolioTickBacktestRunner:
             return
         if delta > 0:
             # Increase position by ``delta`` (BUY for LONG, SELL for SHORT).
-            notional = price * delta
+            fill, slip = self._fill(symbol, is_buy=(target_side == "LONG"), qty=delta, price=price)
+            notional = fill * delta
             fee = notional * fee_rate
             self._capital -= fee
-            self._position.add(symbol, price, delta, timestamp)
+            self._position.add(symbol, fill, delta, timestamp)
             self._trade_log.append({
                 "timestamp": timestamp,
                 "symbol": symbol,
                 "action": "OPEN_LONG" if target_side == "LONG" else "OPEN_SHORT",
-                "price": price,
+                "price": fill,
                 "quantity": delta,
                 "fee": fee,
+                **self._slip_field(slip),
             })
         else:
             # Reduce position by |delta| via partial close.
             close_qty = -delta
-            pnl = self._position.partial_close(symbol, price, close_qty, timestamp)
-            fee = price * close_qty * fee_rate
+            fill, slip = self._fill(symbol, is_buy=(target_side == "SHORT"), qty=close_qty, price=price)
+            pnl = self._position.partial_close(symbol, fill, close_qty, timestamp)
+            fee = fill * close_qty * fee_rate
             self._capital += pnl - fee
             self._trade_log.append({
                 "timestamp": timestamp,
                 "symbol": symbol,
                 "action": "CLOSE_LONG" if target_side == "LONG" else "CLOSE_SHORT",
-                "price": price,
+                "price": fill,
                 "pnl": pnl,
                 "quantity": close_qty,
                 "fee": fee,
+                **self._slip_field(slip),
             })
 
     def _open_at_target(
@@ -834,25 +966,27 @@ class PortfolioTickBacktestRunner:
         timestamp: datetime,
         fee_rate: float,
     ) -> None:
-        notional = price * target_qty
+        fill, slip = self._fill(symbol, is_buy=(target_side == "LONG"), qty=target_qty, price=price)
+        notional = fill * target_qty
         fee = notional * fee_rate
         self._capital -= fee
         self._position.open(
             symbol,
             target_side,
-            price,
+            fill,
             target_qty,
             timestamp,
-            liquidation_price=self._liquidation_price(price, target_side),
-            margin=self._margin(price, target_qty),
+            liquidation_price=self._liquidation_price(fill, target_side),
+            margin=self._margin(fill, target_qty),
         )
         self._trade_log.append({
             "timestamp": timestamp,
             "symbol": symbol,
             "action": "OPEN_LONG" if target_side == "LONG" else "OPEN_SHORT",
-            "price": price,
+            "price": fill,
             "quantity": target_qty,
             "fee": fee,
+            **self._slip_field(slip),
         })
 
     def _close_existing(
@@ -865,16 +999,19 @@ class PortfolioTickBacktestRunner:
     ) -> None:
         """Close a held position, realize PnL into capital, log the close."""
         close_qty = self._position.get_qty(symbol)
-        pnl = self._position.close(symbol, price, timestamp)
-        fee = price * close_qty * fee_rate
+        fill, slip = self._fill(symbol, is_buy=(current_side == "SHORT"), qty=close_qty, price=price)
+        pnl = self._position.close(symbol, fill, timestamp)
+        fee = fill * close_qty * fee_rate
         self._capital += pnl - fee
         self._trade_log.append({
             "timestamp": timestamp,
             "symbol": symbol,
             "action": "CLOSE_LONG" if current_side == "LONG" else "CLOSE_SHORT",
-            "price": price,
+            "price": fill,
+            "quantity": close_qty,
             "pnl": pnl,
             "fee": fee,
+            **self._slip_field(slip),
         })
 
     def _execute_strategy(
@@ -984,6 +1121,7 @@ class PortfolioTickBacktestRunner:
         self._last_stale_sweep_ts = None
         self._start_time = None
         self._end_time = None
+        self._reset_cost_state()
 
         for sym in self._symbols:
             self._candle_builders[sym]._reset()
@@ -1011,9 +1149,11 @@ class PortfolioTickBacktestRunner:
             if completed:
                 self._bar_counts[symbol] += 1
                 self._latest_candles[symbol] = completed
+                self._settle_funding(symbol, completed)
 
                 # 전략 실행
                 self._execute_strategy(symbol, completed, trade.timestamp)
+                self._record_bar_for_costs(symbol, completed)
 
             # 에쿼티 기록 (1000틱마다)
             if total_ticks % 1000 == 0:
@@ -1028,21 +1168,7 @@ class PortfolioTickBacktestRunner:
         self._logger.info("[PortfolioTick] Completed in %.2fs", elapsed)
 
         # 최종 청산
-        for sym in list(self._position.all_symbols):
-            price = self._latest_prices.get(sym, 0)
-            if price > 0:
-                close_qty = self._position.get_qty(sym)
-                pnl = self._position.close(sym, price, self._end_time or datetime.now())
-                fee = price * close_qty * self.taker_fee_rate
-                self._capital += pnl - fee
-                self._trade_log.append({
-                    "timestamp": self._end_time,
-                    "symbol": sym,
-                    "action": "CLOSE_FINAL",
-                    "price": price,
-                    "pnl": pnl,
-                    "fee": fee,
-                })
+        self._close_all_final()
 
         # 마지막 에쿼티 포인트
         self._equity_points.append(self._capital)
@@ -1087,6 +1213,7 @@ class PortfolioTickBacktestRunner:
         self._position = _MultiPosition()
         self._start_time = None
         self._end_time = None
+        self._reset_cost_state()
 
         total_bars = 0
         for symbol, candle in self._merge_bars(start_time, end_time):
@@ -1107,10 +1234,12 @@ class PortfolioTickBacktestRunner:
             self._latest_prices[symbol] = candle.open
             self._execute_pending_order(symbol, candle.open, candle.timestamp)
             self._liquidate_if_needed_in_bar(symbol, candle)
+            self._settle_funding(symbol, candle)
 
             self._latest_prices[symbol] = candle.close
             self._latest_candles[symbol] = candle
             self._execute_strategy(symbol, candle, candle.timestamp)
+            self._record_bar_for_costs(symbol, candle)
 
             unrealized = self._position.unrealized_pnl(self._latest_prices)
             self._equity_points.append(self._capital + unrealized)
@@ -1123,21 +1252,7 @@ class PortfolioTickBacktestRunner:
         self._logger.info("[PortfolioBars] Completed! Bars: %s, Symbols: %s", f"{total_bars:,}", len(self._symbols))
         self._logger.info("[PortfolioBars] Completed in %.2fs", elapsed)
 
-        for sym in list(self._position.all_symbols):
-            price = self._latest_prices.get(sym, 0)
-            if price > 0:
-                close_qty = self._position.get_qty(sym)
-                pnl = self._position.close(sym, price, self._end_time or datetime.now())
-                fee = price * close_qty * self.taker_fee_rate
-                self._capital += pnl - fee
-                self._trade_log.append({
-                    "timestamp": self._end_time,
-                    "symbol": sym,
-                    "action": "CLOSE_FINAL",
-                    "price": price,
-                    "pnl": pnl,
-                    "fee": fee,
-                })
+        self._close_all_final()
 
         self._equity_points.append(self._capital)
         if self._end_time is not None:
@@ -1235,8 +1350,28 @@ class PortfolioTickBacktestRunner:
         trades_df = pd.DataFrame(self._trade_log)
         if trades_df.empty:
             trades_df = pd.DataFrame(
-                columns=["timestamp", "symbol", "action", "price", "quantity", "pnl", "fee"]
+                columns=["timestamp", "symbol", "action", "price", "quantity", "pnl", "fee", "slippage"]
             )
+        if "slippage" not in trades_df.columns:
+            trades_df["slippage"] = 0.0
+        trades_df["slippage"] = trades_df["slippage"].fillna(0.0)
+        funding_df = pd.DataFrame(self._funding_log)
+        if funding_df.empty:
+            funding_df = pd.DataFrame(
+                columns=["timestamp", "symbol", "side", "rate", "settlements", "notional", "payment"]
+            )
+        funding_symbols = set(self._funding.keys()) if self._funding else set()
+        costs = {
+            "fees": float(trades_df["fee"].sum()) if len(trades_df) else 0.0,
+            "slippage": float(self._slippage_total),
+            "funding": float(self._funding_total),
+            "slippage_model": self.slippage_model,
+            "funding_applied": bool(self._funding),
+            "funding_missing_symbols": sorted(
+                s for s in self._symbols if s not in funding_symbols
+            ) if self._funding else list(self._symbols),
+            "funding_settlements": int(funding_df["settlements"].sum()) if len(funding_df) else 0,
+        }
 
         weights_df = pd.DataFrame(self._weight_events)
         if weights_df.empty:
@@ -1278,6 +1413,8 @@ class PortfolioTickBacktestRunner:
             "total_trades": result.total_trades,
             "win_rate": result.win_rate,
             "sharpe": result.sharpe_ratio,
+            "annualization_days": ANNUALIZATION_DAYS,
+            "costs": costs,
             "per_symbol": per_symbol,
             "validation_flags": [],
         }
@@ -1286,6 +1423,7 @@ class PortfolioTickBacktestRunner:
         (out / "backtest_report.md").write_text(result.summary())
         equity_df.to_parquet(out / "equity_curve.parquet", index=False)
         trades_df.to_parquet(out / "trades.parquet", index=False)
+        funding_df.to_parquet(out / "funding.parquet", index=False)
         weights_df.to_parquet(out / "weights.parquet", index=False)
         self._snapshot_strategy_source(out)
         return out

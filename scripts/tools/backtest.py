@@ -27,6 +27,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from intraday.backtest.multi_tick_runner import PortfolioTickBacktestRunner
 from intraday.candle_builder import CandleType
 from intraday.data.bar_loader import BarDataLoader
+from intraday.data.funding_loader import load_funding_rates
 from intraday.data.loader import TickDataLoader
 
 import shutil
@@ -149,6 +150,18 @@ def run_backtest(args: argparse.Namespace) -> dict[str, Any]:
         data_type=args.data_type,
     )
 
+    # Funding and slippage are on by default. Funding needs the settlement
+    # files; a symbol without one is run uncharged and listed in
+    # metrics.json["costs"]["funding_missing_symbols"].
+    funding_rates = None
+    if getattr(args, "funding", True):
+        funding_rates, missing = load_funding_rates(symbols, args.funding_path)
+        if missing:
+            print(f"[funding] no settlement file for {len(missing)} symbol(s): "
+                  f"{' '.join(missing[:8])}{' ...' if len(missing) > 8 else ''}",
+                  file=sys.stderr)
+    slippage_model = None if args.slippage == "none" else args.slippage
+
     runner = PortfolioTickBacktestRunner(
         strategy=strategy,
         data_loaders=loaders,
@@ -162,6 +175,8 @@ def run_backtest(args: argparse.Namespace) -> dict[str, Any]:
         fixed_aum_sizing=getattr(args, "fixed_aum_sizing", False),
         max_portfolio_weight=args.max_portfolio_weight,
         stale_bar_exit=getattr(args, "stale_bar_exit", 0),
+        funding_rates=funding_rates,
+        slippage_model=slippage_model,
     )
     result = runner.run(start_time=parse_dt(args.start), end_time=parse_dt(args.end))
     runner.save_report(output_dir)
@@ -504,7 +519,7 @@ def _compute_split_metrics(output_dir: Path, is_end_str: str | None) -> None:
         if str(_here) not in sys.path:
             sys.path.insert(0, str(_here))
         from alpha_dashboard_lib import compute_trade_stats  # noqa: E402
-        from intraday.backtest.metrics import sharpe_daily_annualized  # noqa: E402
+        from intraday.backtest.metrics import ANNUALIZATION_DAYS, sharpe_daily_annualized  # noqa: E402
     except Exception:
         return
 
@@ -534,12 +549,13 @@ def _compute_split_metrics(output_dir: Path, is_end_str: str | None) -> None:
                 cummax = eq["equity"].cummax()
                 dd = (eq["equity"] - cummax) / cummax.replace(0, _np.nan)
                 out["max_drawdown"] = float(dd.min()) if dd.notna().any() else 0.0
-                # Engine convention: daily-resample equity, then sqrt(252)
+                # Engine convention: daily-resample equity, then sqrt(365)
                 # annualise. Calling the same helper the runner uses keeps
                 # PoC IS-slice metrics consistent with single-period runs.
                 out["sharpe"] = sharpe_daily_annualized(
                     eq["equity"].tolist(), timestamps=eq["timestamp"].tolist()
                 )
+                out["annualization_days"] = ANNUALIZATION_DAYS
                 tr_val = out["total_return"]
                 mdd_val = out["max_drawdown"]
                 out["calmar"] = (
@@ -788,12 +804,18 @@ def _enforce_prefix_invariance(output_dir: Path, args: argparse.Namespace) -> di
             str(args.maker_fee_rate),
             "--taker-fee-rate",
             str(args.taker_fee_rate),
+            "--funding-path",
+            str(args.funding_path),
+            "--slippage",
+            str(args.slippage),
             "--output-dir",
             str(child_dir),
             "--no-enforce-quality",
             "--no-enforce-governance",
             "--json",
         ]
+        if not getattr(args, "funding", True):
+            cmd.append("--no-funding")
         if getattr(args, "fixed_aum_sizing", False):
             cmd.append("--fixed-aum-sizing")
         if getattr(args, "symbol_data_paths", ""):
@@ -957,6 +979,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--maker-fee-rate", type=float, default=0.0002)
     parser.add_argument("--taker-fee-rate", type=float, default=0.0005)
+    parser.add_argument(
+        "--funding-path", default="data/funding_rates_full",
+        help="Directory of <SYMBOL>.parquet settlement-level funding files.",
+    )
+    parser.add_argument(
+        "--no-funding", dest="funding", action="store_false",
+        help="Do not charge funding. Default charges every settlement inside "
+             "a bar to the position held after that bar's open fill.",
+    )
+    parser.set_defaults(funding=True)
+    parser.add_argument(
+        "--slippage", choices=["adv_tier", "none"], default="adv_tier",
+        help="Fill slippage model (default adv_tier: half-spread tier on "
+             "trailing 30-bar ADV plus sqrt impact; see backtest/costs.py).",
+    )
     parser.add_argument("--strategy-params", default="")
     parser.add_argument("--output-dir", required=True)
     parser.add_argument(
