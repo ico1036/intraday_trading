@@ -32,7 +32,7 @@ class XsFactorBase:
         max_weight: float = 0.20,
         concentration_pct: float = 0.10,
         reverse: bool = False,
-        stale_days: int = 0,
+        stale_days: int = 2,
         **_: Any,
     ):
         if not symbols:
@@ -48,8 +48,9 @@ class XsFactorBase:
         # on scoring a coin that stopped trading years ago. With stale_days=N
         # a symbol that has missed more than N consecutive daily commits is
         # dropped from the ranking and its history cleared, so it re-enters
-        # only after rebuilding a fresh window (a relisting). 0 disables the
-        # check, keeping archived runs reproducible.
+        # only after rebuilding a fresh window (a relisting). Default 2 so
+        # every factor strategy treats delisting the same way as the engine's
+        # stale-bar exit; 0 disables the check.
         self.stale_days = max(0, int(stale_days))
         self._missed: dict[str, int] = {s: 0 for s in self.symbols}
 

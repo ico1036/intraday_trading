@@ -808,6 +808,8 @@ def _enforce_prefix_invariance(output_dir: Path, args: argparse.Namespace) -> di
             str(args.funding_path),
             "--slippage",
             str(args.slippage),
+            "--stale-bar-exit",
+            str(getattr(args, "stale_bar_exit", 2)),
             "--output-dir",
             str(child_dir),
             "--no-enforce-quality",
@@ -965,12 +967,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--leverage", type=int, default=1)
     parser.add_argument("--max-portfolio-weight", type=float, default=1.0)
     parser.add_argument(
-        "--stale-bar-exit", type=int, default=0,
+        "--stale-bar-exit", type=int, default=2,
         help="Retire a symbol whose newest bar is more than N bar-intervals "
              "old: drop it from the strategy panel and force-close any "
-             "position at its last price (CLOSE_STALE). Models delisting. "
-             "0 (default) keeps the legacy behaviour so archived runs stay "
-             "reproducible. TIME bars only.",
+             "position at its last price (CLOSE_STALE). Models delisting "
+             "and is on by default (2) so every strategy is treated the "
+             "same; 0 disables it. TIME bars only.",
     )
     parser.add_argument(
         "--fixed-aum-sizing", action="store_true",
