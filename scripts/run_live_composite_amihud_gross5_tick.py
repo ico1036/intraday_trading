@@ -344,7 +344,7 @@ def _run_composite_forward(
 
     manifest = {
         "composite_id": COMPOSITE_ID,
-        "run_id": args.run_id,
+        "run_id": run_dir.name,
         "run_type": "forward",
         "source": "child_forward_weights",
         "children": [
