@@ -29,6 +29,7 @@ ARCHIVE = REPO / "archive"
 BACKTEST = REPO / "scripts" / "tools" / "backtest.py"
 
 RUN_ID = "run_2026_05_full531_rerun_backtests"
+DATA_PATH = "data/futures_klines_daily"  # overridden by --data-path
 COMPOSITE_ID = "hierarchical_amihud_quality_corr095_gross5_weight_composite_v1"
 CHILDREN: list[tuple[str, float, float]] = [
     ("xs_factor_amihud60d_fwd_c10", 0.10, 0.20),
@@ -106,7 +107,7 @@ def _run_child_forward(
         "--data-type",
         "bars",
         "--data-path",
-        "data/futures_klines_daily",
+        DATA_PATH,
         "--bar-type",
         "TIME",
         "--bar-size",
@@ -308,7 +309,7 @@ def _run_composite_forward(
         "--data-type",
         "bars",
         "--data-path",
-        "data/futures_klines_daily",
+        DATA_PATH,
         "--bar-type",
         "TIME",
         "--bar-size",
@@ -341,7 +342,7 @@ def _run_composite_forward(
 
     manifest = {
         "composite_id": COMPOSITE_ID,
-        "run_id": RUN_ID,
+        "run_id": args.run_id,
         "run_type": "forward",
         "source": "child_forward_weights",
         "children": [
@@ -359,6 +360,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--as-of", required=True)
     parser.add_argument("--run-id", default=RUN_ID)
+    parser.add_argument("--data-path", default="data/futures_klines_daily",
+                        help="Daily kline root; the point-in-time run uses data/futures_klines_daily_pit.")
     parser.add_argument("--target-gross", type=float, default=5.0)
     parser.add_argument("--sync-data", action="store_true")
     args = parser.parse_args(argv)
@@ -366,7 +369,7 @@ def main(argv: list[str] | None = None) -> int:
     run_dir = ARCHIVE / args.run_id
     splits = _read_json(run_dir / "splits.json")
     requested = [s.upper() for s in splits["universe"]]
-    universe = [s for s in requested if (REPO / "data" / "futures_klines_daily" / s).exists()]
+    universe = [s for s in requested if (REPO / DATA_PATH / s).exists()]
     if args.sync_data:
         _sync_data(universe, args.as_of)
 
