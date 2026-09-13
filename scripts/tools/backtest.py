@@ -203,7 +203,11 @@ def run_backtest(args: argparse.Namespace) -> dict[str, Any]:
         "per_symbol": result.get_symbol_breakdown(),
     }
 
-    prefix_report = _enforce_prefix_invariance(output_dir, args)
+    if getattr(args, "prefix_check", True):
+        prefix_report = _enforce_prefix_invariance(output_dir, args)
+    else:
+        prefix_report = {"ok": True, "kept": True, "enforced": False, "skipped": True,
+                         "reason": "disabled with --no-prefix-check"}
 
     quality_report = _enforce_quality_gates(output_dir, enforce=args.enforce_quality)
 
@@ -996,6 +1000,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Fill slippage model (default adv_tier: half-spread tier on "
              "trailing 30-bar ADV plus sqrt impact; see backtest/costs.py).",
     )
+    parser.add_argument(
+        "--no-prefix-check", dest="prefix_check", action="store_false",
+        help="Skip the truncation (prefix-invariance) child run. It doubles "
+             "wall time; keep it on when freezing a strategy, skip it when "
+             "replaying an unchanged one.",
+    )
+    parser.set_defaults(prefix_check=True)
     parser.add_argument("--strategy-params", default="")
     parser.add_argument("--output-dir", required=True)
     parser.add_argument(

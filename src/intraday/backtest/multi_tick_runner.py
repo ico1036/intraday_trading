@@ -149,6 +149,9 @@ class _MultiPosition:
 
     def __init__(self):
         self._positions: dict[str, _PositionInfo] = {}
+        # Bumped on every mutation so the runner can cache the panel view
+        # of positions instead of rebuilding it on every bar event.
+        self.version = 0
 
     def open(
         self,
@@ -169,11 +172,13 @@ class _MultiPosition:
             liquidation_price=liquidation_price,
             margin=margin,
         )
+        self.version += 1
 
     def close(self, symbol: str, price: float, ts: datetime) -> float:
         if symbol not in self._positions:
             return 0.0
         pos = self._positions.pop(symbol)
+        self.version += 1
         if pos.side == "LONG":
             return (price - pos.entry_price) * pos.quantity
         return (pos.entry_price - price) * pos.quantity
@@ -196,6 +201,7 @@ class _MultiPosition:
             self._positions.pop(symbol)
         else:
             pos.quantity = remaining
+        self.version += 1
         return pnl
 
     def add(self, symbol: str, price: float, qty: float, ts: datetime) -> None:
@@ -207,6 +213,7 @@ class _MultiPosition:
         new_qty = pos.quantity + qty
         pos.entry_price = (pos.entry_price * pos.quantity + price * qty) / new_qty
         pos.quantity = new_qty
+        self.version += 1
 
     def has(self, symbol: str) -> bool:
         return symbol in self._positions
@@ -351,8 +358,11 @@ class PortfolioTickBacktestRunner:
             sym: CandleBuilder(bar_type, bar_size) for sym in self._symbols
         }
 
-        # 심볼별 최신 캔들 (패널 구성용)
+        # 심볼별 최신 캔들 (패널 구성용) + 증분 패널/포지션 캐시
         self._latest_candles: dict[str, Candle] = {}
+        self._panel: dict[str, dict] = {}
+        self._positions_cache: dict = {}
+        self._positions_cache_version = -1
 
         # 심볼별 최신 가격
         self._latest_prices: dict[str, float] = {}
@@ -487,27 +497,45 @@ class PortfolioTickBacktestRunner:
 
         return 0
 
+    @staticmethod
+    def _panel_row(candle: Candle) -> dict:
+        return {
+            "timestamp": candle.timestamp,
+            "open": candle.open,
+            "high": candle.high,
+            "low": candle.low,
+            "close": candle.close,
+            "volume": candle.volume,
+            "quote_volume": candle.quote_volume,
+            "trade_count": candle.trade_count,
+            "buy_volume": candle.buy_volume,
+            "sell_volume": candle.sell_volume,
+            "vwap": candle.vwap,
+            "volume_imbalance": candle.volume_imbalance,
+        }
+
+    def _set_latest_candle(self, symbol: str, candle: Candle) -> None:
+        """Record a completed bar and refresh that symbol's panel row.
+
+        The panel used to be rebuilt from every symbol's latest candle on
+        every bar event: 641 rows x 641 events a day on the point-in-time
+        universe, which was most of the engine's run time. It is now kept
+        incrementally; strategies must treat it as read-only.
+        """
+        self._latest_candles[symbol] = candle
+        if symbol not in self._stale_symbols:
+            self._panel[symbol] = self._panel_row(candle)
+
     def _build_panel(self) -> dict:
-        """현재 최신 캔들로 패널 데이터 구성"""
-        panel = {}
-        for sym, candle in self._latest_candles.items():
-            if sym in self._stale_symbols:
-                continue
-            panel[sym] = {
-                "timestamp": candle.timestamp,
-                "open": candle.open,
-                "high": candle.high,
-                "low": candle.low,
-                "close": candle.close,
-                "volume": candle.volume,
-                "quote_volume": candle.quote_volume,
-                "trade_count": candle.trade_count,
-                "buy_volume": candle.buy_volume,
-                "sell_volume": candle.sell_volume,
-                "vwap": candle.vwap,
-                "volume_imbalance": candle.volume_imbalance,
-            }
-        return panel
+        """현재 최신 캔들로 패널 데이터 구성 (incrementally maintained)."""
+        return self._panel
+
+    def _build_positions_dict(self) -> dict:
+        """현재 포지션을 패널 전달용 dict으로 (cached by position version)."""
+        if self._positions_cache_version != self._position.version:
+            self._positions_cache = self._position.to_dict()
+            self._positions_cache_version = self._position.version
+        return self._positions_cache
 
     def _sweep_stale_symbols(self, now: datetime) -> None:
         """Retire symbols that have stopped printing bars (delisting).
@@ -522,6 +550,7 @@ class PortfolioTickBacktestRunner:
             if sym in self._stale_symbols or candle.timestamp >= cutoff:
                 continue
             self._stale_symbols.add(sym)
+            self._panel.pop(sym, None)
             self._pending_orders.pop(sym, None)
             if not self._position.has(sym):
                 continue
@@ -541,10 +570,6 @@ class PortfolioTickBacktestRunner:
                 "pnl": pnl,
                 "fee": fee,
             })
-
-    def _build_positions_dict(self) -> dict:
-        """현재 포지션을 패널 전달용 dict으로"""
-        return self._position.to_dict()
 
     def _resolve_order_quantity(
         self,
@@ -1116,6 +1141,9 @@ class PortfolioTickBacktestRunner:
         for loader in self.data_loaders.values():
             self._total_ticks_target += self._estimate_loader_rows(loader, start_time, end_time)
         self._latest_candles = {}
+        self._panel = {}
+        self._positions_cache = {}
+        self._positions_cache_version = -1
         self._latest_prices = {}
         self._position = _MultiPosition()
         self._stale_symbols = set()
@@ -1149,7 +1177,7 @@ class PortfolioTickBacktestRunner:
 
             if completed:
                 self._bar_counts[symbol] += 1
-                self._latest_candles[symbol] = completed
+                self._set_latest_candle(symbol, completed)
                 self._settle_funding(symbol, completed)
 
                 # 전략 실행
@@ -1210,6 +1238,9 @@ class PortfolioTickBacktestRunner:
         for loader in self.data_loaders.values():
             self._total_ticks_target += self._estimate_loader_rows(loader, start_time, end_time)
         self._latest_candles = {}
+        self._panel = {}
+        self._positions_cache = {}
+        self._positions_cache_version = -1
         self._latest_prices = {}
         self._position = _MultiPosition()
         self._start_time = None
@@ -1238,7 +1269,7 @@ class PortfolioTickBacktestRunner:
             self._settle_funding(symbol, candle)
 
             self._latest_prices[symbol] = candle.close
-            self._latest_candles[symbol] = candle
+            self._set_latest_candle(symbol, candle)
             self._execute_strategy(symbol, candle, candle.timestamp)
             self._record_bar_for_costs(symbol, candle)
 

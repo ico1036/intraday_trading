@@ -245,6 +245,9 @@ def main() -> int:
         "--maker-fee-rate", str(args.maker_fee_rate),
         "--taker-fee-rate", str(args.taker_fee_rate),
         "--funding-path", args.funding_path,
+        # A frozen strategy was prefix-checked when it was archived; the
+        # daily replay skips the child run so the tick stays short.
+        "--no-prefix-check",
         "--output-dir", str(out_dir),
         "--no-enforce-quality",
         "--no-enforce-governance",
