@@ -25,10 +25,14 @@ the notes change its priorities.
   empty bodies. Every judgment that mattered today (funding is a cost,
   slippage is a cost, 365 not 252, do not tune on OS, structural fix not
   fine-tuning) was supplied in conversation because nothing resident held it.
-- Look-ahead defence is one instrument (a start-shift path test) where the
-  notes say two are needed. The truncation test that would have flagged the
-  placeholder-bar and same-day-count leaks found today does not exist as a
-  tool; I ran it by hand.
+- Both look-ahead instruments exist, which I got wrong in the first draft:
+  `backtest.py` runs a truncation check on every backtest (a child run to 80%
+  of the window, weight events compared at 1e-9), and `integrity_test.py` is
+  the start-shift test. The truncation check compares rebalance events rather
+  than held books, has no synthetic leaking strategy to prove it fires, emits
+  no non-coverage list, and cannot see a leak that lives in the data, which
+  is why the placeholder-bar problem got past it. It also doubles every
+  backtest's wall time.
 - Could today's session have run unattended? About two thirds of it, once
   the checks it produced exist as code. The remaining third was the owner
   choosing which question mattered and when to stop. The notes give a way to
@@ -210,28 +214,37 @@ truncation test at tolerance 1e-10 on a union grid and a start-shift test at
 a stated band, plus a synthetic strategy whose job is to be caught, plus a
 declared non-coverage list.
 
-The repo has the second instrument, `integrity_test.py`, which overlaps two
-windows and compares weights after 90 bars of warm-up. It has no truncation
-test. The truncation test is the one that catches the leaks found today:
+The repo has both instruments. `_enforce_prefix_invariance` in
+`backtest.py` reruns every backtest as a child ending at 80% of the window
+and compares weight events up to that cutoff on an outer join at 1e-9, so a
+row present in one run and absent in the other counts as a mismatch, which
+is the join lesson of the note applied to events rather than to held books.
+It runs unconditionally, which is where roughly half of every backtest's
+wall time goes, and its verdict is reported but only deletes the artefact
+when the quality gate is enforced. `integrity_test.py` is the start-shift
+test: two overlapping windows compared after 90 bars of warm-up. What the
+pair does not cover is exactly what surfaced today:
 
 - placeholder zero-volume bars after a delisting changed the ranking of
-  live names, found by comparing runs that ended on different dates;
+  live names. Both the parent and the child run see the same placeholder
+  bars, so a truncation check at fixed data cannot see it; it was found by
+  comparing runs on differently prepared data;
 - the research feature panel used the same-day settlement count, which is
   not observable at the open; it surfaced only when the filter was
   reimplemented for live trading and the timing had to be written down;
 - `AERGOUSDT` had no local data and would have raised at load; the forward
   runner now drops such symbols and `splits.json` declares them.
 
-I wrote a truncation and a no-lookahead test for the filter's feature panel
-(`tests/test_funding_filter.py`) and ran an extension-invariance check on
-`xs_volume_rank` by hand earlier in the session. Neither exists as a tool
-that runs on every alpha at IS time. There is also no linter for negative
-shifts, centred windows or backfill, no synthetic leaking strategy in the
-test suite, and no non-coverage list emitted with any verdict. The note's
-join lesson (compare held positions on the union of dates, not rebalance
-instructions on the intersection) applies directly to how
-`integrity_test.py` builds its match rate; I did not verify which join it
-uses and list that in section 7.
+The feature panel of the filter has its own truncation and no-lookahead
+tests (`tests/test_funding_filter.py`) because it is built outside the
+engine. What is missing around the two instruments: a linter for negative
+shifts, centred windows and backfill; a synthetic leaking strategy in the
+test suite whose job is to be caught by the prefix check; a non-coverage
+list emitted with the verdict (data-level contamination, uniform
+contamination, hand-rolled forward slices); and a comparison of held books
+on a union grid rather than rebalance events, which is the form the note
+argues for. I did not verify which join `integrity_test.py` uses and list
+that in section 7.
 
 ## 3. Could today's session have run without the owner?
 
@@ -242,7 +255,7 @@ The session's substantive steps, classified by what decided them.
 | Is the live pipeline running | script check | no job for it; found by hand | yes, a heartbeat check is a script |
 | Survivorship: the 273 and 530 universes are biased | owner's question | no; `AGENT.md` forbids data fetching and no check compares the universe to listings | yes, as a universe audit against onboard and delivery dates |
 | Build the 641 point-in-time universe and rerun | mechanical once decided | no (forbidden surface) | yes, if universe construction is a sanctioned tool |
-| Delisting bugs in the engine (stale bars, placeholder bars) | truncation comparison | no truncation test exists | yes, P5 |
+| Delisting bugs in the engine (stale bars, placeholder bars) | comparing runs on differently prepared data | the prefix check runs but sees the same data in both runs | partly; a data-preparation audit, not the prefix check, is what catches it |
 | Is the strategy deployable with real money | owner's question | the loop never asks; it reports IS Sharpe | partly: the cost checklist forces the question "which costs are missing" |
 | Funding was never modelled | reading the engine with the checklist in mind | no; documents said cost assumptions were fixed, and the engine had none | yes, P1 and P3 make this a refusal to report, not a discovery |
 | Why negative funding is a fat tail; onset versus continuation | dialogue | no mechanism originates this | no; a claim card can hold it once someone has it |
@@ -301,15 +314,17 @@ format and the two scripts that validate card presence and ledger schema; no
 script judges content. Verification: an attempt without a card is refused by
 `backtest.py` pre-flight.
 
-P5. Two look-ahead instruments and a non-coverage list. A truncation test at
-1e-10 on the union grid of held positions, run at IS time for every alpha;
-the existing start-shift test with its band stated; a synthetic leaking
-strategy in the test suite that both must catch; an AST linter for negative
-shifts, centred windows, backfill, and manual weight shifts; and a printed
-list of what the checks do not cover (restatement-like data revisions,
-uniform contamination, hand-rolled forward slices). Effort: one to two
-sessions. Verification: the synthetic strategy is caught; the non-coverage
-list is asserted by a regression test.
+P5. Finish the two look-ahead instruments. Make the existing prefix check
+compare held books on the union grid of dates and symbols rather than
+rebalance events; make it opt-out so research reruns of unchanged strategies
+stop paying for it twice, and require it at freeze; state the start-shift
+test's band; add a synthetic leaking strategy to the test suite that the
+prefix check must catch; add an AST linter for negative shifts, centred
+windows, backfill, and manual weight shifts; and print a non-coverage list
+with every verdict (data-level contamination, uniform contamination,
+hand-rolled forward slices). Effort: one session. Verification: the
+synthetic strategy is caught; the non-coverage list is asserted by a
+regression test.
 
 P6. A map with two clocks. Reinstate a coverage map keyed on idea family,
 universe and horizon, with per-trial evaporation as in the note, and add a
