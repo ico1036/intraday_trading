@@ -1298,16 +1298,20 @@ class PortfolioTickBacktestRunner:
         elapsed = time.perf_counter() - self._wall_start_ts
         speed = total_ticks / elapsed if elapsed > 0 else 0.0
 
+        # The bar timestamp being processed, so a reader can tell where in
+        # the window the run is, not only how many events it has consumed.
+        at = self._end_time.strftime("%Y-%m-%d %H:%M") if self._end_time else "-"
         if self._total_ticks_target:
             pct = min(100.0, total_ticks / self._total_ticks_target * 100)
             remaining = self._total_ticks_target - total_ticks
             eta_sec = remaining / speed if speed > 0 else 0.0
             self._logger.info(
-                "[PortfolioTick] Progress: %.2f%% (%s/%s %s) | symbols=%d | speed=%d %s/s | eta=%s",
+                "[PortfolioTick] Progress: %.2f%% (%s/%s %s) | at=%s | symbols=%d | speed=%d %s/s | eta=%s",
                 pct,
                 f"{total_ticks:,}",
                 f"{self._total_ticks_target:,}",
                 unit,
+                at,
                 len(self._symbols),
                 int(speed),
                 unit,
@@ -1315,9 +1319,10 @@ class PortfolioTickBacktestRunner:
             )
         else:
             self._logger.info(
-                "[PortfolioTick] Progress: %s %s | symbols=%d | speed=%d %s/s",
+                "[PortfolioTick] Progress: %s %s | at=%s | symbols=%d | speed=%d %s/s",
                 f"{total_ticks:,}",
                 unit,
+                at,
                 len(self._symbols),
                 int(speed),
                 unit,
