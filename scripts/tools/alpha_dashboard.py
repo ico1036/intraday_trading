@@ -554,8 +554,14 @@ _INDEX_CACHE: dict[str, tuple[float, pd.DataFrame]] = {}
 _INDEX_CACHE_TTL_SEC = 60.0
 
 
+# Bump when load_index's row schema changes so the persistent parquet cache
+# under /tmp is rebuilt instead of served with missing or stale columns.
+_INDEX_SCHEMA_VERSION = 2
+
+
 def _detailed_signature(run_dir: Path) -> list[list]:
-    """Per-alpha (run, alpha, metrics.json mtime_ns). Detects any change."""
+    """Per-alpha (run, alpha, metrics.json mtime_ns, forward mtime_ns) plus
+    the row-schema version. Detects any change."""
     if (run_dir / "alphas").exists():
         run_dirs = [run_dir]
     else:
@@ -563,19 +569,24 @@ def _detailed_signature(run_dir: Path) -> list[list]:
             d for d in run_dir.iterdir()
             if d.is_dir() and d.name != "composites" and (d / "alphas").exists()
         )
-    sig: list[list] = []
+    # The row schema is part of the key: a code change that adds or fixes a
+    # column must not be served from a parquet built by the old code.
+    sig: list[list] = [["schema", _INDEX_SCHEMA_VERSION]]
     for r in run_dirs:
         for ad in sorted((r / "alphas").iterdir()):
             if not ad.is_dir():
                 continue
             # Cache key per layout: legacy uses is/metrics.json, flat
-            # uses the top-level metrics.json.
+            # uses the top-level metrics.json. The forward tick rewrites
+            # forward/metrics.json daily, so it is part of the key too.
             flat_m = ad / "metrics.json"
             legacy_m = ad / "is" / "metrics.json"
+            fwd_m = ad / "forward" / "metrics.json"
+            fwd_ns = fwd_m.stat().st_mtime_ns if fwd_m.exists() else 0
             if flat_m.exists() and not (ad / "is").is_dir():
-                sig.append([r.name, ad.name, flat_m.stat().st_mtime_ns])
+                sig.append([r.name, ad.name, flat_m.stat().st_mtime_ns, fwd_ns])
             elif legacy_m.exists():
-                sig.append([r.name, ad.name, legacy_m.stat().st_mtime_ns])
+                sig.append([r.name, ad.name, legacy_m.stat().st_mtime_ns, fwd_ns])
     return sig
 
 
@@ -903,7 +914,22 @@ def load_index(run_dir: Path) -> pd.DataFrame:
             # Extended trade-level metrics (Tier 1+2). Same field for IS and OS.
             def _g(m, k):
                 return m.get(k) if m else None
+            # Execution costs written by the engine since 2026-09-12
+            # (fees, slippage, funding in USD on initial capital). Flat-layout
+            # runs carry one full-period block; legacy runs carry one per split.
+            # forward/metrics.json is read directly: the split reader would
+            # merge the flat run's full-period costs into it.
+            fwd_costs = None
+            try:
+                fwd_costs = json.loads((alpha_d / "forward" / "metrics.json").read_text()).get("costs")
+            except Exception:
+                pass
             extra = {
+                "is_costs": _g(is_m, "costs"),
+                "os_costs": _g(os_m, "costs"),
+                "forward_costs": fwd_costs if isinstance(fwd_costs, dict) else None,
+                "is_initial_capital": _g(is_m, "initial_capital"),
+                "costs_full_period": bool(_is_flat_layout(alpha_d)),
                 "is_t_stat": _g(is_m, "t_stat"),
                 "is_per_trade_sharpe": _g(is_m, "per_trade_sharpe"),
                 "is_calmar": _g(is_m, "calmar"),
@@ -3192,6 +3218,40 @@ def main() -> None:
                         f'</div>',
                         sanitize=False,
                     )
+
+            # ---------- Section: Costs ----------
+            # Fees, slippage and funding as charged by the engine. Before
+            # 2026-09-12 only fees existed, so a missing block means the
+            # artefact predates the cost model.
+            cost_rows = []
+            if selected.get("costs_full_period"):
+                cost_rows.append(("IS+OS", selected.get("is_costs")))
+            else:
+                cost_rows.append(("IS", selected.get("is_costs")))
+                cost_rows.append(("OS", selected.get("os_costs")))
+            cost_rows.append(("Forward", selected.get("forward_costs")))
+            cost_rows = [(lbl, c) for lbl, c in cost_rows if isinstance(c, dict)]
+            if cost_rows:
+                with ui.column().classes("section-panel w-full gap-2"):
+                    ui.label("Costs charged by the engine (USD on initial capital)").classes("section-title")
+                    for lbl, c in cost_rows:
+                        fees = c.get("fees"); slip = c.get("slippage"); fund = c.get("funding")
+                        net = -(fees or 0.0) - (slip or 0.0) + (fund or 0.0)
+                        cap = selected.get("is_initial_capital") or 10000.0
+                        with ui.row().classes("gap-2 w-full"):
+                            metric_card(f"{lbl} fees", f"-{fees:,.0f}" if fees is not None else "-", tone="negative" if fees else None)
+                            metric_card(f"{lbl} slippage", f"-{slip:,.0f}" if slip is not None else "-", tone="negative" if slip else None)
+                            metric_card(f"{lbl} funding", f"{fund:+,.0f}" if fund is not None else "-", tone=_tone_from_number(fund))
+                            metric_card(f"{lbl} net cost", f"{net:+,.0f} ({net / cap * 100:+.1f}%)", tone=_tone_from_number(net))
+                    model = cost_rows[0][1].get("slippage_model") or "none"
+                    # Lists come back as numpy arrays after the row passes
+                    # through a DataFrame; `or []` on an array raises.
+                    missing = cost_rows[0][1].get("funding_missing_symbols")
+                    missing = list(missing) if missing is not None else []
+                    ui.label(
+                        f"slippage model: {model} · funding applied: {cost_rows[0][1].get('funding_applied')}"
+                        + (f" · {len(missing)} symbol(s) without funding data" if missing else "")
+                    ).classes("mini-value")
 
             # ---------- Section: Backtest details (collapsed) ----------
             # These three sections (Statistical Confidence / Distribution /
