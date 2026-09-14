@@ -32,6 +32,14 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
+from alpha_dashboard_lib import (  # noqa: E402
+    compare_align,
+    compare_corr,
+    compare_options,
+    compare_series_bundle,
+    compare_table_rows,
+)
+from alpha_compare_view import render_compare_launcher, render_compare_page  # noqa: E402
 from alpha_dashboard_lib import (  # noqa: E402  (path injection above)
     _downsample_frame as _lib_downsample_frame,
     _duration_days,
@@ -2710,6 +2718,26 @@ def main() -> None:
     def live_report_page():
         render_live_strategy_report(run_dir)
 
+    @ui.page("/compare")
+    def compare_page():
+        """Route: parse the query, assemble data through the lib, hand it to the view."""
+        add_styles()
+        render_top_nav()
+        q = ui.context.client.request.query_params
+        keys = [k for k in str(q.get("ids", "")).split(",") if k]
+        window = str(q.get("window", "os"))
+        basis = str(q.get("basis", "simple"))
+        include_btc = str(q.get("btc", "0")) == "1"
+        opts = compare_options(load_index(run_dir), discover_composites(run_dir))
+        bundle = compare_series_bundle(run_dir, keys, window, basis)
+        aligned = compare_align({k: v["returns"] for k, v in bundle.items()})
+        rows = compare_table_rows(bundle, aligned, basis) if not aligned.empty else []
+        corr = compare_corr(aligned) if not aligned.empty else pd.DataFrame()
+        btc = (_btc_comparison_series(str(aligned.index.min()), str(aligned.index.max()))
+               if include_btc and not aligned.empty else None)
+        render_compare_page(options=opts, keys=keys, window=window, basis=basis, include_btc=include_btc,
+                            bundle=bundle, aligned=aligned, rows=rows, corr=corr, btc=btc, x=_x)
+
     @ui.page("/")
     def page():
         add_styles()
@@ -2762,6 +2790,8 @@ def main() -> None:
                         with ui.card().classes("metric-card metric-card-muted"):
                             ui.label("Normal").classes("metric-label")
                             ui.label(str(norm_n)).classes("metric-value")
+
+                    render_compare_launcher(compare_options(df, composites))
 
                     with ui.row().classes("w-full items-end gap-3"):
                         search_input = ui.input("Search").props("clearable dense").classes("w-96")
@@ -3036,6 +3066,10 @@ def main() -> None:
                         ui.label("No composites found under archive/composites/.").classes("note-text")
                     else:
                         ui.label("Composite alphas — click a row to drill into members and weights.").classes("text-xs text-gray-500")
+                        render_compare_launcher(
+                            compare_options(state["df"], composites),
+                            preselect=[f"{c['run_id']}/composite/{c['dir_name']}" for c in composites[:4]],
+                        )
                         comp_rows = []
                         for c in composites:
                             comp_rows.append(

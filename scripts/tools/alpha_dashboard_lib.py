@@ -958,3 +958,226 @@ def forward_status(forward_dir: Path) -> dict:
             pass
 
     return result
+
+
+# ---------------------------------------------------------------------------
+# Compare view — data layer. Pure functions over archived artefacts so the
+# page code only renders. Windows: "is", "os", "full" (IS+OS) slice the
+# flat full-period artefacts by splits.json; "forward" reads forward/.
+# ---------------------------------------------------------------------------
+
+COMPARE_WINDOWS = ("is", "os", "full", "forward")
+COMPARE_BASES = ("simple", "compound")
+_ANNUAL_DAYS = 365.0
+
+
+def compare_item_dir(archive_root: Path, run_id: str, kind: str, item_id: str) -> Path:
+    sub = "composites" if kind == "composite" else "alphas"
+    return Path(archive_root) / run_id / sub / item_id
+
+
+def compare_window_bounds(splits: dict, window: str) -> tuple[pd.Timestamp | None, pd.Timestamp | None]:
+    is_w = splits.get("is") or {}
+    os_w = splits.get("os") or {}
+    if window == "is":
+        return pd.Timestamp(is_w["start"]), pd.Timestamp(is_w["end"])
+    if window == "os":
+        if not os_w:
+            return None, None
+        return pd.Timestamp(os_w["start"]), pd.Timestamp(os_w["end"])
+    if window == "full":
+        end = (os_w or is_w).get("end")
+        return pd.Timestamp(is_w["start"]), pd.Timestamp(end)
+    return None, None
+
+
+def _read_ts_frame(path: Path, columns: list[str] | None = None) -> pd.DataFrame:
+    if not path.exists():
+        return pd.DataFrame(columns=columns or [])
+    df = pd.read_parquet(path, columns=columns)
+    if "timestamp" in df.columns:
+        df["timestamp"] = pd.to_datetime(df["timestamp"])
+    return df
+
+
+def compare_daily_equity(item_dir: Path, window: str, splits: dict) -> pd.Series:
+    """Daily last-mark equity for ``window``; empty Series when unavailable."""
+    src = item_dir / "forward" if window == "forward" else item_dir
+    df = _read_ts_frame(src / "equity_curve.parquet", ["timestamp", "equity"])
+    if df.empty:
+        return pd.Series(dtype=float)
+    lo, hi = compare_window_bounds(splits, window)
+    if window != "forward":
+        if lo is None:
+            return pd.Series(dtype=float)
+        df = df[(df["timestamp"] >= lo) & (df["timestamp"] <= hi)]
+    if df.empty:
+        return pd.Series(dtype=float)
+    eq = df.set_index("timestamp")["equity"].astype(float).resample("D").last().dropna()
+    eq.name = item_dir.name
+    return eq
+
+
+def compare_capital_base(item_dir: Path, default: float = 10000.0) -> float:
+    """Notional base for the simple (%p of capital) basis: the run's initial capital."""
+    p = item_dir / "metrics.json"
+    try:
+        v = json.loads(p.read_text()).get("initial_capital")
+        return float(v) if v else default
+    except Exception:
+        return default
+
+
+def compare_daily_returns(eq: pd.Series, capital: float, basis: str) -> pd.Series:
+    if eq.empty or len(eq) < 2:
+        return pd.Series(dtype=float)
+    if basis == "compound":
+        return eq.pct_change().dropna()
+    return (eq.diff() / float(capital)).dropna()
+
+
+def compare_cumulative(returns: pd.Series, basis: str) -> pd.Series:
+    if returns.empty:
+        return pd.Series(dtype=float)
+    if basis == "compound":
+        return (1.0 + returns).cumprod() - 1.0
+    return returns.cumsum()
+
+
+def compare_metrics(returns: pd.Series, basis: str) -> dict[str, float | int | None]:
+    if returns.empty or len(returns) < 2:
+        return {"sharpe": None, "cagr": None, "mdd": None, "cum": None, "days": int(len(returns))}
+    cum = compare_cumulative(returns, basis)
+    if basis == "compound":
+        wealth = 1.0 + cum
+        mdd = float((wealth / wealth.cummax() - 1.0).min())
+        cagr = float((1.0 + cum.iloc[-1]) ** (_ANNUAL_DAYS / len(returns)) - 1.0)
+    else:
+        mdd = float((cum - cum.cummax()).min())
+        cagr = float(returns.mean() * _ANNUAL_DAYS)
+    sd = float(returns.std(ddof=1))
+    sharpe = float(returns.mean() / sd * np.sqrt(_ANNUAL_DAYS)) if sd > 0 else None
+    return {"sharpe": sharpe, "cagr": cagr, "mdd": mdd, "cum": float(cum.iloc[-1]), "days": int(len(returns))}
+
+
+def compare_window_costs(item_dir: Path, window: str, splits: dict) -> dict[str, float | int]:
+    """Fees, slippage, funding (USD) and closed trades inside ``window``."""
+    src = item_dir / "forward" if window == "forward" else item_dir
+    lo, hi = compare_window_bounds(splits, window)
+    out: dict[str, float | int] = {"fees": 0.0, "slippage": 0.0, "funding": 0.0, "trades": 0}
+    tr = _read_ts_frame(src / "trades.parquet")
+    if not tr.empty:
+        if window != "forward" and lo is not None:
+            tr = tr[(tr["timestamp"] >= lo) & (tr["timestamp"] <= hi)]
+        if "fee" in tr.columns:
+            out["fees"] = float(pd.to_numeric(tr["fee"], errors="coerce").fillna(0).sum())
+        if "slippage" in tr.columns:
+            out["slippage"] = float(pd.to_numeric(tr["slippage"], errors="coerce").fillna(0).sum())
+        if "pnl" in tr.columns:
+            out["trades"] = int(tr["pnl"].notna().sum())
+    fd = _read_ts_frame(src / "funding.parquet")
+    if not fd.empty and "payment" in fd.columns:
+        if window != "forward" and lo is not None:
+            fd = fd[(fd["timestamp"] >= lo) & (fd["timestamp"] <= hi)]
+        out["funding"] = float(fd["payment"].sum())
+    return out
+
+
+def compare_align(series: dict[str, pd.Series]) -> pd.DataFrame:
+    """Daily returns aligned on the common window (intersection of date ranges), NaN -> 0."""
+    frames = {k: v for k, v in series.items() if not v.empty}
+    if not frames:
+        return pd.DataFrame()
+    lo = max(v.index.min() for v in frames.values())
+    hi = min(v.index.max() for v in frames.values())
+    if lo > hi:
+        return pd.DataFrame()
+    df = pd.DataFrame({k: v[(v.index >= lo) & (v.index <= hi)] for k, v in frames.items()})
+    return df.sort_index().fillna(0.0)
+
+
+COMPARE_WINDOW_LABELS = {"is": "IS", "os": "OS", "full": "IS+OS", "forward": "Forward"}
+COMPARE_BASIS_LABELS = {"simple": "Simple (%p of capital)", "compound": "Compound"}
+
+
+def compare_options(df: pd.DataFrame, composites: list[dict[str, Any]]) -> dict[str, str]:
+    """value -> label for every alpha and composite in the index."""
+    opts: dict[str, str] = {}
+    if df is not None and not df.empty and {"run_id", "alpha_id"} <= set(df.columns):
+        for r in df[["run_id", "alpha_id"]].drop_duplicates().itertuples(index=False):
+            opts[f"{r.run_id}/alpha/{r.alpha_id}"] = f"{r.alpha_id}  ·  {r.run_id}"
+    for c in composites:
+        opts[f"{c['run_id']}/composite/{c['dir_name']}"] = f"{c['composite_id']}  ·  {c['run_id']}  (composite)"
+    return opts
+
+
+def parse_compare_key(key: str) -> tuple[str, str, str] | None:
+    parts = key.split("/", 2)
+    if len(parts) != 3 or parts[1] not in ("alpha", "composite"):
+        return None
+    return parts[0], parts[1], parts[2]
+
+
+def compare_url(keys: list[str], window: str, basis: str = "simple", btc: bool = False) -> str:
+    from urllib.parse import quote
+    return (
+        f"/compare?ids={quote(','.join(keys), safe=',/')}&window={window}&basis={basis}"
+        + ("&btc=1" if btc else "")
+    )
+
+
+def compare_series_bundle(archive_root: Path, keys: list[str], window: str, basis: str) -> dict[str, dict[str, Any]]:
+    """Per key: name, kind, run_id, daily returns, capital, window costs, and a
+    reason when the window has no data. Reads only archived artefacts."""
+    out: dict[str, dict[str, Any]] = {}
+    for key in keys:
+        parsed = parse_compare_key(key)
+        if parsed is None:
+            continue
+        run_id, kind, item_id = parsed
+        item_dir = compare_item_dir(archive_root, run_id, kind, item_id)
+        try:
+            splits = json.loads((Path(archive_root) / run_id / "splits.json").read_text())
+        except Exception:
+            splits = {}
+        eq = compare_daily_equity(item_dir, window, splits) if splits else pd.Series(dtype=float)
+        capital = compare_capital_base(item_dir)
+        rets = compare_daily_returns(eq, capital, basis)
+        out[key] = {
+            "name": item_id,
+            "kind": kind,
+            "run_id": run_id,
+            "returns": rets,
+            "capital": capital,
+            "costs": compare_window_costs(item_dir, window, splits) if not rets.empty else None,
+            "reason": None if not rets.empty else f"no {COMPARE_WINDOW_LABELS.get(window, window)} data",
+        }
+    return out
+
+
+def compare_table_rows(bundle: dict[str, dict[str, Any]], aligned: pd.DataFrame, basis: str) -> list[dict[str, Any]]:
+    """Metrics rows on the common window, formatted for display; adds the 1/N blend."""
+    rows: list[dict[str, Any]] = []
+    for k in aligned.columns:
+        v = bundle[k]
+        m = compare_metrics(aligned[k], basis)
+        c = v.get("costs") or {}
+        cap = float(v.get("capital") or 1.0)
+        rows.append({
+            "name": v["name"], "kind": v["kind"], "run": v["run_id"],
+            "sharpe": _fmt_num(m["sharpe"]), "cagr": _fmt_pct(m["cagr"]), "mdd": _fmt_pct(m["mdd"]),
+            "cum": _fmt_pct(m["cum"]), "days": m["days"], "trades": _fmt_int(c.get("trades")) if c else "-",
+            "fees": _fmt_pct(-c.get("fees", 0.0) / cap) if c else "-",
+            "slippage": _fmt_pct(-c.get("slippage", 0.0) / cap) if c else "-",
+            "funding": _fmt_pct(c.get("funding", 0.0) / cap) if c else "-",
+        })
+    if aligned.shape[1] >= 2:
+        mb = compare_metrics(aligned.mean(axis=1), basis)
+        rows.append({"name": "1/N blend of selection", "kind": "blend", "run": "", "sharpe": _fmt_num(mb["sharpe"]),
+                     "cagr": _fmt_pct(mb["cagr"]), "mdd": _fmt_pct(mb["mdd"]), "cum": _fmt_pct(mb["cum"]),
+                     "days": mb["days"], "trades": "-", "fees": "-", "slippage": "-", "funding": "-"})
+    return rows
+
+
+def compare_corr(aligned: pd.DataFrame) -> pd.DataFrame:
+    return aligned.corr() if aligned.shape[1] >= 2 else pd.DataFrame()
