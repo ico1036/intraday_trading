@@ -188,6 +188,10 @@ def main() -> int:
             "--end", args.as_of,
             "--force",
             "--max-failure-fraction", "0.01",
+            # Write into the directory this run reads from; the downloader's
+            # default is the survivor-only cache.
+            "--out", args.data_path,
+            "--drop-placeholder-tail",
             "--symbols", *universe,
         ]
         print(f"[sync] {' '.join(sync_cmd[:6])} ... ({len(universe)} symbols)",

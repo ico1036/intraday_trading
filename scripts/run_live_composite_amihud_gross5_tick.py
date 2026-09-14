@@ -68,6 +68,9 @@ def _sync_data(universe: list[str], as_of: str) -> None:
         "--force",
         "--max-failure-fraction",
         "0.01",
+        "--out",
+        DATA_PATH,
+        "--drop-placeholder-tail",
         "--symbols",
         *universe,
     ]
@@ -382,6 +385,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--target-gross", type=float, default=5.0)
     parser.add_argument("--sync-data", action="store_true")
     args = parser.parse_args(argv)
+    global DATA_PATH
+    DATA_PATH = args.data_path
 
     run_dir = ARCHIVE / args.run_id
     splits = _read_json(run_dir / "splits.json")

@@ -184,6 +184,23 @@ def save_by_year(df: pd.DataFrame, out_dir: Path, symbol: str) -> int:
     return written
 
 
+def drop_placeholder_tail(df: pd.DataFrame) -> pd.DataFrame:
+    """Drop the trailing run of bars with no volume and no trades.
+
+    After a delisting the API keeps returning a flat, zero-volume bar every
+    day at the settlement price. Left in place those bars keep a dead name
+    in every ranking (the point-in-time universe was built without them);
+    a daily sync must strip them again.
+    """
+    if df.empty:
+        return df
+    dead = (df["volume"].fillna(0) == 0) & (df["trade_count"].fillna(0) == 0)
+    if not bool(dead.iloc[-1]):
+        return df
+    last_real = (~dead).to_numpy().nonzero()[0]
+    return df.iloc[: int(last_real[-1]) + 1] if len(last_real) else df.iloc[0:0]
+
+
 def already_complete(out_dir: Path, symbol: str, years: range) -> bool:
     sym_dir = out_dir / symbol
     return all((sym_dir / f"{symbol}-1d-{y}.parquet").exists() for y in years)
@@ -199,6 +216,12 @@ def main(argv: list[str] | None = None) -> int:
                     help="path to splits.json — seeds universe + start (IS) + end (OS) for full reproduction")
     ap.add_argument("--limit", type=int, default=None, help="process at most N symbols")
     ap.add_argument("--force", action="store_true", help="re-download even if files exist")
+    ap.add_argument(
+        "--drop-placeholder-tail", action="store_true",
+        help="Strip the flat zero-volume bars the API returns after a delisting, "
+             "and remove year files left with no real bars. Use for the "
+             "point-in-time cache.",
+    )
     ap.add_argument(
         "--network-wait", type=float, default=NETWORK_WAIT_SECONDS,
         help="Seconds to wait for the Binance API to become reachable before "
@@ -258,6 +281,13 @@ def main(argv: list[str] | None = None) -> int:
         try:
             df = fetch_klines(sym, start_ms, end_ms)
             df = normalize(df, sym)
+            if args.drop_placeholder_tail:
+                df = drop_placeholder_tail(df)
+                kept_years = set(df["timestamp"].dt.year.tolist()) if len(df) else set()
+                for y in years:
+                    stale = out_dir / sym / f"{sym}-1d-{y}.parquet"
+                    if y not in kept_years and stale.exists():
+                        stale.unlink()
             rows = save_by_year(df, out_dir, sym)
             n_ok += 1
             print(f"[{i}/{len(symbols)}] {sym}: {rows} rows", file=sys.stderr)
