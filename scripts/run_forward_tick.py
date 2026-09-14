@@ -151,7 +151,7 @@ def main() -> int:
                     help="Drop artefacts before this timestamp. Default = "
                          "day after splits.json os.end so the forward curve "
                          "starts where OS ends (no overlap on chart).")
-    ap.add_argument("--data-path", default="data/futures_klines_daily",
+    ap.add_argument("--data-path", default="data/futures_klines_daily_pit",
                     help="Daily kline cache root.")
     ap.add_argument("--initial-capital", type=float, default=10000.0)
     ap.add_argument("--fixed-aum-sizing", action="store_true", default=True,

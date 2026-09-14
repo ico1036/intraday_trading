@@ -28,8 +28,8 @@ REPO = Path(__file__).resolve().parent.parent
 ARCHIVE = REPO / "archive"
 BACKTEST = REPO / "scripts" / "tools" / "backtest.py"
 
-RUN_ID = "run_2026_05_full531_rerun_backtests"
-DATA_PATH = "data/futures_klines_daily"  # overridden by --data-path
+RUN_ID = "run_2026_08_pit641"
+DATA_PATH = "data/futures_klines_daily_pit"  # overridden by --data-path
 COMPOSITE_ID = "hierarchical_amihud_quality_corr095_gross5_weight_composite_v1"
 CHILDREN: list[tuple[str, float, float]] = [
     ("xs_factor_amihud60d_fwd_c10", 0.10, 0.20),
@@ -201,7 +201,7 @@ def _combine_child_forwards(run_dir: Path, universe: list[str], target_gross: fl
 
 def _slice_forward_artifacts(out_dir: Path, forward_start: str) -> None:
     cutoff = pd.Timestamp(forward_start)
-    for name in ("equity_curve.parquet", "trades.parquet", "weights.parquet"):
+    for name in ("equity_curve.parquet", "trades.parquet", "weights.parquet", "funding.parquet"):
         path = out_dir / name
         if not path.exists():
             continue
@@ -250,6 +250,21 @@ def _rewrite_sliced_metrics(out_dir: Path) -> None:
             timestamps=equity["timestamp"].tolist(),
         )
     )
+
+    # Costs for the forward window only; the backtest wrote full-period totals.
+    if isinstance(metrics.get("costs"), dict):
+        costs = metrics["costs"]
+        if trades_path.exists():
+            tr = pd.read_parquet(trades_path)
+            if "fee" in tr.columns:
+                costs["fees"] = float(pd.to_numeric(tr["fee"], errors="coerce").fillna(0).sum())
+            if "slippage" in tr.columns:
+                costs["slippage"] = float(pd.to_numeric(tr["slippage"], errors="coerce").fillna(0).sum())
+        fd_path = out_dir / "funding.parquet"
+        if fd_path.exists():
+            fd = pd.read_parquet(fd_path)
+            costs["funding"] = float(fd["payment"].sum()) if len(fd) else 0.0
+            costs["funding_settlements"] = int(fd["settlements"].sum()) if len(fd) else 0
 
     trade_count = 0
     win_rate = metrics.get("win_rate", 0.0)
@@ -362,7 +377,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--as-of", required=True)
     parser.add_argument("--run-id", default=RUN_ID)
-    parser.add_argument("--data-path", default="data/futures_klines_daily",
+    parser.add_argument("--data-path", default="data/futures_klines_daily_pit",
                         help="Daily kline root; the point-in-time run uses data/futures_klines_daily_pit.")
     parser.add_argument("--target-gross", type=float, default=5.0)
     parser.add_argument("--sync-data", action="store_true")
