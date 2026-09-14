@@ -45,7 +45,7 @@ from ..candle_builder import CandleBuilder, CandleType, Candle
 from ..client import AggTrade
 from ..data.loader import TickDataLoader
 from ..paper_trader import PaperTrader
-from ..strategy import Strategy, MarketState, Order, Side, OrderType, PortfolioOrder
+from ..strategy import MarketState, Order, Side, OrderType, PortfolioOrder
 
 
 @dataclass

@@ -112,7 +112,9 @@ def test_invalid_weight_raises_on_the_decision_bar_instead_of_logging_nan():
     r = _runner(strat, _flat_loaders())
     with pytest.raises(ValueError, match="Invalid order weight"):
         r.run()
-    assert r._weight_events == []
+    # the valid leg was logged before the bad one raised; nothing NaN, nothing for BBB
+    assert [e["symbol"] for e in r._weight_events] == ["AAA"]
+    assert all(not math.isnan(e["target_weight"]) for e in r._weight_events)
 
 
 def test_order_ahead_of_first_bar_logs_its_weight_and_fills_on_that_bar():
