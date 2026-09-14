@@ -115,6 +115,12 @@ class MarketState:
     panel: Optional[dict] = None  # 크로스섹셔널 데이터 {symbol: {field: value}}
     positions: Optional[dict] = None  # 포트폴리오 포지션 {symbol: {side, qty, entry_price}}
 
+    # Batched call (one per timestamp, after every symbol's bar for that
+    # timestamp is in the panel). ``next_timestamp`` is when the returned
+    # orders fill, so a strategy that keys decisions by fill day uses it.
+    batch: bool = False
+    next_timestamp: Optional[datetime] = None
+
 
 class PortfolioOrder:
     """

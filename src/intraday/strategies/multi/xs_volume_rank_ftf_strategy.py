@@ -84,7 +84,11 @@ class XsVolumeRankFtfStrategy(XsVolumeRankStrategy):
 
         # The book for the day starting at state.timestamp; the filter sees
         # data through yesterday plus today's 00:00 settlement.
-        day = pd.Timestamp(state.timestamp).normalize()
+        # The filter predicts funding for the day the orders fill: the next
+        # timestamp under the batched loop, the current one under the legacy
+        # loop (which decides on the first bar of the new day).
+        fill_ts = state.next_timestamp if (state.batch and state.next_timestamp is not None) else state.timestamp
+        day = pd.Timestamp(fill_ts).normalize()
         blocked = self._get_filter().blocked(day, new_short)
         if blocked:
             self.blocked_log.append((day, len(blocked), len(new_short)))

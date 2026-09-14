@@ -1,6 +1,6 @@
 {
-  "metrics.json": "7399881e7ab08ad0b7415c4a284384436ba53eca9e2b28f5ee59c7c7983d7044",
-  "equity_curve.parquet": "2453655fa51ece14a7a7faa776dc5f822bf876b383d68c7724eb3417b2b762a1",
-  "trades.parquet": "75c80444d72151004388dea6be690c9a2f6cdbd364ca571fa2414bcfa339a433",
-  "weights.parquet": "9514d5a4685fdc43c7122c97571fd264fd0dcdd80418f49712ea6b7bdd8ab1ec"
+  "metrics.json": "ab0452c5ae98e1f7384439f302d7a58e24074f82b7bb69b0faeb2eb82d13057b",
+  "equity_curve.parquet": "9aedf3bf62045fc8be954d30138ce5c53c406a24bc3651f57a4168b0013e21e5",
+  "trades.parquet": "e8bb8f72378e6dc6a66105738f1a27eab00e1fc26084785cb318941819a9a1e7",
+  "weights.parquet": "9a5fa0c907660e1ba47b952539161bca5e221398f6cfb8e93ce820afc806bedc"
 }

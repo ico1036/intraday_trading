@@ -27,6 +27,10 @@ SOURCE_NOTES: list[str] = ["research/notes/xs_volume_rank.md"]
 class XsVolumeRankStrategy:
     """Daily long-top / short-bottom basket by quote_volume rank.
 
+    Batch-aware: under the batched engine loop ``generate_order`` is called
+    once per timestamp with the complete panel and returns the next day's
+    book directly. The per-symbol branch below is kept for the legacy loop.
+
     The framework calls ``generate_order`` once per (symbol, bar) event.
     Multiple symbols share the same daily timestamp, so the strategy is
     called many times per day, but with an incrementally-built panel
@@ -120,11 +124,36 @@ class XsVolumeRankStrategy:
         active = {s: o for s, o in orders.items() if o is not None}
         return PortfolioOrder(orders=orders) if active else None
 
+    BATCH_HOOK = True
+
+    def _batch_quote_volumes(self, state: MarketState, current_date) -> dict[str, float]:
+        qv: dict[str, float] = {}
+        for s in self.symbols:
+            d = state.panel.get(s)
+            if d is None:
+                continue
+            sym_ts = d.get("timestamp")
+            if sym_ts is None or sym_ts.date() != current_date:
+                continue
+            q = d.get("quote_volume")
+            if q is not None and float(q) > 0:
+                qv[s] = float(q)
+        return qv
+
     def generate_order(self, state: MarketState) -> PortfolioOrder | None:
         if state.panel is None or state.timestamp is None:
             return None
 
         current_date = state.timestamp.date()
+
+        if state.batch:
+            # Complete panel for this day: decide tomorrow's book now.
+            self._bar += 1
+            self._current_date = current_date
+            if self._bar % self.rebalance_bars != 0:
+                return None
+            qv = self._batch_quote_volumes(state, current_date)
+            return self._build_orders(state, qv) if len(qv) >= 2 else None
 
         # On day transition: the just-completed _qv_today holds yesterday's
         # FULL accumulator. Emit orders based on it (decision once per day).
@@ -141,8 +170,12 @@ class XsVolumeRankStrategy:
             self._qv_today = {}
         self._current_date = current_date
 
-        # Accumulate current call's fresh entries into today's qv.
-        for s in self.symbols:
+        # Accumulate today's quote volume. A symbol's panel row only changes
+        # at that symbol's own callback, so reading the trigger symbol is
+        # enough and keeps each call O(1); the full scan is the fallback for
+        # callers that do not tag the trigger symbol.
+        symbols = (state.symbol,) if state.symbol else self.symbols
+        for s in symbols:
             d = state.panel.get(s)
             if d is None:
                 continue

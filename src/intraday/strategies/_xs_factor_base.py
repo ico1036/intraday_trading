@@ -163,22 +163,9 @@ class XsFactorBase:
         active = {s: o for s, o in orders.items() if o is not None}
         return PortfolioOrder(orders=orders) if active else None
 
-    def generate_order(self, state: MarketState) -> PortfolioOrder | None:
-        if state.panel is None or state.timestamp is None:
-            return None
+    BATCH_HOOK = True
 
-        current_date = state.timestamp.date()
-        orders = None
-        if self._current_date is not None and current_date != self._current_date:
-            self._commit_yesterday()
-            self._bar += 1
-            if self._bar % self.rebalance_bars == 0:
-                orders = self._build_orders(state)
-        self._current_date = current_date
-
-        # Only the trigger symbol's row is new on this callback (see
-        # xs_volume_rank); scanning every symbol made each call O(N).
-        symbols = (state.symbol,) if state.symbol and state.symbol in self._today else self.symbols
+    def _ingest(self, state: MarketState, symbols, current_date) -> None:
         for sym in symbols:
             data = state.panel.get(sym)
             if data is None:
@@ -196,4 +183,31 @@ class XsFactorBase:
                     continue
                 self._today[sym][f] = fv
 
+    def generate_order(self, state: MarketState) -> PortfolioOrder | None:
+        if state.panel is None or state.timestamp is None:
+            return None
+
+        current_date = state.timestamp.date()
+
+        if state.batch:
+            # Complete panel for this day: commit it to history and decide
+            # tomorrow's book now (the legacy loop did the same one call later).
+            self._ingest(state, self.symbols, current_date)
+            self._commit_yesterday()
+            self._current_date = current_date
+            self._bar += 1
+            return self._build_orders(state) if self._bar % self.rebalance_bars == 0 else None
+
+        orders = None
+        if self._current_date is not None and current_date != self._current_date:
+            self._commit_yesterday()
+            self._bar += 1
+            if self._bar % self.rebalance_bars == 0:
+                orders = self._build_orders(state)
+        self._current_date = current_date
+
+        # Only the trigger symbol's row is new on this callback (see
+        # xs_volume_rank); scanning every symbol made each call O(N).
+        symbols = (state.symbol,) if state.symbol and state.symbol in self._today else self.symbols
+        self._ingest(state, symbols, current_date)
         return orders

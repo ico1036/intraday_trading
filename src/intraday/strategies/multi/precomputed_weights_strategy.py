@@ -102,8 +102,12 @@ class PrecomputedWeightsStrategy:
             return Order(side=Side.BUY, quantity=0.0, order_type=OrderType.MARKET)
         return None
 
+    BATCH_HOOK = True
+
     def generate_order(self, state: MarketState) -> PortfolioOrder | None:
-        ts = getattr(state, "timestamp", None)
+        # Weight events are keyed by the timestamp they fill at; under the
+        # batched loop that is the next timestamp.
+        ts = state.next_timestamp if (getattr(state, "batch", False) and state.next_timestamp is not None) else getattr(state, "timestamp", None)
         if ts is None:
             return None
         ts_key = pd.Timestamp(ts)

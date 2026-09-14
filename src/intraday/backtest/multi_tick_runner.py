@@ -24,6 +24,7 @@ heapq.merge로 O(N log K) 병합 (K = 심볼 수).
 
 import heapq
 import inspect
+import itertools
 import json
 import shutil
 import subprocess
@@ -1180,6 +1181,8 @@ class PortfolioTickBacktestRunner:
     ) -> PortfolioTickResult:
         """백테스트 실행"""
         if self._uses_bar_loaders():
+            if getattr(self.strategy, "BATCH_HOOK", False):
+                return self._run_bars_batched(start_time=start_time, end_time=end_time)
             return self._run_bars(start_time=start_time, end_time=end_time)
 
         if not self._logger.handlers:
@@ -1281,12 +1284,138 @@ class PortfolioTickBacktestRunner:
         self._last_result = self._compute_result()
         return self._last_result
 
+    def _reset_run_state(self) -> None:
+        self._capital = self.initial_capital
+        self._equity_points = []
+        self._equity_timestamps = []
+        self._trade_log = []
+        self._weight_events = []
+        self._event_log = []
+        self._pending_orders = {}
+        self._last_result = None
+        self._tick_counts = {sym: 0 for sym in self._symbols}
+        self._bar_counts = {sym: 0 for sym in self._symbols}
+        self._wall_start_ts = time.perf_counter()
+        self._total_ticks_target = 0
+        for loader in self.data_loaders.values():
+            self._total_ticks_target += self._estimate_loader_rows(loader, None, None)
+        self._latest_candles = {}
+        self._panel = {}
+        self._positions_cache = {}
+        self._positions_cache_version = -1
+        self._latest_prices = {}
+        self._position = _MultiPosition()
+        self._stale_symbols = set()
+        self._last_stale_sweep_ts = None
+        self._start_time = None
+        self._end_time = None
+        self._reset_cost_state()
+
+    def _next_timestamp(self, ts: datetime) -> datetime | None:
+        if self.bar_type == CandleType.TIME:
+            return ts + timedelta(seconds=float(self.bar_size))
+        return None
+
+    def _execute_strategy_batch(self, ts: datetime) -> None:
+        """One strategy call per timestamp with the complete panel; the
+        returned orders fill at the next timestamp's open for every symbol."""
+        state = MarketState(
+            timestamp=ts,
+            mid_price=0.0, imbalance=0.0, spread=0.0, spread_bps=0.0,
+            best_bid=0.0, best_ask=0.0, best_bid_qty=0.0, best_ask_qty=0.0,
+            symbol=None,
+            panel=self._build_panel() if self._latest_candles else None,
+            positions=self._build_positions_dict() or None,
+            batch=True,
+            next_timestamp=self._next_timestamp(ts),
+        )
+        result = self.strategy.generate_order(state)
+        if result is None:
+            return
+        if isinstance(result, PortfolioOrder):
+            self._validate_weight_sum(result)
+            for sym, order in result.active_orders.items():
+                self._queue_order(sym, order, ts, source="portfolio_order")
+        elif isinstance(result, Order):
+            raise ValueError("a batch-hook strategy must return a PortfolioOrder")
+
+    def _run_bars_batched(
+        self,
+        start_time: Optional[datetime] = None,
+        end_time: Optional[datetime] = None,
+    ) -> PortfolioTickResult:
+        """Run from prebuilt bars, one step per timestamp.
+
+        Step order, fixed here and nowhere else:
+          1. fills: orders queued at the previous timestamp fill at this
+             bar's open, for every symbol that has a bar now;
+          2. inside the bar: liquidation, funding settlements, stale sweep;
+          3. close marks, panel, cost state;
+          4. one strategy call with the complete panel (orders fill next step);
+          5. one equity mark.
+        The strategy never sees a half-updated panel, no symbol's fill
+        depends on the order symbols are iterated in, and equity is marked
+        once per timestamp so drawdown and Sharpe share a basis.
+        """
+        if not self._logger.handlers:
+            logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
+        self._logger.info("[PortfolioBars] Starting batched portfolio backtest...")
+        self._logger.info("[PortfolioBars] Symbols: %s", ", ".join(self._symbols))
+        self._reset_run_state()
+
+        total_bars = 0
+        for ts, group in itertools.groupby(self._merge_bars(start_time, end_time), key=lambda sc: sc[1].timestamp):
+            bars = list(group)
+            if self._start_time is None:
+                self._start_time = ts
+            self._end_time = ts
+
+            # 1. fills at the open
+            for symbol, candle in bars:
+                self._stale_symbols.discard(symbol)
+                self._latest_prices[symbol] = candle.open
+                self._position.mark(symbol, candle.open)
+                self._execute_pending_order(symbol, candle.open, ts)
+            # 2. inside the bar
+            self._sweep_stale_symbols(ts)
+            for symbol, candle in bars:
+                self._liquidate_if_needed_in_bar(symbol, candle)
+                self._settle_funding(symbol, candle)
+            # 3. close marks, panel, cost state
+            for symbol, candle in bars:
+                self._tick_counts[symbol] += 1
+                self._bar_counts[symbol] += 1
+                self._latest_prices[symbol] = candle.close
+                self._position.mark(symbol, candle.close)
+                self._set_latest_candle(symbol, candle)
+                self._record_bar_for_costs(symbol, candle)
+            total_bars += len(bars)
+            # 4. decision
+            self._execute_strategy_batch(ts)
+            # 5. one equity mark
+            self._position.resync_unrealized()
+            self._equity_points.append(self._capital + self._position.unrealized_total())
+            self._equity_timestamps.append(ts)
+            if total_bars // 10000 != (total_bars - len(bars)) // 10000:
+                self._print_progress(total_bars, unit="bars")
+
+        elapsed = time.perf_counter() - self._wall_start_ts
+        self._logger.info("[PortfolioBars] Completed! Bars: %s, Symbols: %s", f"{total_bars:,}", len(self._symbols))
+        self._logger.info("[PortfolioBars] Completed in %.2fs", elapsed)
+        self._close_all_final()
+        self._equity_points.append(self._capital)
+        if self._end_time is not None:
+            self._equity_timestamps.append(self._end_time)
+        self._last_result = self._compute_result()
+        return self._last_result
+
     def _run_bars(
         self,
         start_time: Optional[datetime] = None,
         end_time: Optional[datetime] = None,
     ) -> PortfolioTickResult:
-        """Run from prebuilt bars. Signals use current bar; fills occur next bar open."""
+        """Legacy per-(symbol, bar) loop for strategies without BATCH_HOOK.
+        Signals use the current bar; fills occur at the symbol's next bar open."""
         if not self._logger.handlers:
             logging.basicConfig(
                 level=logging.INFO,
