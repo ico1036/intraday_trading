@@ -1,4 +1,4 @@
-from intraday.strategies.multi.orb_fade_basket_nz_z_strategy import ALPHA_CELL
+from intraday.strategies.multi.orb_fade_basket_nz_zscore_strategy import ALPHA_CELL
 
 
 def test_metadata():

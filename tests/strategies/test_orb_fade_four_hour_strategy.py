@@ -1,4 +1,4 @@
-from intraday.strategies.multi.orb_fade_4hour_strategy import ALPHA_CELL
+from intraday.strategies.multi.orb_fade_four_hour_strategy import ALPHA_CELL
 
 
 def test_metadata():

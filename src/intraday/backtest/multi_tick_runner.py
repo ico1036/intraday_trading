@@ -690,24 +690,25 @@ class PortfolioTickBacktestRunner:
         timestamp: datetime,
         source: str,
     ) -> None:
-        target_qty = 0.0
-        target_notional = 0.0
-        target_weight = 0.0
-        try:
-            qty = self._resolve_order_quantity(symbol, order, price)
-            sign = 1.0 if order.side == Side.BUY else -1.0
+        # An invalid weight is a strategy bug and raises here, on the bar the
+        # order was made; it is never logged as a NaN target.
+        qty = self._resolve_order_quantity(symbol, order, price)
+        sign = 1.0 if order.side == Side.BUY else -1.0
+        scaled_weight = self._target_weight(order)
+        if price > 0:
             target_qty = sign * qty
             target_notional = target_qty * price
-            scaled_weight = self._target_weight(order)
             target_weight = (
                 sign * scaled_weight
                 if scaled_weight is not None
                 else target_notional / self._capital if self._capital else 0.0
             )
-        except ValueError:
+        else:
+            # Ahead of the symbol's first bar: the target weight is known,
+            # the quantity is not until the fill.
             target_qty = float("nan")
             target_notional = float("nan")
-            target_weight = float("nan")
+            target_weight = sign * scaled_weight if scaled_weight is not None else 0.0
 
         self._weight_events.append({
             "timestamp": timestamp,
@@ -737,15 +738,13 @@ class PortfolioTickBacktestRunner:
         timestamp: datetime,
         source: str,
     ) -> None:
-        price = self._latest_prices.get(symbol, 0.0)
-        if price > 0:
-            self._record_weight_event(
-                symbol=symbol,
-                order=order,
-                price=price,
-                timestamp=timestamp,
-                source=source,
-            )
+        self._record_weight_event(
+            symbol=symbol,
+            order=order,
+            price=self._latest_prices.get(symbol, 0.0),
+            timestamp=timestamp,
+            source=source,
+        )
         self._pending_orders[symbol] = (order, timestamp)
 
     def _execute_pending_order(
@@ -777,22 +776,54 @@ class PortfolioTickBacktestRunner:
         self._pending_orders.pop(symbol, None)
         self._execute_order(symbol, order, price, timestamp)
 
-    def _validate_weight_sum(self, order: PortfolioOrder) -> None:
-        """Validate the gross target weight budget for a portfolio order."""
-        weighted_orders = [
-            o for o in order.active_orders.values()
-            if o.weight is not None
-        ]
-        if not weighted_orders:
-            return
+    def _sizing_base(self) -> float:
+        """Capital one unit of order weight is sized against: the constant
+        initial capital under fixed-AUM sizing, current capital otherwise,
+        scaled by position_size_pct and leverage."""
+        capital = self.initial_capital if self.fixed_aum_sizing else self._capital
+        return capital * self.position_size_pct * self.leverage
 
-        total_weight = sum(o.weight for o in weighted_orders if o.weight is not None)
-        # 0 또는 음수는 의도하지 않은 비중 설정으로 간주
-        if total_weight <= 0:
+    def _held_weight(self, symbol: str) -> float:
+        """A held position in order-weight units at the last price."""
+        pos = self._position.get(symbol)
+        if pos is None or pos.quantity <= 0:
+            return 0.0
+        price = self._latest_prices.get(symbol, 0.0)
+        base = self._sizing_base()
+        return abs(pos.quantity) * price / base if base > 0 and price > 0 else 0.0
+
+    def _order_weight(self, symbol: str, order: Order) -> float:
+        """An order's target in order-weight units: its weight, zero for a
+        close marker, or a quantity order's notional over the sizing base."""
+        if order.weight is not None:
+            return float(order.weight)
+        if order.quantity > 0:
+            base = self._sizing_base()
+            return order.quantity * self._latest_prices.get(symbol, 0.0) / base if base > 0 else 0.0
+        return 0.0
+
+    def _validate_weight_sum(self, order: PortfolioOrder) -> None:
+        """The book after this order must fit the gross budget.
+
+        Counted: the orders' targets plus every held position the order
+        leaves untouched, at the last price. An order may still reduce a
+        book that has drifted over budget, so it is rejected only when it
+        would leave the book both over budget and larger than before.
+        """
+        active = order.active_orders
+        weighted = [o.weight for o in active.values() if o.weight is not None]
+        if weighted and sum(weighted) <= 0:
             raise ValueError("All weighted orders have non-positive total weight")
-        if total_weight > self.max_portfolio_weight + 1e-12:
+        held = {sym: self._held_weight(sym) for sym in list(self._position.view)}
+        before = sum(held.values())
+        ordered = sum(self._order_weight(sym, o) for sym, o in active.items())
+        untouched = sum(w for sym, w in held.items() if sym not in active)
+        after = ordered + untouched
+        tolerance = 1e-9 * max(1.0, self.max_portfolio_weight)
+        if after > self.max_portfolio_weight + tolerance and after > before + tolerance:
             raise ValueError(
-                f"Sum of order weights exceeds {self.max_portfolio_weight:.6f}: {total_weight:.6f}"
+                f"Book gross after this order would be {after:.6f} > budget {self.max_portfolio_weight:.6f} "
+                f"(orders {ordered:.6f}, untouched positions {untouched:.6f})"
             )
 
     def _liquidation_price(self, entry_price: float, side: str) -> float | None:
