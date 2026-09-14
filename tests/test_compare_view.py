@@ -81,12 +81,14 @@ def test_bundle_rows_and_corr(archive: Path):
     keys = ["run_x/alpha/a1", "run_x/composite/c1", "run_x/alpha/missing", "bad-key"]
     b = L.compare_series_bundle(archive, keys, "os", "simple")
     assert set(b) == {"run_x/alpha/a1", "run_x/composite/c1", "run_x/alpha/missing"}
-    assert b["run_x/alpha/missing"]["reason"] == "no OS data" and b["run_x/alpha/missing"]["costs"] is None
+    assert b["run_x/alpha/missing"]["reason"] == "no OS data" and b["run_x/alpha/missing"]["returns"].empty
     aligned = L.compare_align({k: v["returns"] for k, v in b.items()})
     assert aligned.shape == (19, 2)
-    rows = L.compare_table_rows(b, aligned, "simple")
+    rows = L.compare_table_rows(b, aligned, "simple", "os")
     assert [r["name"] for r in rows] == ["a1", "c1", "1/N blend of selection"]
+    # costs narrowed to the common window: 19 aligned days of the 20-day OS
     assert rows[0]["fees"] == "-0.10%" and rows[0]["slippage"] == "-0.05%" and rows[0]["funding"] == "-0.02%"
+    assert L.compare_table_rows(b, aligned, "simple", "os", include_blend=False)[-1]["name"] == "c1"
     corr = L.compare_corr(aligned)
     assert corr.shape == (2, 2) and corr.iloc[0, 0] == pytest.approx(1.0)
 
@@ -97,3 +99,32 @@ def test_options_and_keys():
     assert set(opts) == {"r/alpha/a", "r/alpha/b", "r/composite/c"}
     assert L.parse_compare_key("r/composite/c") == ("r", "composite", "c") and L.parse_compare_key("nope") is None
     assert L.compare_url(["r/alpha/a"], "os", "simple", True) == "/compare?ids=r/alpha/a&window=os&basis=simple&btc=1"
+    assert L.compare_url(["r/alpha/a"], "all", blend=False).endswith("&blend=0")
+
+
+def test_all_window_stitches_on_returns_and_marks_boundaries(archive: Path):
+    splits = json.loads((archive / "run_x" / "splits.json").read_text())
+    d = L.compare_item_dir(archive, "run_x", "alpha", "a1")
+    r_all = L.compare_returns_for_window(d, "all", splits, 10000.0, "simple")
+    r_full = L.compare_returns_for_window(d, "full", splits, 10000.0, "simple")
+    r_fwd = L.compare_returns_for_window(d, "forward", splits, 10000.0, "simple")
+    # 39 full-period returns + 9 forward returns; the level jump between the two replays is not a return
+    assert len(r_all) == len(r_full) + len(r_fwd) == 48
+    assert r_all.index.is_monotonic_increasing and not r_all.index.duplicated().any()
+    assert r_all.loc["2024-02-11"] == pytest.approx(5.0 / 10000.0)
+    b = L.compare_boundaries(splits)
+    assert b["is_os"].date().isoformat() == "2024-01-21" and b["os_forward"].date().isoformat() == "2024-02-09"
+    bundle = L.compare_series_bundle(archive, ["run_x/alpha/a1"], "all", "simple")
+    aligned = L.compare_align({k: v["returns"] for k, v in bundle.items()})
+    lines = L.compare_boundary_lines(bundle, aligned, "all")
+    assert [lbl for _, lbl in lines] == ["IS | OS", "OS | Forward"]
+    assert [lbl for _, lbl in L.compare_boundary_lines(bundle, aligned, "os")] == []
+    costs = L.compare_window_costs(d, "all", splits)
+    assert costs["trades"] == 40 and costs["fees"] == pytest.approx(20.0)
+
+
+def test_daily_caches_key_on_mtime(archive: Path):
+    d = L.compare_item_dir(archive, "run_x", "alpha", "a1")
+    a = L._daily_equity(d); b = L._daily_equity(d)
+    assert a is b  # same file, same mtime -> cached object
+    assert L._daily_costs(d).shape[0] == 40

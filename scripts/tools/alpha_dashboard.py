@@ -34,6 +34,7 @@ if str(_HERE) not in sys.path:
 
 from alpha_dashboard_lib import (  # noqa: E402
     compare_align,
+    compare_boundary_lines,
     compare_corr,
     compare_options,
     compare_series_bundle,
@@ -2720,23 +2721,32 @@ def main() -> None:
 
     @ui.page("/compare")
     def compare_page():
-        """Route: parse the query, assemble data through the lib, hand it to the view."""
+        """Route: parse the query, build a compute callable from the lib, hand it to the view."""
         add_styles()
         render_top_nav()
         q = ui.context.client.request.query_params
         keys = [k for k in str(q.get("ids", "")).split(",") if k]
-        window = str(q.get("window", "os"))
-        basis = str(q.get("basis", "simple"))
-        include_btc = str(q.get("btc", "0")) == "1"
         opts = compare_options(load_index(run_dir), discover_composites(run_dir))
-        bundle = compare_series_bundle(run_dir, keys, window, basis)
-        aligned = compare_align({k: v["returns"] for k, v in bundle.items()})
-        rows = compare_table_rows(bundle, aligned, basis) if not aligned.empty else []
-        corr = compare_corr(aligned) if not aligned.empty else pd.DataFrame()
-        btc = (_btc_comparison_series(str(aligned.index.min()), str(aligned.index.max()))
-               if include_btc and not aligned.empty else None)
-        render_compare_page(options=opts, keys=keys, window=window, basis=basis, include_btc=include_btc,
-                            bundle=bundle, aligned=aligned, rows=rows, corr=corr, btc=btc, x=_x)
+
+        def compute(sel: list[str], window: str, basis: str, include_btc: bool) -> dict[str, Any]:
+            bundle = compare_series_bundle(run_dir, sel, window, basis)
+            aligned = compare_align({k: v["returns"] for k, v in bundle.items()})
+            empty = aligned.empty
+            return {
+                "bundle": bundle,
+                "aligned": aligned,
+                "rows": [] if empty else compare_table_rows(bundle, aligned, basis, window, include_blend=True),
+                "corr": pd.DataFrame() if empty else compare_corr(aligned),
+                "boundaries": [] if empty else compare_boundary_lines(bundle, aligned, window),
+                "btc": (_btc_comparison_series(str(aligned.index.min()), str(aligned.index.max()))
+                        if include_btc and not empty else None),
+            }
+
+        render_compare_page(
+            options=opts, keys=keys, window=str(q.get("window", "os")), basis=str(q.get("basis", "simple")),
+            include_btc=str(q.get("btc", "0")) == "1", include_blend=str(q.get("blend", "1")) != "0",
+            compute=compute, x=_x,
+        )
 
     @ui.page("/")
     def page():
