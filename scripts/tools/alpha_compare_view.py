@@ -196,6 +196,8 @@ def render_compare_page(*, options: dict[str, str], keys: list[str], window: str
                 if aligned.empty:
                     ui.label("Nothing to plot in this window.").classes("empty-state")
                     return
+                if data.get("note"):
+                    ui.label(data["note"]).classes("note-text")
                 with ui.column().classes("section-panel w-full gap-2"):
                     ui.plotly(compare_figure(aligned, names, kinds, state["basis"], data["btc"], state["window"],
                                              data["boundaries"], state["blend"], x)).classes("w-full chart-host")

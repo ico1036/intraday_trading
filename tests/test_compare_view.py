@@ -128,3 +128,12 @@ def test_daily_caches_key_on_mtime(archive: Path):
     a = L._daily_equity(d); b = L._daily_equity(d)
     assert a is b  # same file, same mtime -> cached object
     assert L._daily_costs(d).shape[0] == 40
+
+
+def test_window_note_names_the_limiting_strategy(archive: Path):
+    keys = ["run_x/alpha/a1", "run_x/composite/c1"]   # c1 has no forward run
+    b = L.compare_series_bundle(archive, keys, "all", "simple")
+    aligned = L.compare_align({k: v["returns"] for k, v in b.items()})
+    note = L.compare_window_note(b, aligned)
+    assert "end 2024-02-09 set by c1" in note and "start" not in note
+    assert L.compare_window_note(b, L.compare_align({"run_x/alpha/a1": b["run_x/alpha/a1"]["returns"]})) == ""

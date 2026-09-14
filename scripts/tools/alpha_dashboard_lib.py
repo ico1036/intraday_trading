@@ -1280,3 +1280,21 @@ def compare_boundary_lines(bundle: dict[str, dict[str, Any]], aligned: pd.DataFr
     if window == "all" and b.get("os_forward") is not None and lo < b["os_forward"] <= hi:
         out.append((b["os_forward"], "OS | Forward"))
     return out
+
+
+def compare_window_note(bundle: dict[str, dict[str, Any]], aligned: pd.DataFrame) -> str:
+    """Say which strategies shortened the common window, so a truncated axis
+    is never a silent surprise (a composite without a forward run, a young alpha)."""
+    if aligned.empty:
+        return ""
+    lo, hi = aligned.index.min(), aligned.index.max()
+    starts = {k: v["returns"].index.min() for k, v in bundle.items() if not v["returns"].empty}
+    ends = {k: v["returns"].index.max() for k, v in bundle.items() if not v["returns"].empty}
+    late = [bundle[k]["name"] for k, t in starts.items() if t == lo and t > min(starts.values())]
+    early = [bundle[k]["name"] for k, t in ends.items() if t == hi and t < max(ends.values())]
+    parts = []
+    if late:
+        parts.append(f"start {lo.date()} set by {', '.join(late)}")
+    if early:
+        parts.append(f"end {hi.date()} set by {', '.join(early)}")
+    return "Common window " + "; ".join(parts) + "." if parts else ""

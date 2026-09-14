@@ -39,6 +39,7 @@ from alpha_dashboard_lib import (  # noqa: E402
     compare_options,
     compare_series_bundle,
     compare_table_rows,
+    compare_window_note,
 )
 from alpha_compare_view import render_compare_launcher, render_compare_page  # noqa: E402
 from alpha_dashboard_lib import (  # noqa: E402  (path injection above)
@@ -2738,6 +2739,7 @@ def main() -> None:
                 "rows": [] if empty else compare_table_rows(bundle, aligned, basis, window, include_blend=True),
                 "corr": pd.DataFrame() if empty else compare_corr(aligned),
                 "boundaries": [] if empty else compare_boundary_lines(bundle, aligned, window),
+                "note": "" if empty else compare_window_note(bundle, aligned),
                 "btc": (_btc_comparison_series(str(aligned.index.min()), str(aligned.index.max()))
                         if include_btc and not empty else None),
             }
