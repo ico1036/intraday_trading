@@ -29,6 +29,12 @@ from intraday.candle_builder import CandleType
 from intraday.data.bar_loader import BarDataLoader
 from intraday.data.funding_loader import load_funding_rates
 from intraday.data.loader import TickDataLoader
+from intraday.backtest.provenance import (
+    COST_DEFAULTS,
+    class_to_module_name,
+    engine_fingerprint,
+    run_config_from_args,
+)
 
 import shutil
 
@@ -65,12 +71,7 @@ def parse_dt(value: str | None) -> datetime | None:
 
 
 def _class_to_module_name(class_name: str) -> str:
-    out = []
-    for idx, char in enumerate(class_name):
-        if char.isupper() and idx > 0 and not class_name[idx - 1].isupper():
-            out.append("_")
-        out.append(char.lower())
-    return "".join(out)
+    return class_to_module_name(class_name)
 
 
 def load_strategy_class(class_name: str) -> type:
@@ -116,6 +117,7 @@ def build_loaders(
 def run_backtest(args: argparse.Namespace) -> dict[str, Any]:
     symbols = [s.upper() for s in args.symbols]
     strategy_params = json.loads(args.strategy_params) if args.strategy_params else {}
+    cli_strategy_params = dict(strategy_params)  # as given, before the engine injects symbols
     symbol_data_paths = json.loads(args.symbol_data_paths) if args.symbol_data_paths else {}
 
     strategy_cls = load_strategy_class(args.strategy)
@@ -190,6 +192,7 @@ def run_backtest(args: argparse.Namespace) -> dict[str, Any]:
         output_dir, is_end=getattr(args, "is_end", None)
     )
     _compute_split_metrics(output_dir, getattr(args, "is_end", None))
+    _persist_run_config(output_dir, args, cli_strategy_params, symbol_data_paths)
 
     metrics = {
         "profit_factor": result.profit_factor,
@@ -292,6 +295,26 @@ def _snapshot_strategy_source(strategy_cls: type, output_dir: Path) -> None:
             metrics_path.write_text(json.dumps(metrics, indent=2, default=str))
     except Exception:
         pass
+
+
+def _persist_run_config(
+    output_dir: Path,
+    args: argparse.Namespace,
+    strategy_params: dict[str, Any],
+    symbol_data_paths: dict[str, str],
+) -> None:
+    """Record the engine inputs and engine fingerprint next to the metrics so
+    the run can be reproduced, and judged current, from the archive alone."""
+    metrics_path = output_dir / "metrics.json"
+    if not metrics_path.exists():
+        return
+    try:
+        metrics = json.loads(metrics_path.read_text())
+    except Exception:
+        return
+    metrics["run_config"] = run_config_from_args(args, strategy_params, symbol_data_paths)
+    metrics["engine_fingerprint"] = engine_fingerprint()
+    metrics_path.write_text(json.dumps(metrics, indent=2, default=str))
 
 
 def _existing_cells_in_run(run_dir: Path, *, exclude: Path | None = None) -> set[tuple]:
@@ -971,7 +994,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--leverage", type=int, default=1)
     parser.add_argument("--max-portfolio-weight", type=float, default=1.0)
     parser.add_argument(
-        "--stale-bar-exit", type=int, default=2,
+        "--stale-bar-exit", type=int, default=COST_DEFAULTS["stale_bar_exit"],
         help="Retire a symbol whose newest bar is more than N bar-intervals "
              "old: drop it from the strategy panel and force-close any "
              "position at its last price (CLOSE_STALE). Models delisting "
@@ -986,7 +1009,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--maker-fee-rate", type=float, default=0.0002)
     parser.add_argument("--taker-fee-rate", type=float, default=0.0005)
     parser.add_argument(
-        "--funding-path", default="data/funding_rates_full",
+        "--funding-path", default=COST_DEFAULTS["funding_path"],
         help="Directory of <SYMBOL>.parquet settlement-level funding files.",
     )
     parser.add_argument(
@@ -996,7 +1019,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.set_defaults(funding=True)
     parser.add_argument(
-        "--slippage", choices=["adv_tier", "none"], default="adv_tier",
+        "--slippage", choices=["adv_tier", "none"], default=COST_DEFAULTS["slippage"],
         help="Fill slippage model (default adv_tier: half-spread tier on "
              "trailing 30-bar ADV plus sqrt impact; see backtest/costs.py).",
     )

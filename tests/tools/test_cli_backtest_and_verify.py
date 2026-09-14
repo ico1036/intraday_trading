@@ -123,6 +123,12 @@ def test_backtest_cli_writes_artifacts_and_json(tmp_path):
     assert (out / "metrics.json").exists()
     assert (out / "strategy_source.py").exists()
     assert not (out / "events.parquet").exists()
+    metrics = json.loads((out / "metrics.json").read_text())
+    assert metrics["run_config"]["strategy"] == "AlphaTemplateStrategy"
+    assert metrics["run_config"]["strategy_params"]["max_weight"] == 0.4
+    assert "symbols" not in metrics["run_config"]["strategy_params"]  # injected by the engine, not a parameter
+    assert metrics["run_config"]["data_path"] == str(data_root)
+    assert len(metrics["engine_fingerprint"]) == 16
     assert not (out / "manifest.json").exists()
     assert not (out / "summary.json").exists()
     assert not (out / "summary.csv").exists()

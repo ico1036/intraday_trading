@@ -55,8 +55,19 @@ pass it to `--symbols` when running backtests.
 ## Composite alpha workflow (agentic exploration)
 
 Composites combine archived per-alpha weight streams into a single weight
-stream: `W_comp[t,s] = Σ_a c_a · W_a[t,s]`, row-L1 normalized. The composite
-is itself an alpha — own IS+OS backtest, manifest, dashboard card, live tick.
+stream: `W_comp[t,s] = Σ_a c_a · W_a[t,s]`, row-L1 normalized (or scaled to
+`TARGET_GROSS`). The composite is itself an alpha — own IS+OS backtest,
+manifest, dashboard card, live tick.
+
+Member weight files are not a thing to manage by hand. Every backtest
+records its `run_config` and `engine_fingerprint` in `metrics.json`; the
+composite runner checks each member against the current engine, its
+strategy source, and the run's data path, window, universe and cost
+defaults, and reruns a stale member from its archive before combining
+(`--rerun-members auto`, the default; `always` / `never` to force or skip).
+A member without `run_config` cannot be rerun: rerun it through the alpha
+workflow first. The replay runs on the run's `data_path` from
+`splits.json`.
 
 Mirror of the individual-alpha workflow: each attempt is one *combination
 idea* — selection rule + optimization rule together. Do NOT pre-enumerate
@@ -105,8 +116,9 @@ Eleven-step workflow (mirrors the individual-alpha 10-step):
    ```
    uv run python -m intraday.composites.<composite_id> --run-id <run_id> --no-os
    ```
-   Inspect `archive/<run_id>/composites/<composite_id>/is/` — Sharpe,
-   return, DD, max_row_l1.
+   Stale members are rerun first (watch the `[composite] rerun` lines).
+   Inspect `archive/<run_id>/composites/<composite_id>/metrics.json`
+   (`is` block) — Sharpe, return, DD, max_row_l1.
 7. Inspect `member_gross_daily.parquet` — no single member should dominate
    (>50% of total activity is a red flag for hidden concentration).
 8. Freeze the composite (the selection + coefficients are already locked in
@@ -131,10 +143,12 @@ the per-alpha windows exactly — `_runner.py` passes the same start/end to
 Look-ahead safeguards (enforced by `_runner.py`):
 - `alpha_index` passed to `select_members` / `member_weights` has all `os_*`
   columns dropped.
-- Selected list and coefficients are frozen in `manifest.json` before any OS
-  backtest runs.
+- Selected list, coefficients and member provenance are frozen in
+  `manifest.json` before the replay runs.
 - OS backtest is a pure replay of `weights.parquet`; the strategy code does
   not re-select or re-fit.
+- A composite rebalances whenever a member rebalances, so its turnover and
+  costs match the members'.
 
 Forbidden during composite work:
 - Reading `archive/<run>/alphas/<aid>/os/` or composite `os/` while iterating

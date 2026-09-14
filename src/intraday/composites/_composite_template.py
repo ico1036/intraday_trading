@@ -11,9 +11,11 @@ Usage (mirrors the per-alpha _alpha_template.py workflow):
 
        uv run python -m intraday.composites.<composite_id> --run-id run_2026_05_c
 
-   This builds ``archive/<run_id>/composites/<composite_id>/{weights.parquet,
-   manifest.json, members.csv}`` and runs IS + OS backtests via the standard
-   engine (``PrecomputedWeightsStrategy`` adapter).
+   This refreshes any member whose archive is stale (``--rerun-members
+   auto``; ``always`` / ``never`` to force or skip), builds
+   ``archive/<run_id>/composites/<composite_id>/{weights.parquet,
+   manifest.json, members.csv}`` and replays IS + OS through the standard
+   engine (``PrecomputedWeightsStrategy`` adapter) on the run's data path.
 
 Look-ahead safeguards (enforced by the runner):
 
@@ -27,15 +29,16 @@ Look-ahead safeguards (enforced by the runner):
 """
 from __future__ import annotations
 
-import argparse
-
 import pandas as pd
 
-from intraday.composites._runner import build_and_backtest
+from intraday.composites._runner import cli
 
 
 COMPOSITE_ID = "_template_do_not_use"
 COMPOSITION_NOTE = "describe_method_here"
+# None clips each row's gross to 1; a number scales every row to that gross
+# (a levered replay, run with --max-portfolio-weight set to match).
+TARGET_GROSS: float | None = None
 
 
 def select_members(alpha_index: pd.DataFrame) -> list[str]:
@@ -91,19 +94,7 @@ def member_weights(member_ids: list[str], alpha_index: pd.DataFrame) -> dict[str
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description=f"Build composite {COMPOSITE_ID}")
-    parser.add_argument("--run-id", required=True, help="archive subdir, e.g. run_2026_05_c")
-    parser.add_argument("--no-os", action="store_true", help="skip OS backtest")
-    args = parser.parse_args()
-
-    build_and_backtest(
-        composite_id=COMPOSITE_ID,
-        run_id=args.run_id,
-        select_members=select_members,
-        member_weights=member_weights,
-        composition_note=COMPOSITION_NOTE,
-        include_os=not args.no_os,
-    )
+    cli(COMPOSITE_ID, select_members, member_weights, COMPOSITION_NOTE, TARGET_GROSS)
 
 
 if __name__ == "__main__":

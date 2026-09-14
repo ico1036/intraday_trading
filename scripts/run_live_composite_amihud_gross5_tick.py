@@ -22,6 +22,7 @@ import numpy as np
 import pandas as pd
 
 from intraday.backtest.metrics import ANNUALIZATION_DAYS, sharpe_daily_annualized
+from intraday.composites._runner import combine_weights
 
 
 REPO = Path(__file__).resolve().parent.parent
@@ -38,7 +39,6 @@ CHILDREN: list[tuple[str, float, float]] = [
     ("xs_factor_amihud60d_fwd_c40", 0.40, 0.20),
     ("xs_factor_amihud60d_fwd_c50", 0.50, 0.20),
 ]
-GROSS_EPS = 1e-12
 
 
 def _read_json(path: Path) -> dict:
@@ -159,47 +159,11 @@ def _load_forward_panel(run_dir: Path, alpha_id: str, universe: list[str]) -> pd
     )
 
 
-def _panel_to_rebalance_rows(panel: pd.DataFrame, universe: list[str]) -> pd.DataFrame:
-    rows: list[tuple[pd.Timestamp, str, float]] = []
-    prev = panel[universe].shift().fillna(0.0) if not panel.empty else panel
-    for ts in panel.index:
-        cur = panel.loc[ts, universe]
-        was = prev.loc[ts, universe]
-        active_or_closing = (cur.abs() > GROSS_EPS) | (was.abs() > GROSS_EPS)
-        for symbol in cur.index[active_or_closing]:
-            rows.append((ts, symbol, float(cur.loc[symbol])))
-    return pd.DataFrame(rows, columns=["timestamp", "symbol", "target_weight"]).sort_values(
-        ["timestamp", "symbol"]
-    )
-
-
 def _combine_child_forwards(run_dir: Path, universe: list[str], target_gross: float) -> tuple[pd.DataFrame, dict]:
-    panels: dict[str, pd.DataFrame] = {
-        alpha_id: _load_forward_panel(run_dir, alpha_id, universe)
-        for alpha_id, _, _ in CHILDREN
-    }
-    idx = pd.DatetimeIndex(sorted(set().union(*[p.index for p in panels.values() if not p.empty])))
-    combined = pd.DataFrame(0.0, index=idx, columns=universe)
-    for alpha_id, _, coef in CHILDREN:
-        aligned = panels[alpha_id].reindex(idx).ffill().fillna(0.0)
-        combined = combined.add(aligned * coef, fill_value=0.0)
-    combined = combined[universe]
-    raw_l1 = combined.abs().sum(axis=1)
-    scale = pd.Series(target_gross, index=idx) / raw_l1.replace(0.0, np.nan)
-    scale = scale.replace([np.inf, -np.inf], np.nan).fillna(1.0)
-    combined = combined.mul(scale, axis=0)
-    final_l1 = combined.abs().sum(axis=1)
-    rows = _panel_to_rebalance_rows(combined, universe).reset_index(drop=True)
-    stats = {
-        "target_gross": float(target_gross),
-        "max_gross": float(target_gross),
-        "raw_mean_row_l1": float(raw_l1.mean()) if len(raw_l1) else 0.0,
-        "raw_max_row_l1": float(raw_l1.max()) if len(raw_l1) else 0.0,
-        "mean_row_l1": float(final_l1.mean()) if len(final_l1) else 0.0,
-        "max_row_l1": float(final_l1.max()) if len(final_l1) else 0.0,
-        "n_change_events": int(len(rows)),
-    }
-    return rows, stats
+    panels = {alpha_id: _load_forward_panel(run_dir, alpha_id, universe) for alpha_id, _, _ in CHILDREN}
+    coefficients = {alpha_id: coef for alpha_id, _, coef in CHILDREN}
+    rows, stats = combine_weights(panels, coefficients, universe, target_gross=target_gross)
+    return rows, {"target_gross": float(target_gross), "max_gross": float(target_gross), **stats}
 
 
 def _slice_forward_artifacts(out_dir: Path, forward_start: str) -> None:
