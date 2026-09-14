@@ -29,6 +29,7 @@ import shutil
 import subprocess
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from collections.abc import Mapping
 from typing import Optional, Iterator
 import logging
 import time
@@ -144,6 +145,30 @@ class _PositionInfo:
     margin: float = 0.0
 
 
+class _PositionsView(Mapping):
+    """Read-only, lazy view of the book for strategies: ``positions.get(sym)``
+    builds one small dict on demand instead of materialising all of them on
+    every bar event."""
+
+    __slots__ = ("_positions",)
+
+    def __init__(self, positions: dict[str, _PositionInfo]):
+        self._positions = positions
+
+    def __getitem__(self, symbol: str) -> dict:
+        pos = self._positions[symbol]
+        return {"side": pos.side, "qty": pos.quantity, "entry_price": pos.entry_price}
+
+    def __iter__(self):
+        return iter(self._positions)
+
+    def __len__(self) -> int:
+        return len(self._positions)
+
+    def __contains__(self, symbol: object) -> bool:
+        return symbol in self._positions
+
+
 class _MultiPosition:
     """심볼별 독립 포지션 관리"""
 
@@ -152,6 +177,53 @@ class _MultiPosition:
         # Bumped on every mutation so the runner can cache the panel view
         # of positions instead of rebuilding it on every bar event.
         self.version = 0
+        # Unrealized P&L kept incrementally: per-symbol value at its last
+        # mark, and the running total. Re-synced exactly once per timestamp.
+        self._mark: dict[str, float] = {}
+        self._unreal: dict[str, float] = {}
+        self._unreal_total = 0.0
+        self._view = _PositionsView(self._positions)
+
+    def _value(self, pos: _PositionInfo, price: float) -> float:
+        if pos.side == "LONG":
+            return (price - pos.entry_price) * pos.quantity
+        return (pos.entry_price - price) * pos.quantity
+
+    def _refresh(self, symbol: str) -> None:
+        """Recompute one symbol's unrealized value after a mutation."""
+        old = self._unreal.pop(symbol, 0.0)
+        pos = self._positions.get(symbol)
+        price = self._mark.get(symbol)
+        new = self._value(pos, price) if (pos is not None and price is not None) else 0.0
+        if new:
+            self._unreal[symbol] = new
+        self._unreal_total += new - old
+
+    def mark(self, symbol: str, price: float) -> None:
+        """Record the latest price for ``symbol`` and update its unrealized value."""
+        self._mark[symbol] = price
+        if symbol in self._positions:
+            self._refresh(symbol)
+
+    def unrealized_total(self) -> float:
+        return self._unreal_total
+
+    def resync_unrealized(self) -> None:
+        """Exact recomputation, called once per timestamp to stop float drift."""
+        self._unreal = {}
+        total = 0.0
+        for sym, pos in self._positions.items():
+            price = self._mark.get(sym)
+            if price is None:
+                continue
+            v = self._value(pos, price)
+            self._unreal[sym] = v
+            total += v
+        self._unreal_total = total
+
+    @property
+    def view(self) -> "_PositionsView":
+        return self._view
 
     def open(
         self,
@@ -173,12 +245,14 @@ class _MultiPosition:
             margin=margin,
         )
         self.version += 1
+        self._refresh(symbol)
 
     def close(self, symbol: str, price: float, ts: datetime) -> float:
         if symbol not in self._positions:
             return 0.0
         pos = self._positions.pop(symbol)
         self.version += 1
+        self._refresh(symbol)
         if pos.side == "LONG":
             return (price - pos.entry_price) * pos.quantity
         return (pos.entry_price - price) * pos.quantity
@@ -202,6 +276,7 @@ class _MultiPosition:
         else:
             pos.quantity = remaining
         self.version += 1
+        self._refresh(symbol)
         return pnl
 
     def add(self, symbol: str, price: float, qty: float, ts: datetime) -> None:
@@ -214,6 +289,7 @@ class _MultiPosition:
         pos.entry_price = (pos.entry_price * pos.quantity + price * qty) / new_qty
         pos.quantity = new_qty
         self.version += 1
+        self._refresh(symbol)
 
     def has(self, symbol: str) -> bool:
         return symbol in self._positions
@@ -530,12 +606,9 @@ class PortfolioTickBacktestRunner:
         """현재 최신 캔들로 패널 데이터 구성 (incrementally maintained)."""
         return self._panel
 
-    def _build_positions_dict(self) -> dict:
-        """현재 포지션을 패널 전달용 dict으로 (cached by position version)."""
-        if self._positions_cache_version != self._position.version:
-            self._positions_cache = self._position.to_dict()
-            self._positions_cache_version = self._position.version
-        return self._positions_cache
+    def _build_positions_dict(self):
+        """Read-only lazy view of the book for strategies (see _PositionsView)."""
+        return self._position.view
 
     def _sweep_stale_symbols(self, now: datetime) -> None:
         """Retire symbols that have stopped printing bars (delisting).
@@ -1165,6 +1238,7 @@ class PortfolioTickBacktestRunner:
 
             self._tick_counts[symbol] += 1
             self._latest_prices[symbol] = trade.price
+            self._position.mark(symbol, trade.price)
             total_ticks += 1
             self._liquidate_if_needed(symbol, trade.price, trade.timestamp)
             self._execute_pending_order(symbol, trade.price, trade.timestamp)
@@ -1262,18 +1336,21 @@ class PortfolioTickBacktestRunner:
             if self._last_stale_sweep_ts != candle.timestamp:
                 self._sweep_stale_symbols(candle.timestamp)
                 self._last_stale_sweep_ts = candle.timestamp
+                self._position.resync_unrealized()
 
             self._latest_prices[symbol] = candle.open
+            self._position.mark(symbol, candle.open)
             self._execute_pending_order(symbol, candle.open, candle.timestamp)
             self._liquidate_if_needed_in_bar(symbol, candle)
             self._settle_funding(symbol, candle)
 
             self._latest_prices[symbol] = candle.close
+            self._position.mark(symbol, candle.close)
             self._set_latest_candle(symbol, candle)
             self._execute_strategy(symbol, candle, candle.timestamp)
             self._record_bar_for_costs(symbol, candle)
 
-            unrealized = self._position.unrealized_pnl(self._latest_prices)
+            unrealized = self._position.unrealized_total()
             self._equity_points.append(self._capital + unrealized)
             self._equity_timestamps.append(candle.timestamp)
 

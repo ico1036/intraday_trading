@@ -176,7 +176,10 @@ class XsFactorBase:
                 orders = self._build_orders(state)
         self._current_date = current_date
 
-        for sym in self.symbols:
+        # Only the trigger symbol's row is new on this callback (see
+        # xs_volume_rank); scanning every symbol made each call O(N).
+        symbols = (state.symbol,) if state.symbol and state.symbol in self._today else self.symbols
+        for sym in symbols:
             data = state.panel.get(sym)
             if data is None:
                 continue

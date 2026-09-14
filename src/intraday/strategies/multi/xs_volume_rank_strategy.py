@@ -141,8 +141,12 @@ class XsVolumeRankStrategy:
             self._qv_today = {}
         self._current_date = current_date
 
-        # Accumulate current call's fresh entries into today's qv.
-        for s in self.symbols:
+        # Accumulate today's quote volume. A symbol's panel row only changes
+        # at that symbol's own callback, so reading the trigger symbol is
+        # enough and keeps each call O(1); the full scan is the fallback for
+        # callers that do not tag the trigger symbol.
+        symbols = (state.symbol,) if state.symbol else self.symbols
+        for s in symbols:
             d = state.panel.get(s)
             if d is None:
                 continue

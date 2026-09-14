@@ -41,19 +41,25 @@ class SlippageState:
     """Trailing quote-volume and close history for one symbol, reported on a
     daily basis whatever the bar size."""
 
-    __slots__ = ("qv", "closes", "ts", "bar_seconds")
+    __slots__ = ("qv", "closes", "ts", "bar_seconds", "_vol", "_adv")
 
     def __init__(self, bar_seconds: float | None = None) -> None:
         self.qv: deque[float] = deque(maxlen=ADV_WINDOW)
         self.closes: deque[float] = deque(maxlen=VOL_WINDOW + 1)
         self.ts: deque[float] = deque(maxlen=ADV_WINDOW)
         self.bar_seconds = float(bar_seconds) if bar_seconds else None
+        # Both derived values are constant between pushes; several fills a
+        # bar would otherwise recompute them.
+        self._vol: float | None = None
+        self._adv: float | None = None
 
     def push(self, quote_volume: float, close: float, ts_seconds: float | None = None) -> None:
         self.qv.append(float(quote_volume) if quote_volume else 0.0)
         self.closes.append(float(close))
         if ts_seconds is not None:
             self.ts.append(float(ts_seconds))
+        self._vol = None
+        self._adv = None
 
     def bars_per_day(self) -> float:
         sec = self.bar_seconds
@@ -68,22 +74,26 @@ class SlippageState:
     def adv(self) -> float | None:
         if len(self.qv) < ADV_MIN_BARS:
             return None
-        xs = sorted(self.qv)
-        n = len(xs)
-        mid = n // 2
-        med = xs[mid] if n % 2 else 0.5 * (xs[mid - 1] + xs[mid])
-        return med * self.bars_per_day()
+        if self._adv is None:
+            xs = sorted(self.qv)
+            n = len(xs)
+            mid = n // 2
+            med = xs[mid] if n % 2 else 0.5 * (xs[mid - 1] + xs[mid])
+            self._adv = med * self.bars_per_day()
+        return self._adv
 
     def vol(self) -> float:
         c = self.closes
         if len(c) < VOL_WINDOW + 1:
             return VOL_DEFAULT
-        rets = [c[i] / c[i - 1] - 1.0 for i in range(1, len(c)) if c[i - 1] > 0]
-        if len(rets) < 2:
-            return VOL_DEFAULT
-        m = sum(rets) / len(rets)
-        sd = math.sqrt(sum((r - m) ** 2 for r in rets) / (len(rets) - 1))
-        return sd * math.sqrt(self.bars_per_day())
+        if self._vol is None:
+            rets = [c[i] / c[i - 1] - 1.0 for i in range(1, len(c)) if c[i - 1] > 0]
+            if len(rets) < 2:
+                return VOL_DEFAULT
+            m = sum(rets) / len(rets)
+            sd = math.sqrt(sum((r - m) ** 2 for r in rets) / (len(rets) - 1))
+            self._vol = sd * math.sqrt(self.bars_per_day())
+        return self._vol
 
 
 def half_spread_bps(adv: float | None) -> float:
