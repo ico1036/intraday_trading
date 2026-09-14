@@ -7,6 +7,7 @@ import pandas as pd
 import pytest
 
 from intraday.backtest.multi_tick_runner import PortfolioTickBacktestRunner
+from intraday.strategies.multi.precomputed_weights_strategy import PrecomputedWeightsStrategy
 from intraday.candle_builder import Candle, CandleType
 from intraday.strategy import MarketState, Order, OrderType, PortfolioOrder, Side
 
@@ -123,3 +124,21 @@ def test_xs_volume_rank_batch_matches_legacy_book_except_first_symbol_timing():
     fills = {(t["symbol"], t["action"]): t["timestamp"] for t in r._trade_log if t["action"].startswith("OPEN")}
     # reverse: long the low-volume half (AAA, BBB), short the high-volume half (CCC, DDD); all fill on day 2
     assert fills == {("AAA", "OPEN_LONG"): day2, ("BBB", "OPEN_LONG"): day2, ("CCC", "OPEN_SHORT"): day2, ("DDD", "OPEN_SHORT"): day2}
+
+
+def test_precomputed_replay_fills_the_day_after_the_member_decision(tmp_path):
+    """A member's weight event is stamped with its decision bar and fills at
+    the next open. Replaying that event through PrecomputedWeightsStrategy
+    must fill on the same day, not a day earlier (that would be look-ahead)."""
+    start = datetime(2025, 1, 1)
+    decision = start + timedelta(days=1)
+    path = tmp_path / "w.parquet"
+    pd.DataFrame({"timestamp": [decision, decision], "symbol": ["AAA", "BBB"],
+                  "target_weight": [0.5, -0.5]}).to_parquet(path)
+    loaders = {s: _BarLoader(_bars(4, start, 100.0)) for s in ("AAA", "BBB")}
+    r = _runner(PrecomputedWeightsStrategy(["AAA", "BBB"], weights_path=str(path)), loaders)
+    r.run()
+    opens = {t["symbol"]: t["timestamp"] for t in r._trade_log if t["action"].startswith("OPEN")}
+    assert opens == {"AAA": decision + timedelta(days=1), "BBB": decision + timedelta(days=1)}
+    events = {(e["symbol"], e["timestamp"]) for e in r._weight_events}
+    assert events == {("AAA", decision), ("BBB", decision)}

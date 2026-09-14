@@ -105,9 +105,10 @@ class PrecomputedWeightsStrategy:
     BATCH_HOOK = True
 
     def generate_order(self, state: MarketState) -> PortfolioOrder | None:
-        # Weight events are keyed by the timestamp they fill at; under the
-        # batched loop that is the next timestamp.
-        ts = state.next_timestamp if (getattr(state, "batch", False) and state.next_timestamp is not None) else getattr(state, "timestamp", None)
+        # Weight events are stamped with the bar the decision was made on
+        # (the engine fills them at the next open). Replaying at the same bar
+        # reproduces the member's fill timing under both loops.
+        ts = getattr(state, "timestamp", None)
         if ts is None:
             return None
         ts_key = pd.Timestamp(ts)
