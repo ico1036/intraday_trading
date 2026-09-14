@@ -140,7 +140,8 @@ def windows_table_html(table: dict[str, Any], metrics: tuple[tuple[str, str], ..
     body = ""
     for r in rows:
         muted = "opacity:.75;font-style:italic" if r["kind"] == "blend" else ""
-        tag = "" if r["kind"] == "blend" else f'<span style="opacity:.6;font-size:11px;margin-left:6px">{html.escape(r["kind"])}</span>'
+        tag = "" if r["kind"] == "blend" else (
+            f'<span style="opacity:.6;font-size:11px;margin-left:6px">{html.escape(r["kind"])} · {html.escape(r.get("capital", "-"))}</span>')
         cells = ""
         for band in bands:
             w = r["windows"].get(band["key"])
@@ -236,7 +237,8 @@ def render_compare_page(*, options: dict[str, str], keys: list[str], window: str
                         ui.label("Performance by window (Sharpe on 365 days; each band on its own common range)"
                                  ).classes("section-title")
                         ui.html(windows_table_html(table, COMPARE_PERF_METRICS), sanitize=False)
-                        ui.label("Costs by window (share of initial capital over the band's days)").classes("section-title")
+                        ui.label("Costs by window (share of the strategy's initial capital, shown beside its name, "
+                                 "over the band's days)").classes("section-title")
                         ui.html(windows_table_html(table, COMPARE_COST_METRICS), sanitize=False)
                 corr = data["corr"]
                 if not corr.empty:

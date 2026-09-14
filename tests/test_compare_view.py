@@ -39,6 +39,7 @@ def archive(tmp_path: Path) -> Path:
     fdays = pd.date_range("2024-02-10", periods=10, freq="D")
     pd.DataFrame({"timestamp": fdays, "equity": 10000 + np.arange(10) * 5.0}).to_parquet(fwd / "equity_curve.parquet", index=False)
     (fwd / "metrics.json").write_text(json.dumps({"initial_capital": 10000.0}))
+    (run / "composites" / "c1" / "manifest.json").write_text(json.dumps({"composite_id": "c1", "target_gross": 5.0}))
     return tmp_path
 
 
@@ -159,3 +160,14 @@ def test_windows_table_has_a_band_per_window_and_a_row_per_strategy(archive: Pat
     assert a1["os"] == single[0] and c1["os"]["fees"] == single[1]["fees"]
     without = L.compare_windows_table(archive, keys, "simple", include_blend=False)
     assert all(r["kind"] != "blend" for r in without["rows"])
+
+
+def test_rows_say_what_capital_the_shares_refer_to(archive: Path):
+    keys = ["run_x/alpha/a1", "run_x/composite/c1"]
+    b = L.compare_series_bundle(archive, keys, "os", "simple")
+    assert b["run_x/alpha/a1"]["gross"] is None and b["run_x/composite/c1"]["gross"] == 5.0
+    rows = L.compare_table_rows(b, L.compare_align({k: v["returns"] for k, v in b.items()}), "simple", "os")
+    assert [r["capital"] for r in rows] == ["10,000 USD", "10,000 USD · gross 5", "-"]
+    table = L.compare_windows_table(archive, keys, "simple")
+    assert [r["capital"] for r in table["rows"]] == ["10,000 USD", "10,000 USD · gross 5", "-"]
+    assert L.format_capital(None) == "-" and L.format_capital(25000.0, 1.0) == "25,000 USD · gross 1"

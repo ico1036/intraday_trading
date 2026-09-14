@@ -1086,6 +1086,24 @@ def compare_daily_equity(item_dir: Path, window: str, splits: dict) -> pd.Series
     return eq
 
 
+def compare_target_gross(item_dir: Path) -> float | None:
+    """A composite's target gross from its manifest; None for alphas and for
+    composites built before the target was recorded."""
+    try:
+        v = json.loads((item_dir / "manifest.json").read_text()).get("target_gross")
+        return float(v) if v else None
+    except Exception:
+        return None
+
+
+def format_capital(capital: float | None, gross: float | None = None) -> str:
+    """``10,000 USD`` or ``10,000 USD · gross 5`` for a levered replay."""
+    if not capital:
+        return "-"
+    text = f"{capital:,.0f} USD"
+    return f"{text} · gross {gross:g}" if gross else text
+
+
 def compare_capital_base(item_dir: Path, default: float = 10000.0) -> float:
     """Notional base for the simple (%p of capital) basis: the run's initial capital."""
     try:
@@ -1225,7 +1243,8 @@ def compare_series_bundle(archive_root: Path, keys: list[str], window: str, basi
         rets = compare_returns_for_window(item_dir, window, splits, capital, basis) if splits else pd.Series(dtype=float)
         out[key] = {
             "name": item_id, "kind": kind, "run_id": run_id, "item_dir": item_dir, "splits": splits,
-            "returns": rets, "capital": capital, "boundaries": compare_boundaries(splits) if splits else {},
+            "returns": rets, "capital": capital, "gross": compare_target_gross(item_dir),
+            "boundaries": compare_boundaries(splits) if splits else {},
             "reason": None if not rets.empty else f"no {COMPARE_WINDOW_LABELS.get(window, window)} data",
         }
     return out
@@ -1246,6 +1265,7 @@ def compare_table_rows(bundle: dict[str, dict[str, Any]], aligned: pd.DataFrame,
         cap = float(v.get("capital") or 1.0)
         rows.append({
             "name": v["name"], "kind": v["kind"], "run": v["run_id"],
+            "capital": format_capital(cap, v.get("gross")),
             "sharpe": _fmt_num(m["sharpe"]), "cagr": _fmt_pct(m["cagr"]), "mdd": _fmt_pct(m["mdd"]),
             "cum": _fmt_pct(m["cum"]), "days": m["days"], "trades": _fmt_int(c.get("trades")) if c else "-",
             "fees": _fmt_pct(-c.get("fees", 0.0) / cap) if c else "-",
@@ -1254,7 +1274,7 @@ def compare_table_rows(bundle: dict[str, dict[str, Any]], aligned: pd.DataFrame,
         })
     if include_blend and aligned.shape[1] >= 2:
         mb = compare_metrics(aligned.mean(axis=1), basis)
-        rows.append({"name": "1/N blend of selection", "kind": "blend", "run": "", "sharpe": _fmt_num(mb["sharpe"]),
+        rows.append({"name": "1/N blend of selection", "kind": "blend", "run": "", "capital": "-", "sharpe": _fmt_num(mb["sharpe"]),
                      "cagr": _fmt_pct(mb["cagr"]), "mdd": _fmt_pct(mb["mdd"]), "cum": _fmt_pct(mb["cum"]),
                      "days": mb["days"], "trades": "-", "fees": "-", "slippage": "-", "funding": "-"})
     return rows
@@ -1287,11 +1307,12 @@ def compare_windows_table(archive_root: Path, keys: list[str], basis: str, inclu
             ident = (r["name"], r["run"])
             if ident not in cells:
                 cells[ident] = {}
-                seen.append((r["name"], r["kind"], r["run"]))
+                seen.append((r["name"], r["kind"], r["run"], r["capital"]))
             cells[ident][w] = r
     ordered = [t for t in seen if t[1] != "blend"] + [t for t in seen if t[1] == "blend"]
     return {"bands": bands,
-            "rows": [{"name": n, "kind": k, "run": run, "windows": cells[(n, run)]} for n, k, run in ordered]}
+            "rows": [{"name": n, "kind": k, "run": run, "capital": cap, "windows": cells[(n, run)]}
+                     for n, k, run, cap in ordered]}
 
 
 def compare_corr(aligned: pd.DataFrame) -> pd.DataFrame:

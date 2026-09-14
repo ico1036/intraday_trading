@@ -566,7 +566,7 @@ _INDEX_CACHE_TTL_SEC = 60.0
 
 # Bump when load_index's row schema changes so the persistent parquet cache
 # under /tmp is rebuilt instead of served with missing or stale columns.
-_INDEX_SCHEMA_VERSION = 2
+_INDEX_SCHEMA_VERSION = 3
 
 
 def _detailed_signature(run_dir: Path) -> list[list]:
@@ -939,6 +939,7 @@ def load_index(run_dir: Path) -> pd.DataFrame:
                 "os_costs": _g(os_m, "costs"),
                 "forward_costs": fwd_costs if isinstance(fwd_costs, dict) else None,
                 "is_initial_capital": _g(is_m, "initial_capital"),
+                "fixed_aum_sizing": bool(((_g(is_m, "run_config") or {}) if isinstance(_g(is_m, "run_config"), dict) else {}).get("fixed_aum_sizing")),
                 "costs_full_period": bool(_is_flat_layout(alpha_d)),
                 "is_t_stat": _g(is_m, "t_stat"),
                 "is_per_trade_sharpe": _g(is_m, "per_trade_sharpe"),
@@ -3198,6 +3199,10 @@ def main() -> None:
                 ui.label("Overview").classes("section-title")
                 with ui.row().classes("gap-2 w-full"):
                     metric_card("Category", str(selected.get("category", "-")))
+                    cap_value = selected.get("is_initial_capital")
+                    metric_card("Capital", (f"{float(cap_value):,.0f} USD · "
+                                            + ("fixed AUM" if selected.get("fixed_aum_sizing") else "compounding"))
+                                if cap_value else "-")
                     metric_card("IS Trades", _fmt_int(selected.get("is_trades", 0)))
                     metric_card("OS Trades", _fmt_int(selected.get("os_trades", 0)))
                     metric_card("Turnover IS/OS", f"{_fmt_turnover(is_turnover)} / {_fmt_turnover(os_turnover)}")
@@ -3279,11 +3284,11 @@ def main() -> None:
             cost_rows = [(lbl, c) for lbl, c in cost_rows if isinstance(c, dict)]
             if cost_rows:
                 with ui.column().classes("section-panel w-full gap-2"):
-                    ui.label("Costs charged by the engine (USD on initial capital)").classes("section-title")
+                    cap = float(selected.get("is_initial_capital") or 10000.0)
+                    ui.label(f"Costs charged by the engine (USD on initial capital of {cap:,.0f})").classes("section-title")
                     for lbl, c in cost_rows:
                         fees = c.get("fees"); slip = c.get("slippage"); fund = c.get("funding")
                         net = -(fees or 0.0) - (slip or 0.0) + (fund or 0.0)
-                        cap = selected.get("is_initial_capital") or 10000.0
                         with ui.row().classes("gap-2 w-full"):
                             metric_card(f"{lbl} fees", f"-{fees:,.0f}" if fees is not None else "-", tone="negative" if fees else None)
                             metric_card(f"{lbl} slippage", f"-{slip:,.0f}" if slip is not None else "-", tone="negative" if slip else None)
@@ -3568,6 +3573,10 @@ def main() -> None:
 
             with ui.row().classes("gap-2"):
                 metric_card("Members", str(manifest.get("n_members", 0)))
+                comp_capital = metrics.get("initial_capital") or (manifest.get("sizing") or {}).get("initial_capital")
+                metric_card("Capital", f"{float(comp_capital):,.0f} USD" if comp_capital else "-")
+                if manifest.get("target_gross"):
+                    metric_card("Target gross", f"{float(manifest['target_gross']):g}")
                 metric_card("Mean gross", _fmt_num(manifest.get("mean_row_l1")))
                 metric_card("Max gross", _fmt_num(manifest.get("max_row_l1")))
                 if manifest.get("n_rows_clipped"):
