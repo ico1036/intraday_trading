@@ -16,6 +16,8 @@ from nicegui import ui
 from alpha_dashboard_lib import (
     COMPARE_BASES,
     COMPARE_BASIS_LABELS,
+    COMPARE_COST_METRICS,
+    COMPARE_PERF_METRICS,
     COMPARE_WINDOW_LABELS,
     COMPARE_WINDOWS,
     compare_cumulative,
@@ -28,7 +30,7 @@ BTC_COLOR = "#f59e0b"
 BOUNDARY_COLOR = "#94a3b8"
 
 XFormatter = Callable[[pd.Series], list[str]]
-Compute = Callable[[list[str], str, str, bool], dict[str, Any]]
+Compute = Callable[[list[str], str, str, bool, bool], dict[str, Any]]
 """compute(keys, window, basis, include_btc) -> {bundle, aligned, rows, corr, boundaries, btc}"""
 
 
@@ -116,20 +118,43 @@ def corr_html(corr: pd.DataFrame, names: dict[str, str]) -> str:
     )
 
 
-METRIC_COLUMNS = [
-    {"name": "name", "label": "strategy", "field": "name", "align": "left"},
-    {"name": "kind", "label": "kind", "field": "kind", "align": "left"},
-    {"name": "run", "label": "run", "field": "run", "align": "left"},
-    {"name": "sharpe", "label": "Sharpe", "field": "sharpe", "align": "right"},
-    {"name": "cagr", "label": "CAGR", "field": "cagr", "align": "right"},
-    {"name": "mdd", "label": "MDD", "field": "mdd", "align": "right"},
-    {"name": "cum", "label": "cum", "field": "cum", "align": "right"},
-    {"name": "days", "label": "days", "field": "days", "align": "right"},
-    {"name": "trades", "label": "trades", "field": "trades", "align": "right"},
-    {"name": "fees", "label": "fees", "field": "fees", "align": "right"},
-    {"name": "slippage", "label": "slippage", "field": "slippage", "align": "right"},
-    {"name": "funding", "label": "funding", "field": "funding", "align": "right"},
-]
+_CELL = "padding:4px 10px;font-variant-numeric:tabular-nums;white-space:nowrap"
+_BAND_EDGE = "border-left:1px solid #cbd5e1"
+
+
+def windows_table_html(table: dict[str, Any], metrics: tuple[tuple[str, str], ...]) -> str:
+    """One band per window (IS, OS, Forward, All), one row per strategy, so
+    decay across windows reads left to right on a single line."""
+    bands, rows = table["bands"], table["rows"]
+    n = len(metrics)
+    band_head = ""
+    for band in bands:
+        span = (f"{band['start']} → {band['end']} · {band['days']} d" if band["days"] else "no data")
+        band_head += (f'<th colspan="{n}" style="{_CELL};{_BAND_EDGE};text-align:center;font-weight:600">'
+                      f'{html.escape(band["label"])}<div style="font-weight:400;opacity:.7">{html.escape(span)}</div></th>')
+    metric_head = ""
+    for _ in bands:
+        for i, (_, label) in enumerate(metrics):
+            edge = _BAND_EDGE if i == 0 else ""
+            metric_head += f'<th style="{_CELL};{edge};text-align:right;font-weight:500;opacity:.8">{html.escape(label)}</th>'
+    body = ""
+    for r in rows:
+        muted = "opacity:.75;font-style:italic" if r["kind"] == "blend" else ""
+        tag = "" if r["kind"] == "blend" else f'<span style="opacity:.6;font-size:11px;margin-left:6px">{html.escape(r["kind"])}</span>'
+        cells = ""
+        for band in bands:
+            w = r["windows"].get(band["key"])
+            for i, (field, _) in enumerate(metrics):
+                edge = _BAND_EDGE if i == 0 else ""
+                value = "–" if w is None else str(w.get(field, "–"))
+                cells += f'<td style="{_CELL};{edge};text-align:right">{html.escape(value)}</td>'
+        body += (f'<tr style="border-top:1px solid #e2e8f0;{muted}">'
+                 f'<th style="{_CELL};text-align:left;font-weight:500">{html.escape(r["name"])}{tag}</th>{cells}</tr>')
+    return (
+        '<div class="wide" style="overflow-x:auto"><table style="border-collapse:collapse;font-size:12px;width:100%">'
+        f'<thead><tr><th></th>{band_head}</tr><tr><th style="{_CELL};text-align:left;opacity:.8">strategy</th>{metric_head}</tr></thead>'
+        f"<tbody>{body}</tbody></table></div>"
+    )
 
 
 def render_compare_launcher(options: dict[str, str], default_window: str = "os",
@@ -186,7 +211,7 @@ def render_compare_page(*, options: dict[str, str], keys: list[str], window: str
                 if not state["keys"]:
                     ui.label("Pick at least one strategy.").classes("empty-state")
                     return
-                data = compute(state["keys"], state["window"], state["basis"], state["btc"])
+                data = compute(state["keys"], state["window"], state["basis"], state["btc"], state["blend"])
                 bundle, aligned = data["bundle"], data["aligned"]
                 names = {k: v["name"] for k, v in bundle.items()}
                 kinds = {k: v["kind"] for k, v in bundle.items()}
@@ -194,20 +219,25 @@ def render_compare_page(*, options: dict[str, str], keys: list[str], window: str
                 if skipped:
                     ui.label("Skipped — " + "; ".join(skipped)).classes("note-text")
                 if aligned.empty:
-                    ui.label("Nothing to plot in this window.").classes("empty-state")
-                    return
-                if data.get("note"):
-                    ui.label(data["note"]).classes("note-text")
-                with ui.column().classes("section-panel w-full gap-2"):
-                    ui.plotly(compare_figure(aligned, names, kinds, state["basis"], data["btc"], state["window"],
-                                             data["boundaries"], state["blend"], x)).classes("w-full chart-host")
-                    ui.plotly(compare_drawdown_figure(aligned, names, kinds, state["basis"], data["boundaries"], x)
-                              ).classes("w-full chart-host")
-                with ui.column().classes("section-panel w-full gap-2"):
-                    ui.label(f"{COMPARE_WINDOW_LABELS[state['window']]} metrics on the common window "
-                             f"({aligned.index.min().date()} → {aligned.index.max().date()}, {len(aligned)} days; "
-                             "Sharpe on 365 days; costs as a share of initial capital, same days)").classes("section-title")
-                    ui.table(columns=METRIC_COLUMNS, rows=data["rows"], row_key="name").classes("w-full dense-panel")
+                    ui.label(f"Nothing to plot in the {COMPARE_WINDOW_LABELS[state['window']]} window.").classes("empty-state")
+                else:
+                    if data.get("note"):
+                        ui.label(data["note"]).classes("note-text")
+                    with ui.column().classes("section-panel w-full gap-2"):
+                        ui.plotly(compare_figure(aligned, names, kinds, state["basis"], data["btc"], state["window"],
+                                                 data["boundaries"], state["blend"], x)).classes("w-full chart-host")
+                        ui.plotly(compare_drawdown_figure(aligned, names, kinds, state["basis"], data["boundaries"], x)
+                                  ).classes("w-full chart-host")
+                # The tables do not follow the chart's window: every window is
+                # on screen at once, each band aligned on its own common range.
+                table = data["windows"]
+                if table["rows"]:
+                    with ui.column().classes("section-panel w-full gap-2"):
+                        ui.label("Performance by window (Sharpe on 365 days; each band on its own common range)"
+                                 ).classes("section-title")
+                        ui.html(windows_table_html(table, COMPARE_PERF_METRICS), sanitize=False)
+                        ui.label("Costs by window (share of initial capital over the band's days)").classes("section-title")
+                        ui.html(windows_table_html(table, COMPARE_COST_METRICS), sanitize=False)
                 corr = data["corr"]
                 if not corr.empty:
                     with ui.column().classes("section-panel w-full gap-2"):

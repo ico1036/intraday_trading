@@ -38,8 +38,8 @@ from alpha_dashboard_lib import (  # noqa: E402
     compare_corr,
     compare_options,
     compare_series_bundle,
-    compare_table_rows,
     compare_window_note,
+    compare_windows_table,
 )
 from alpha_compare_view import render_compare_launcher, render_compare_page  # noqa: E402
 from alpha_dashboard_lib import (  # noqa: E402  (path injection above)
@@ -2729,14 +2729,14 @@ def main() -> None:
         keys = [k for k in str(q.get("ids", "")).split(",") if k]
         opts = compare_options(load_index(run_dir), discover_composites(run_dir))
 
-        def compute(sel: list[str], window: str, basis: str, include_btc: bool) -> dict[str, Any]:
+        def compute(sel: list[str], window: str, basis: str, include_btc: bool, include_blend: bool) -> dict[str, Any]:
             bundle = compare_series_bundle(run_dir, sel, window, basis)
             aligned = compare_align({k: v["returns"] for k, v in bundle.items()})
             empty = aligned.empty
             return {
                 "bundle": bundle,
                 "aligned": aligned,
-                "rows": [] if empty else compare_table_rows(bundle, aligned, basis, window, include_blend=True),
+                "windows": compare_windows_table(run_dir, sel, basis, include_blend),
                 "corr": pd.DataFrame() if empty else compare_corr(aligned),
                 "boundaries": [] if empty else compare_boundary_lines(bundle, aligned, window),
                 "note": "" if empty else compare_window_note(bundle, aligned),

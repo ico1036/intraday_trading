@@ -137,3 +137,25 @@ def test_window_note_names_the_limiting_strategy(archive: Path):
     note = L.compare_window_note(b, aligned)
     assert "end 2024-02-09 set by c1" in note and "start" not in note
     assert L.compare_window_note(b, L.compare_align({"run_x/alpha/a1": b["run_x/alpha/a1"]["returns"]})) == ""
+
+
+def test_windows_table_has_a_band_per_window_and_a_row_per_strategy(archive: Path):
+    keys = ["run_x/alpha/a1", "run_x/composite/c1"]
+    table = L.compare_windows_table(archive, keys, "simple", include_blend=True)
+    assert [b["key"] for b in table["bands"]] == ["is", "os", "forward", "all"]
+    is_band, os_band, fwd_band, all_band = table["bands"]
+    # daily returns start on the second equity day, so a 20-day split has 19 return days
+    assert (is_band["start"], is_band["end"], is_band["days"]) == ("2024-01-02", "2024-01-20", 19)
+    assert os_band["days"] == 19 and fwd_band["days"] == 9
+    assert all_band["days"] == 39  # 40 equity days -> 39 returns; the composite has no forward run, so All stops at OS
+    assert [(r["name"], r["kind"]) for r in table["rows"]] == [("a1", "alpha"), ("c1", "composite"), ("1/N blend of selection", "blend")]
+    a1, c1, blend = (r["windows"] for r in table["rows"])
+    assert set(a1) == {"is", "os", "forward", "all"}
+    assert set(c1) == {"is", "os", "all"}            # nothing to show under Forward
+    assert set(blend) == {"is", "os", "all"}         # a blend needs two strategies in the band
+    # a band's cells are the single-window rows for that band, so the two views agree
+    b = L.compare_series_bundle(archive, keys, "os", "simple")
+    single = L.compare_table_rows(b, L.compare_align({k: v["returns"] for k, v in b.items()}), "simple", "os")
+    assert a1["os"] == single[0] and c1["os"]["fees"] == single[1]["fees"]
+    without = L.compare_windows_table(archive, keys, "simple", include_blend=False)
+    assert all(r["kind"] != "blend" for r in without["rows"])

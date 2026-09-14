@@ -1260,6 +1260,40 @@ def compare_table_rows(bundle: dict[str, dict[str, Any]], aligned: pd.DataFrame,
     return rows
 
 
+COMPARE_TABLE_WINDOWS = ("is", "os", "forward", "all")
+COMPARE_PERF_METRICS = (("sharpe", "Sharpe"), ("cagr", "CAGR"), ("mdd", "MDD"), ("cum", "cum"))
+COMPARE_COST_METRICS = (("trades", "trades"), ("fees", "fees"), ("slippage", "slippage"), ("funding", "funding"))
+
+
+def compare_windows_table(archive_root: Path, keys: list[str], basis: str, include_blend: bool = True,
+                          windows: tuple[str, ...] = COMPARE_TABLE_WINDOWS) -> dict[str, Any]:
+    """Every window at once. ``bands`` is one entry per window with its common
+    date range and day count; ``rows`` is one entry per strategy (blend last)
+    whose ``windows`` maps window -> formatted metrics row, absent where the
+    strategy has no data there. Each band is aligned on its own common
+    range, so every cell in a band describes the same days."""
+    bands: list[dict[str, Any]] = []
+    cells: dict[tuple[str, str], dict[str, dict[str, Any]]] = {}
+    seen: list[tuple[str, str, str]] = []
+    for w in windows:
+        bundle = compare_series_bundle(archive_root, keys, w, basis)
+        aligned = compare_align({k: v["returns"] for k, v in bundle.items()})
+        bands.append({
+            "key": w, "label": COMPARE_WINDOW_LABELS[w], "days": int(len(aligned)),
+            "start": None if aligned.empty else aligned.index.min().date().isoformat(),
+            "end": None if aligned.empty else aligned.index.max().date().isoformat(),
+        })
+        for r in compare_table_rows(bundle, aligned, basis, w, include_blend):
+            ident = (r["name"], r["run"])
+            if ident not in cells:
+                cells[ident] = {}
+                seen.append((r["name"], r["kind"], r["run"]))
+            cells[ident][w] = r
+    ordered = [t for t in seen if t[1] != "blend"] + [t for t in seen if t[1] == "blend"]
+    return {"bands": bands,
+            "rows": [{"name": n, "kind": k, "run": run, "windows": cells[(n, run)]} for n, k, run in ordered]}
+
+
 def compare_corr(aligned: pd.DataFrame) -> pd.DataFrame:
     return aligned.corr() if aligned.shape[1] >= 2 else pd.DataFrame()
 
