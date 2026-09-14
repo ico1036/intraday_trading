@@ -118,7 +118,7 @@ def corr_html(corr: pd.DataFrame, names: dict[str, str]) -> str:
     )
 
 
-_CELL = "padding:4px 10px;font-variant-numeric:tabular-nums;white-space:nowrap"
+_CELL = "padding:4px 8px;font-variant-numeric:tabular-nums;white-space:nowrap"
 _BAND_EDGE = "border-left:1px solid #cbd5e1"
 
 
@@ -140,8 +140,12 @@ def windows_table_html(table: dict[str, Any], metrics: tuple[tuple[str, str], ..
     body = ""
     for r in rows:
         muted = "opacity:.75;font-style:italic" if r["kind"] == "blend" else ""
+        # Name on one line (truncated, full name on hover), what the shares
+        # refer to on the next, so the first column stays narrow.
+        name = html.escape(r["name"])
         tag = "" if r["kind"] == "blend" else (
-            f'<span style="opacity:.6;font-size:11px;margin-left:6px">{html.escape(r["kind"])} · {html.escape(r.get("capital", "-"))}</span>')
+            f'<div style="opacity:.6;font-size:11px;font-weight:400">{html.escape(r["kind"])} · {html.escape(r.get("capital", "-"))}</div>')
+        label = f'<div style="max-width:320px;overflow:hidden;text-overflow:ellipsis" title="{name}">{name}</div>{tag}'
         cells = ""
         for band in bands:
             w = r["windows"].get(band["key"])
@@ -150,9 +154,12 @@ def windows_table_html(table: dict[str, Any], metrics: tuple[tuple[str, str], ..
                 value = "–" if w is None else str(w.get(field, "–"))
                 cells += f'<td style="{_CELL};{edge};text-align:right">{html.escape(value)}</td>'
         body += (f'<tr style="border-top:1px solid #e2e8f0;{muted}">'
-                 f'<th style="{_CELL};text-align:left;font-weight:500">{html.escape(r["name"])}{tag}</th>{cells}</tr>')
+                 f'<th style="{_CELL};text-align:left;font-weight:500">{label}</th>{cells}</tr>')
+    # min-width:0 lets this flex child shrink to the panel and scroll instead
+    # of pushing the table past the card edge.
     return (
-        '<div class="wide" style="overflow-x:auto"><table style="border-collapse:collapse;font-size:12px;width:100%">'
+        '<div class="wide" style="overflow-x:auto;min-width:0;max-width:100%">'
+        '<table style="border-collapse:collapse;font-size:12px;min-width:100%">'
         f'<thead><tr><th></th>{band_head}</tr><tr><th style="{_CELL};text-align:left;opacity:.8">strategy</th>{metric_head}</tr></thead>'
         f"<tbody>{body}</tbody></table></div>"
     )
